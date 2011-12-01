@@ -1,0 +1,15 @@
+- Parser
+    - triggers, attributes
+	- types
+	- quantified expressions
+	- axiom declarations
+	- variable declarations
+	- constant declarations
+	- function declarations
+	- statements
+	- implementation declarations
+	- bit vectors
+
+- Type Checker
+- Interpreter
+
