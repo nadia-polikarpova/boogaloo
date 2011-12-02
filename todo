@@ -1,6 +1,5 @@
 - Parser
     - triggers, attributes
-	- types
 	- quantified expressions
 	- axiom declarations
 	- variable declarations

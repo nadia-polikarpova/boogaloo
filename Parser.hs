@@ -7,6 +7,8 @@ import Text.ParserCombinators.Parsec hiding (token)
 import qualified Text.ParserCombinators.Parsec.Token as P
 import Text.ParserCombinators.Parsec.Expr
 
+{- Lexical analysis -}
+
 opNames :: [String]
 opNames = map snd unOpTokens ++ map snd binOpTokens ++ otherOps
 
@@ -51,6 +53,65 @@ comma = P.comma lexer
 commaSep = P.commaSep lexer
 commaSep1 = P.commaSep1 lexer
 
+{- Types -}
+
+typeAtom :: Parser Type
+typeAtom = do { reserved "int"; return IntType } <|>
+		   do { reserved "bool"; return BoolType } <|>
+		   -- bit vector
+		   parens typeParser
+		   
+mapType :: Parser Type
+mapType = do { 
+	args <- (option [] (angles (commaSep1 identifier))); 
+	domains <- brackets (commaSep1 typeParser); 
+	range <- typeParser; 
+	return (MapType args domains range) 
+	}
+	
+typeCtorArgs :: Parser [Type]
+typeCtorArgs = do { x <- typeAtom; xs <- option [] typeCtorArgs; return (x : xs) } <|>
+               do { x <- identifier; xs <- option [] typeCtorArgs; return ((Instance x []) : xs) } <|>
+			   do { x <- mapType; return [x] }
+
+typeParser :: Parser Type
+typeParser = typeAtom <|> mapType <|>
+	do { id <- identifier; args <- option [] typeCtorArgs; return (Instance id args) }
+
+
+{- Expressions -}
+	
+e9 :: Parser Expression
+e9 = do { reserved "false"; return FF } <|>
+     do { reserved "true"; return TT } <|> 
+	 do { n <- natural; return (Numeral n) } <|> 
+	 -- str bitVector <|>
+	 do { id <- identifier; ( do { args <- parens (commaSep e0); return (Application id args) }) <|> return (Var id) } <|>
+	 do { reserved "old"; e <- parens e0; return (Old  e) } <|>
+	--try (parens (do { qop; optional typeArgs; commaSep1 idsType; qsep; many trigAttr; res <- e0; return res })) <|>
+	parens e0
+
+e8 :: Parser Expression
+e8 = do { e <- e9; mapOps <- many (brackets (mapOp)); return (foldr (.) id (reverse mapOps) e) }
+
+mapOp :: Parser (Expression -> Expression)
+mapOp = do { args <- commaSep1 e0; option ((flip MapSelection) args) (do { reservedOp ":="; e <- e0; return (flip ((flip MapUpdate) args) e)}) }
+
+e0 :: Parser Expression	
+e0 = buildExpressionParser table e8 <?> "expression"
+
+table = [[unOp Neg, unOp Not],
+         [binOp Times AssocLeft, binOp Div AssocLeft, binOp Mod AssocLeft],
+		 [binOp Plus AssocLeft, binOp Minus AssocLeft],
+		 --[binOp Concat AssocLeft],
+		 [binOp Eq AssocNone, binOp Neq AssocNone, binOp Ls AssocNone, binOp Leq AssocNone, binOp Gt AssocNone, binOp Geq AssocNone, binOp Lc AssocNone],
+		 [binOp And AssocLeft], -- ToDo: && and || on the same level but do not interassociate
+		 [binOp Or AssocLeft],
+		 [binOp Implies AssocRight],
+		 [binOp Equiv AssocRight]]
+	where
+		binOp node assoc = Infix (do { reservedOp (token node binOpTokens); return (\e1 e2 -> (BinaryExpression node e1 e2)) }) assoc
+		unOp node = Prefix (do { reservedOp (token node unOpTokens); return (\e -> UnaryExpression node e)})
 
 {-
 qop :: Parser String
@@ -101,38 +162,4 @@ bitVector = do {
 		natural;
 		return i
 	}
--}	
-
-{- Expressions -}
-	
-e9 :: Parser Expression
-e9 = do { reserved "false"; return FF } <|>
-     do { reserved "true"; return TT } <|> 
-	 do { n <- natural; return (Numeral n) } <|> 
-	 -- str bitVector <|>
-	 do { id <- identifier; ( do { args <- parens (commaSep e0); return (Application id args) }) <|> return (Var id) } <|>
-	 do { reserved "old"; e <- parens e0; return (Old  e) } <|>
-	--try (parens (do { qop; optional typeArgs; commaSep1 idsType; qsep; many trigAttr; res <- e0; return res })) <|>
-	parens e0
-
-e8 :: Parser Expression
-e8 = do { e <- e9; mapOps <- many (brackets (mapOp)); return (foldr (.) id (reverse mapOps) e) }
-
-mapOp :: Parser (Expression -> Expression)
-mapOp = do { args <- commaSep1 e0; option ((flip MapSelection) args) (do { reservedOp ":="; e <- e0; return (flip ((flip MapUpdate) args) e)}) }
-
-e0 :: Parser Expression	
-e0 = buildExpressionParser table e8 <?> "expression"
-
-table = [[unOp Neg, unOp Not],
-         [binOp Times AssocLeft, binOp Div AssocLeft, binOp Mod AssocLeft],
-		 [binOp Plus AssocLeft, binOp Minus AssocLeft],
-		 --[binOp Concat AssocLeft],
-		 [binOp Eq AssocNone, binOp Neq AssocNone, binOp Ls AssocNone, binOp Leq AssocNone, binOp Gt AssocNone, binOp Geq AssocNone, binOp Lc AssocNone],
-		 [binOp And AssocLeft], -- ToDo: && and || on the same level but do not interassociate
-		 [binOp Or AssocLeft],
-		 [binOp Implies AssocRight],
-		 [binOp Equiv AssocRight]]
-	where
-		binOp node assoc = Infix (do { reservedOp (token node binOpTokens); return (\e1 e2 -> (BinaryExpression node e1 e2)) }) assoc
-		unOp node = Prefix (do { reservedOp (token node unOpTokens); return (\e -> UnaryExpression node e)})
+-}			

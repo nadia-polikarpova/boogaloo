@@ -4,6 +4,12 @@ module AST where
 {- Basic -}
 type Id = String
 
+{- Types -}
+data Type = BoolType | IntType | {-BitVectorType Int |-} 
+	MapType [Id] [Type] Type |
+	Instance Id [Type]
+	deriving Show
+
 {- Expressions -}
 data UnOp = Neg | Not
 	deriving (Eq, Show)
@@ -19,7 +25,9 @@ data Expression = FF | TT | Numeral Integer |
 	UnaryExpression UnOp Expression |
 	BinaryExpression BinOp Expression Expression
 	deriving Show
-		
-{- Types -}
-data Type = BoolType | IntType | BitVectorType Int | MapType [Type] Type -- ToDo: user defined types 
 	
+{- Statements -}
+
+{- Declarations -}
+
+{- Misc -}
