@@ -59,13 +59,16 @@ typeAtom :: Parser Type
 typeAtom = do { reserved "int"; return IntType } <|>
 		   do { reserved "bool"; return BoolType } <|>
 		   -- bit vector
-		   parens typeParser
+		   parens type_
+		   
+typeArgs :: Parser [Id]
+typeArgs = option [] (angles (commaSep1 identifier))
 		   
 mapType :: Parser Type
 mapType = do { 
-	args <- (option [] (angles (commaSep1 identifier))); 
-	domains <- brackets (commaSep1 typeParser); 
-	range <- typeParser; 
+	args <- typeArgs; 
+	domains <- brackets (commaSep1 type_); 
+	range <- type_; 
 	return (MapType args domains range) 
 	}
 	
@@ -74,12 +77,16 @@ typeCtorArgs = do { x <- typeAtom; xs <- option [] typeCtorArgs; return (x : xs)
                do { x <- identifier; xs <- option [] typeCtorArgs; return ((Instance x []) : xs) } <|>
 			   do { x <- mapType; return [x] }
 
-typeParser :: Parser Type
-typeParser = typeAtom <|> mapType <|>
+type_ :: Parser Type
+type_ = typeAtom <|> mapType <|>
 	do { id <- identifier; args <- option [] typeCtorArgs; return (Instance id args) }
+	<?> "type"
 
 
 {- Expressions -}
+
+qop :: Parser QOp
+qop = (do { reserved "forall"; return Forall }) <|> (do { reserved "exists"; return Exists })
 	
 e9 :: Parser Expression
 e9 = do { reserved "false"; return FF } <|>
@@ -88,8 +95,15 @@ e9 = do { reserved "false"; return FF } <|>
 	 -- str bitVector <|>
 	 do { id <- identifier; ( do { args <- parens (commaSep e0); return (Application id args) }) <|> return (Var id) } <|>
 	 do { reserved "old"; e <- parens e0; return (Old  e) } <|>
-	--try (parens (do { qop; optional typeArgs; commaSep1 idsType; qsep; many trigAttr; res <- e0; return res })) <|>
-	parens e0
+	 try (parens e0) <|>
+	 parens (do { 
+		op <- qop; 
+		args <- typeArgs; 
+		vars <- commaSep1 idsType; 
+		reservedOp "::"; 
+		many trigAttr; 
+		e <- e0; 
+		return (Quantified op args (concat vars) e )})
 
 e8 :: Parser Expression
 e8 = do { e <- e9; mapOps <- many (brackets (mapOp)); return (foldr (.) id (reverse mapOps) e) }
@@ -113,6 +127,23 @@ table = [[unOp Neg, unOp Not],
 		binOp node assoc = Infix (do { reservedOp (token node binOpTokens); return (\e1 e2 -> (BinaryExpression node e1 e2)) }) assoc
 		unOp node = Prefix (do { reservedOp (token node unOpTokens); return (\e -> UnaryExpression node e)})
 
+{- Misc -}
+
+skip :: Parser a -> Parser ()
+skip p = do { p; return () }
+
+idsType :: Parser [(Id, Type)]
+idsType = do { ids <- commaSep1 identifier; reservedOp ":"; t <- type_; return (zip ids (repeat t)) }
+
+trigAttr :: Parser ()
+trigAttr = (try trigger) <|> attribute <?> "attribute or trigger"
+
+trigger :: Parser ()
+trigger = skip (braces (commaSep1 e0)) <?> "trigger"
+
+attribute :: Parser ()
+attribute = skip (braces (do {reservedOp ":"; identifier; commaSep1 ((skip e0) <|> (skip stringLiteral))})) <?> "attribute"
+		
 {-
 qop :: Parser String
 qop = str (reserved "forall" <|> reserved "exists")

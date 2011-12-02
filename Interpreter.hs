@@ -69,3 +69,4 @@ expression (UnaryExpression op e) env = do { v <- expression e env;
 expression (BinaryExpression op e1 e2) env = do { v1 <- expression e1 env;
                                              v2 <- expression e2 env;
 											 binOp op v1 v2 }
+expression (Quantified op args vars e) env = throw ("Quantified expressions not supported yet")
