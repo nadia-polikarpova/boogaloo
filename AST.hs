@@ -34,4 +34,16 @@ data Expression = FF | TT | Numeral Integer |
 
 {- Declarations -}
 
+data Decl = --TypeDecl |
+	ConstantDecl Bool [Id] Type ParentInfo Bool |
+	-- FunctionDecl [Id] [(Maybe Id, Type)] (MaybeId, Type) (Maybe Expression) |
+	AxiomDecl Expression |
+	VarDecl [(Id, Type, Expression)]
+	-- ProcedureDecl |
+	-- ImplementationDecl
+	deriving Show
+
 {- Misc -}
+
+type ParentEdge = (Bool, Id)
+type ParentInfo = Maybe [ParentEdge]

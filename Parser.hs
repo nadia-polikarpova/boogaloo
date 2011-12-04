@@ -62,7 +62,7 @@ typeAtom = do { reserved "int"; return IntType } <|>
 		   parens type_
 		   
 typeArgs :: Parser [Id]
-typeArgs = option [] (angles (commaSep1 identifier))
+typeArgs = try (angles (commaSep1 identifier)) <|> return []
 		   
 mapType :: Parser Type
 mapType = do { 
@@ -103,7 +103,7 @@ e9 = do { reserved "false"; return FF } <|>
 		reservedOp "::"; 
 		many trigAttr; 
 		e <- e0; 
-		return (Quantified op args (concat vars) e )})
+		return (Quantified op args (concat (map (\x -> zip (fst x) (repeat (snd x))) vars)) e )})
 
 e8 :: Parser Expression
 e8 = do { e <- e9; mapOps <- many (brackets (mapOp)); return (foldr (.) id (reverse mapOps) e) }
@@ -126,14 +126,50 @@ table = [[unOp Neg, unOp Not],
 	where
 		binOp node assoc = Infix (do { reservedOp (token node binOpTokens); return (\e1 e2 -> (BinaryExpression node e1 e2)) }) assoc
 		unOp node = Prefix (do { reservedOp (token node unOpTokens); return (\e -> UnaryExpression node e)})
+		
+{- Declarations -}
+
+parentEdge :: Parser ParentEdge
+parentEdge = do { unique <- hasKeyword "unique"; id <- identifier; return (unique, id) }
+
+constantDecl :: Parser Decl
+constantDecl = do { reserved "const";
+	many attribute;
+	unique <- hasKeyword "unique";
+	ids <- idsType;
+	orderSpec <- (option Nothing (do {symbol "<:"; edges <- commaSep parentEdge; return (Just edges) }));
+	complete <- hasKeyword "complete";
+	return (ConstantDecl unique (fst ids) (snd ids) orderSpec complete)
+	} <?> "constants declaration"
+
+axiomDecl :: Parser Decl
+axiomDecl = do { reserved "axiom"; many attribute; e <- e0; semi; return (AxiomDecl e) } <?> "axiom declaration"
+
+varDecl :: Parser Decl
+varDecl = do { reserved "var"; 
+	many attribute; 
+	vars <- commaSep1 idsTypeWhere; 
+	semi; 
+	return (VarDecl (concat (map (\x -> zip3 (fst3 x) (repeat (snd3 x)) (repeat (trd3 x))) vars))) 
+	} <?> "variables declaration"
 
 {- Misc -}
+
+fst3 (a, b, c) = a
+snd3 (a, b, c) = b
+trd3 (a, b, c) = c 
 
 skip :: Parser a -> Parser ()
 skip p = do { p; return () }
 
-idsType :: Parser [(Id, Type)]
-idsType = do { ids <- commaSep1 identifier; reservedOp ":"; t <- type_; return (zip ids (repeat t)) }
+hasKeyword :: String -> Parser Bool
+hasKeyword s = option False (do { reserved s; return True })
+
+idsType :: Parser ([Id], Type)
+idsType = do { ids <- commaSep1 identifier; reservedOp ":"; t <- type_; return (ids, t) }
+
+idsTypeWhere :: Parser ([Id], Type, Expression)
+idsTypeWhere = do { ids <- idsType; e <- option TT ( do {reserved "where"; e0 }); return ((fst ids), (snd ids), e) }
 
 trigAttr :: Parser ()
 trigAttr = (try trigger) <|> attribute <?> "attribute or trigger"

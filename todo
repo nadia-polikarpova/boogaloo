@@ -1,12 +1,13 @@
 - Parser
-	- axiom declarations
-	- variable declarations
-	- constant declarations
 	- function declarations
+	- type declarations
 	- statements
 	- implementation declarations
 	- bit vectors
 
 - Type Checker
 - Interpreter
+
+Notes:
+The syntax of WhereClause is missing in the boogie manual
 
