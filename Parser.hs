@@ -141,9 +141,28 @@ constantDecl = do { reserved "const";
 	complete <- hasKeyword "complete";
 	return (ConstantDecl unique (fst ids) (snd ids) orderSpec complete)
 	} <?> "constants declaration"
+	
+fArg :: Parser FArg
+fArg = do { name <- option Nothing (try (do { id <- identifier; reservedOp ":"; return (Just id)})); t <- type_; return (name, t)}
+	
+functionDecl :: Parser Decl
+functionDecl = do { reserved "function";
+	many attribute;
+	name <- identifier;
+	args <- parens (commaSep fArg);
+	reserved "returns";
+	ret <- parens fArg;
+	body <- do { semi; return Nothing } <|> do { e <- (braces e0); return (Just e) };
+	return (FunctionDecl name args ret body)
+	} <?> "function declarations"
 
 axiomDecl :: Parser Decl
-axiomDecl = do { reserved "axiom"; many attribute; e <- e0; semi; return (AxiomDecl e) } <?> "axiom declaration"
+axiomDecl = do { reserved "axiom"; 
+	many attribute; 
+	e <- e0; 
+	semi; 
+	return (AxiomDecl e) 
+	} <?> "axiom declaration"
 
 varDecl :: Parser Decl
 varDecl = do { reserved "var"; 

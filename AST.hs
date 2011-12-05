@@ -36,7 +36,7 @@ data Expression = FF | TT | Numeral Integer |
 
 data Decl = --TypeDecl |
 	ConstantDecl Bool [Id] Type ParentInfo Bool |
-	-- FunctionDecl [Id] [(Maybe Id, Type)] (MaybeId, Type) (Maybe Expression) |
+	FunctionDecl Id [FArg] FArg (Maybe Expression) |
 	AxiomDecl Expression |
 	VarDecl [(Id, Type, Expression)]
 	-- ProcedureDecl |
@@ -47,3 +47,4 @@ data Decl = --TypeDecl |
 
 type ParentEdge = (Bool, Id)
 type ParentInfo = Maybe [ParentEdge]
+type FArg = (Maybe Id, Type)
