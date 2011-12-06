@@ -4,6 +4,8 @@ module AST where
 {- Basic -}
 type Id = String
 
+type Program = [Decl]
+
 {- Types -}
 data Type = BoolType | IntType | {-BitVectorType Int |-} 
 	MapType [Id] [Type] Type |
@@ -34,7 +36,7 @@ data Expression = FF | TT | Numeral Integer |
 
 {- Declarations -}
 
-data Decl = --TypeDecl |
+data Decl = TypeDecl Bool Id [Id] (Maybe Type) |
 	ConstantDecl Bool [Id] Type ParentInfo Bool |
 	FunctionDecl Id [FArg] FArg (Maybe Expression) |
 	AxiomDecl Expression |

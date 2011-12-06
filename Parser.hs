@@ -129,6 +129,17 @@ table = [[unOp Neg, unOp Not],
 		
 {- Declarations -}
 
+typeDecl :: Parser Decl
+typeDecl = do { reserved "type";
+	many attribute;
+	finite <- hasKeyword "finite";
+	name <- identifier;
+	args <- many identifier;
+	value <- (option Nothing ( do { reservedOp "="; t <- type_; return (Just t) }));
+	semi;
+	return (TypeDecl finite name args value)
+	} <?> "type declaration"
+
 parentEdge :: Parser ParentEdge
 parentEdge = do { unique <- hasKeyword "unique"; id <- identifier; return (unique, id) }
 
@@ -139,6 +150,7 @@ constantDecl = do { reserved "const";
 	ids <- idsType;
 	orderSpec <- (option Nothing (do {symbol "<:"; edges <- commaSep parentEdge; return (Just edges) }));
 	complete <- hasKeyword "complete";
+	semi;
 	return (ConstantDecl unique (fst ids) (snd ids) orderSpec complete)
 	} <?> "constants declaration"
 	
@@ -171,6 +183,12 @@ varDecl = do { reserved "var";
 	semi; 
 	return (VarDecl (concat (map (\x -> zip3 (fst3 x) (repeat (snd3 x)) (repeat (trd3 x))) vars))) 
 	} <?> "variables declaration"
+	
+decl :: Parser Decl
+decl = typeDecl <|> constantDecl <|> functionDecl <|> axiomDecl <|> varDecl
+	
+program :: Parser Program
+program = do { whiteSpace; p <- many decl; eof; return p }
 
 {- Misc -}
 

@@ -38,7 +38,7 @@ binOpTokens = [(Plus,    "+"),
 			   (Geq,     ">=")]
 
 otherOps :: [String]
-otherOps = [":", ";", "::", ":="] 
+otherOps = [":", ";", "::", ":=", "="] 
 
 identifierChars = "_.$#\'`~^\\?"			   
 commentStart = "/*"

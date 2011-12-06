@@ -5,6 +5,12 @@ import AST
 import Parser
 import Interpreter
 
+main = do { result <- parseFromFile program "test.bpl"; 
+	case (result) of
+		Left err -> print err
+		Right p -> print p
+	}
+
 test :: Parser Expression
 test = do { spaces; res <- e0; eof; return res }
 

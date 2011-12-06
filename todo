@@ -1,7 +1,6 @@
 - Parser
-	- function declarations
-	- type declarations
 	- statements
+	- procedure declarations
 	- implementation declarations
 	- bit vectors
 
