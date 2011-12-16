@@ -82,7 +82,6 @@ type_ = typeAtom <|> mapType <|>
 	do { id <- identifier; args <- option [] typeCtorArgs; return (Instance id args) }
 	<?> "type"
 
-
 {- Expressions -}
 
 qop :: Parser QOp
@@ -127,6 +126,95 @@ table = [[unOp Neg, unOp Not],
 		binOp node assoc = Infix (do { reservedOp (token node binOpTokens); return (\e1 e2 -> (BinaryExpression node e1 e2)) }) assoc
 		unOp node = Prefix (do { reservedOp (token node unOpTokens); return (\e -> UnaryExpression node e)})
 		
+wildcardExpression :: Parser WildcardExpression
+wildcardExpression = (do { e <- e0; return (Expr e) }) <|> (do { reservedOp "*"; return Wildcard })
+		
+{- Statements -}
+
+lhs :: Parser (Id, [[Expression]])
+lhs = do { id <- identifier; selects <- many (brackets (commaSep1 e0)); return (id, selects) }
+
+assign :: Parser Statement
+assign = do { lefts <- commaSep1 lhs; 
+	reservedOp ":="; 
+	rights <- commaSep1 e0; 
+	semi; 
+	return (Assign lefts rights) 
+	}
+	
+call :: Parser Statement	
+call = do { reserved "call"; 
+	lefts <- option [] (try (do { ids <- commaSep1 identifier; reservedOp ":="; return ids }));
+	id <- identifier;
+	args <- parens (commaSep e0);
+	semi;
+	return (Call lefts id args)
+	}
+	
+callForall :: Parser Statement	
+callForall = do { reserved "call";
+	reserved "forall";
+	id <- identifier;
+	args <- parens (commaSep wildcardExpression);
+	semi;
+	return (CallForall id args)
+	}
+	
+ifStatement :: Parser Statement
+ifStatement = do { reserved "if";
+	cond <- parens wildcardExpression;
+	thenBlock <- block;
+	elseBlock <- optionMaybe (do { reserved "else"; 
+		block <|> do { i <- ifStatement; return (singletonBlock i) }
+		});
+	return (If cond thenBlock elseBlock)
+	}
+	
+loopInvariant :: Parser (Bool, Expression)
+loopInvariant = do { free <- hasKeyword "free";
+	reserved "invariant";
+	e <- e0;
+	semi;
+	return (free, e)
+	}
+	
+whileStatement :: Parser Statement
+whileStatement = do { reserved "while";
+	cond <- parens wildcardExpression;
+	invs <- many loopInvariant;
+	body <- block;
+	return (While cond invs body)
+	}	
+
+statement :: Parser Statement
+statement = do { reserved "assert"; e <- e0; semi; return (Assert e) } <|>
+	do { reserved "assume"; e <- e0; semi; return (Assume e) } <|>
+	do { reserved "havoc"; ids <- commaSep1 identifier; semi; return (Havoc ids) } <|>
+	assign <|>
+	try call <|>
+	callForall <|>
+	ifStatement <|>
+	whileStatement <|>
+	do { reserved "break"; id <- optionMaybe identifier; semi; return (Break id) } <|>
+	do { reserved "return"; semi; return Return } <|>
+	do { reserved "goto"; ids <- commaSep1 identifier; semi; return (Goto ids) }
+	<?> "statement"
+	
+label :: Parser Id
+label = do { id <- identifier; reservedOp ":"; return id } <?> "label"
+	
+lStatement :: Parser LStatement
+lStatement = do { lbs <- many (try Parser.label); s <- statement; return (lbs, s) }
+
+statementList :: Parser Block
+statementList = do { lstatements <- many (try lStatement); 
+	lempty <- many (try Parser.label); 
+	return (if null lempty then lstatements else lstatements ++ [(lempty, Skip)]) 
+	}
+
+block :: Parser Block
+block = braces statementList
+		
 {- Declarations -}
 
 typeDecl :: Parser Decl
@@ -135,10 +223,10 @@ typeDecl = do { reserved "type";
 	finite <- hasKeyword "finite";
 	name <- identifier;
 	args <- many identifier;
-	value <- (option Nothing ( do { reservedOp "="; t <- type_; return (Just t) }));
+	value <- (optionMaybe (do { reservedOp "="; type_ }));
 	semi;
 	return (TypeDecl finite name args value)
-	} <?> "type declaration"
+	}
 
 parentEdge :: Parser ParentEdge
 parentEdge = do { unique <- hasKeyword "unique"; id <- identifier; return (unique, id) }
@@ -148,14 +236,14 @@ constantDecl = do { reserved "const";
 	many attribute;
 	unique <- hasKeyword "unique";
 	ids <- idsType;
-	orderSpec <- (option Nothing (do {symbol "<:"; edges <- commaSep parentEdge; return (Just edges) }));
+	orderSpec <- optionMaybe (do { symbol "<:"; commaSep parentEdge });
 	complete <- hasKeyword "complete";
 	semi;
 	return (ConstantDecl unique (fst ids) (snd ids) orderSpec complete)
-	} <?> "constants declaration"
+	}
 	
 fArg :: Parser FArg
-fArg = do { name <- option Nothing (try (do { id <- identifier; reservedOp ":"; return (Just id)})); t <- type_; return (name, t)}
+fArg = do { name <- optionMaybe (try (do { id <- identifier; reservedOp ":"; return id })); t <- type_; return (name, t)}
 	
 functionDecl :: Parser Decl
 functionDecl = do { reserved "function";
@@ -166,7 +254,7 @@ functionDecl = do { reserved "function";
 	ret <- parens fArg;
 	body <- do { semi; return Nothing } <|> do { e <- (braces e0); return (Just e) };
 	return (FunctionDecl name args ret body)
-	} <?> "function declarations"
+	}
 
 axiomDecl :: Parser Decl
 axiomDecl = do { reserved "axiom"; 
@@ -174,7 +262,7 @@ axiomDecl = do { reserved "axiom";
 	e <- e0; 
 	semi; 
 	return (AxiomDecl e) 
-	} <?> "axiom declaration"
+	}
 
 varDecl :: Parser Decl
 varDecl = do { reserved "var"; 
@@ -182,10 +270,10 @@ varDecl = do { reserved "var";
 	vars <- commaSep1 idsTypeWhere; 
 	semi; 
 	return (VarDecl (concat (map (\x -> zip3 (fst3 x) (repeat (snd3 x)) (repeat (trd3 x))) vars))) 
-	} <?> "variables declaration"
+	}
 	
 decl :: Parser Decl
-decl = typeDecl <|> constantDecl <|> functionDecl <|> axiomDecl <|> varDecl
+decl = typeDecl <|> constantDecl <|> functionDecl <|> axiomDecl <|> varDecl <?> "declaration"
 	
 program :: Parser Program
 program = do { whiteSpace; p <- many decl; eof; return p }
@@ -216,54 +304,3 @@ trigger = skip (braces (commaSep1 e0)) <?> "trigger"
 
 attribute :: Parser ()
 attribute = skip (braces (do {reservedOp ":"; identifier; commaSep1 ((skip e0) <|> (skip stringLiteral))})) <?> "attribute"
-		
-{-
-qop :: Parser String
-qop = str (reserved "forall" <|> reserved "exists")
-
-qsep :: Parser String
-qsep = str (reservedOp "::")
-
-typeArgs :: Parser String
-typeArgs = str (angles (commaSep1 identifier))
-
-bitVectorType :: Parser String
-bitVectorType = do { reserved "bv"; n <- natural; return (show n)}
-
-typeAtom :: Parser String
-typeAtom = str (reserved "int") <|> str (reserved "bool") <|> bitVectorType <|> parens type_
-
-mapType :: Parser String
-mapType = do {optional typeArgs; brackets (commaSep type_); type_; return "map type"}
-
-typeCtorArgs :: Parser String
-typeCtorArgs = do {type_; optional typeCtorArgs; return "typeCtorArgs"} <|>
-	do {identifier; optional typeCtorArgs; return "typeCtorArgs"} <|>
-	mapType
-
-type_ :: Parser String
-type_ = typeAtom <|> mapType <|> do {identifier; optional typeCtorArgs; return "type identifier"}
-
-idsType :: Parser String
-idsType = do { commaSep1 identifier; symbol ":"; type_}
-
-trigAttr :: Parser String
-trigAttr = trigger <|> attribute
-
-trigger :: Parser String
-trigger = str (braces (commaSep1 e0))
-
-attribute :: Parser String
-attribute = braces (do {reservedOp ":"; identifier; commaSep1 attrArg; return "attribute"})
-
-attrArg :: Parser String
-attrArg = e0 <|> stringLiteral
-
-bitVector :: Parser String
-bitVector = do {
-		i <- many1 digit;
-		string "bv";
-		natural;
-		return i
-	}
--}			

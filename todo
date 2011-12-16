@@ -1,5 +1,4 @@
 - Parser
-	- statements
 	- procedure declarations
 	- implementation declarations
 	- bit vectors

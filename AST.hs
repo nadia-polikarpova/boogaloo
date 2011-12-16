@@ -32,7 +32,30 @@ data Expression = FF | TT | Numeral Integer |
 	Quantified QOp [Id] [(Id, Type)] Expression
 	deriving Show
 	
+data WildcardExpression = Wildcard | Expr Expression
+	deriving Show
+	
 {- Statements -}
+
+data Statement = Assert Expression |
+	Assume Expression |
+	Havoc [Id] |
+	Assign [(Id , [[Expression]])] [Expression] |
+	Call [Id] Id [Expression] |
+	CallForall Id [WildcardExpression] |
+	If WildcardExpression Block (Maybe Block) |
+	While WildcardExpression [(Bool, Expression)] Block |
+	Break (Maybe Id) |
+	Return |
+	Goto [Id] |
+	Skip -- only used at the end of a block
+	deriving Show
+	
+type LStatement = ([Id], Statement)
+
+type Block = [LStatement] 
+
+singletonBlock s = [([], s)]
 
 {- Declarations -}
 
