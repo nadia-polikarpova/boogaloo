@@ -102,7 +102,7 @@ e9 = do { reserved "false"; return FF } <|>
 		reservedOp "::"; 
 		many trigAttr; 
 		e <- e0; 
-		return (Quantified op args (concat (map (\x -> zip (fst x) (repeat (snd x))) vars)) e )})
+		return (Quantified op args (ungroup vars) e )})
 
 e8 :: Parser Expression
 e8 = do { e <- e9; mapOps <- many (brackets (mapOp)); return (foldr (.) id (reverse mapOps) e) }
@@ -264,25 +264,61 @@ axiomDecl = do { reserved "axiom";
 	return (AxiomDecl e) 
 	}
 
-varDecl :: Parser Decl
-varDecl = do { reserved "var"; 
+varList :: Parser [IdTypeWhere]
+varList = do { reserved "var"; 
 	many attribute; 
 	vars <- commaSep1 idsTypeWhere; 
 	semi; 
-	return (VarDecl (concat (map (\x -> zip3 (fst3 x) (repeat (snd3 x)) (repeat (trd3 x))) vars))) 
+	return (ungroupWhere vars) 
+	}	
+	
+varDecl :: Parser Decl
+varDecl = do { vars <- varList; return (VarDecl vars) }
+		
+body :: Parser Body
+body = braces (do { locals <- many varList; 
+	statements <- statementList; 
+	return (concat locals, statements)
+	})
+	
+procDecl :: Parser Decl
+procDecl = do { reserved "procedure";
+	many attribute;
+	name <- identifier;
+	tArgs <- typeArgs;
+	args <- parens (commaSep idsTypeWhere);
+	rets <- option [] (do { reserved "returns"; parens (commaSep idsTypeWhere) });
+	do { semi; specs <- many spec; return (ProcedureDecl name tArgs (ungroupWhere args) (ungroupWhere rets) specs Nothing) } <|>
+	do { specs <- many spec; b <- body; return (ProcedureDecl name tArgs (ungroupWhere args) (ungroupWhere rets) specs (Just b)) }
+	}
+
+implDecl :: Parser Decl
+implDecl = do { reserved "implementation";
+	many attribute;
+	name <- identifier;
+	tArgs <- typeArgs;
+	args <- parens (commaSep idsType);
+	rets <- option [] (do { reserved "returns"; parens (commaSep idsType) });
+	bs <- many body;
+	return (ImplementationDecl name tArgs (ungroup args) (ungroup rets) bs)
 	}
 	
 decl :: Parser Decl
-decl = typeDecl <|> constantDecl <|> functionDecl <|> axiomDecl <|> varDecl <?> "declaration"
+decl = typeDecl <|> constantDecl <|> functionDecl <|> axiomDecl <|> varDecl <|> procDecl <|> implDecl <?> "declaration"
 	
 program :: Parser Program
 program = do { whiteSpace; p <- many decl; eof; return p }
 
-{- Misc -}
+{- Contracts -}
 
-fst3 (a, b, c) = a
-snd3 (a, b, c) = b
-trd3 (a, b, c) = c 
+spec :: Parser Spec
+spec = do { free <- hasKeyword "free";
+	do { reserved "requires"; e <- e0; semi; return (Requires e free) } <|> 
+	do { reserved "modifies"; ids <- commaSep identifier; semi; return (Modifies ids free) } <|> 
+	do { reserved "ensures"; e <- e0; semi; return (Ensures e free) }
+	}
+
+{- Misc -}
 
 skip :: Parser a -> Parser ()
 skip p = do { p; return () }
@@ -293,8 +329,18 @@ hasKeyword s = option False (do { reserved s; return True })
 idsType :: Parser ([Id], Type)
 idsType = do { ids <- commaSep1 identifier; reservedOp ":"; t <- type_; return (ids, t) }
 
+ungroup :: [([Id], Type)] -> [(IdType)]
+ungroup = concat . (map (\x -> zip (fst x) (repeat (snd x))))
+
 idsTypeWhere :: Parser ([Id], Type, Expression)
 idsTypeWhere = do { ids <- idsType; e <- option TT ( do {reserved "where"; e0 }); return ((fst ids), (snd ids), e) }
+
+ungroupWhere :: [([Id], Type, Expression)] -> [(IdTypeWhere)]
+ungroupWhere = concat . (map (\x -> zip3 (fst3 x) (repeat (snd3 x)) (repeat (trd3 x))))
+	where
+		fst3 (a, b, c) = a
+		snd3 (a, b, c) = b
+		trd3 (a, b, c) = c
 
 trigAttr :: Parser ()
 trigAttr = (try trigger) <|> attribute <?> "attribute or trigger"

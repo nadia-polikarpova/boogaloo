@@ -29,7 +29,7 @@ data Expression = FF | TT | Numeral Integer |
 	Old Expression |
 	UnaryExpression UnOp Expression |
 	BinaryExpression BinOp Expression Expression |
-	Quantified QOp [Id] [(Id, Type)] Expression
+	Quantified QOp [Id] [IdType] Expression
 	deriving Show
 	
 data WildcardExpression = Wildcard | Expr Expression
@@ -57,19 +57,29 @@ type Block = [LStatement]
 
 singletonBlock s = [([], s)]
 
+{- Contracts -}
+
+data Spec = Requires Expression Bool | 
+	Modifies [Id] Bool | 
+	Ensures Expression Bool
+	deriving Show
+
 {- Declarations -}
 
 data Decl = TypeDecl Bool Id [Id] (Maybe Type) |
 	ConstantDecl Bool [Id] Type ParentInfo Bool |
 	FunctionDecl Id [FArg] FArg (Maybe Expression) |
 	AxiomDecl Expression |
-	VarDecl [(Id, Type, Expression)]
-	-- ProcedureDecl |
-	-- ImplementationDecl
+	VarDecl [IdTypeWhere] |
+	ProcedureDecl Id [Id] [IdTypeWhere] [IdTypeWhere] [Spec] (Maybe Body) |
+	ImplementationDecl Id [Id] [IdType] [IdType] [Body]
 	deriving Show
 
 {- Misc -}
 
+type IdType = (Id, Type)
+type IdTypeWhere = (Id, Type, Expression)
+type FArg = (Maybe Id, Type)
+type Body = ([IdTypeWhere], Block)
 type ParentEdge = (Bool, Id)
 type ParentInfo = Maybe [ParentEdge]
-type FArg = (Maybe Id, Type)
