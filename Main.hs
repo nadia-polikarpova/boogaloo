@@ -3,24 +3,28 @@ module Main where
 import Text.ParserCombinators.Parsec
 import AST
 import Parser
-import Interpreter
+import Control.Monad.Identity
+import Control.Monad.Error
+import TypeChecker
 
+-- main = do { result <- parseFromFile program "test.bpl"; 
+	-- case (result) of
+		-- Left err -> print err
+		-- Right p -> print p
+	-- }
+	
+-- main = case (parse program "" "var x, y: int; const z: Wicket;") of
+		-- Left err -> print ("Parsing error: " ++ show err)
+		-- Right ast -> 
+			-- case (runIdentity (runErrorT (checkProgram ast))) of
+			-- Left err -> print ("Type error: " ++ err)
+			-- Right c -> print c
+			
 main = do { result <- parseFromFile program "test.bpl"; 
 	case (result) of
 		Left err -> print err
-		Right p -> print p
-	}
-
-test :: Parser Expression
-test = do { spaces; res <- e0; eof; return res }
-
-myEnv :: Environment
-myEnv = [("x", IntValue 1), ("y", IntValue 5), ("b", BoolValue False)]
-
-e :: Expression 
-e = BinaryExpression Plus (UnaryExpression Neg (Application "x" [])) (Numeral 6)
-
-eval :: String -> Error Value
-eval s = case (parse test "" s) of 
-	Left err -> Error (show err)
-	Right e -> expression e myEnv
+		Right ast -> 
+			case (runIdentity (runErrorT (checkProgram ast))) of
+			Left err -> print ("Type error: " ++ err)
+			Right c -> print c		
+}			

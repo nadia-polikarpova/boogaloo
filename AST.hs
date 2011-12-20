@@ -83,3 +83,6 @@ type FArg = (Maybe Id, Type)
 type Body = ([IdTypeWhere], Block)
 type ParentEdge = (Bool, Id)
 type ParentInfo = Maybe [ParentEdge]
+
+noWhere :: IdTypeWhere -> IdType
+noWhere (id, t, _) = (id, t)

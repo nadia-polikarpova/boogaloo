@@ -2,7 +2,9 @@
 	- bit vectors
 
 - Type Checker
+
 - Interpreter
+- Symbolic execution?
 
 Notes:
 The syntax of WhereClause is missing in the boogie manual
