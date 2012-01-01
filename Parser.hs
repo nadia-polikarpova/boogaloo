@@ -249,11 +249,12 @@ functionDecl :: Parser Decl
 functionDecl = do { reserved "function";
 	many attribute;
 	name <- identifier;
+	tArgs <- typeArgs;
 	args <- parens (commaSep fArg);
 	reserved "returns";
 	ret <- parens fArg;
 	body <- do { semi; return Nothing } <|> do { e <- (braces e0); return (Just e) };
-	return (FunctionDecl name args ret body)
+	return (FunctionDecl name tArgs args ret body)
 	}
 
 axiomDecl :: Parser Decl
