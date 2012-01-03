@@ -8,6 +8,9 @@ import Data.Maybe
 class Pretty a where
 	pretty :: a -> String
 	
+separated :: String -> [String] -> String
+separated delim xs = concat (intersperse delim xs)
+	
 {- Tokens -}
 
 instance Pretty UnOp where
@@ -20,15 +23,15 @@ instance Pretty BinOp where
 
 typeArgs :: [Id] -> String
 typeArgs [] = ""
-typeArgs args = "<" ++ concat (intersperse ", " args)  ++ ">"
+typeArgs args = "<" ++ separated ", " args  ++ ">"
 	
 instance Pretty Type where
 	pretty BoolType = "bool"
 	pretty IntType = "int"
 	pretty (MapType fv domains range) = typeArgs fv ++ " " ++
-		"[" ++ concat (intersperse ", " (map pretty domains)) ++ "]" ++ " " ++
+		"[" ++ separated ", " (map pretty domains) ++ "]" ++ " " ++
 		pretty range
-	pretty (Instance id args) = id ++ " " ++ concat (intersperse " " (map parens args))
+	pretty (Instance id args) = id ++ " " ++ separated " " (map parens args)
 		where 
 			parens BoolType = pretty BoolType
 			parens IntType = pretty IntType

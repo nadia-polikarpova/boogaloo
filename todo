@@ -2,6 +2,17 @@
 	- bit vectors
 
 - Type Checker
+	- Function types in context, update context when checking function
+	- Expressions: application, map selection, map update, quantified
+	- Separate variables from constants
+	- Check type declarations
+	- Resolve type synonims
+	- Check correctness of types (btw not only in id declarations, but also in nameless function args...)
+	- Axiom declarations
+	- Add procedures to context
+	- Statements
+	- Procedure and implementation declarations
+	- Old expressions only allowed in post and implementation
 
 - Interpreter
 - Symbolic execution?
@@ -9,3 +20,5 @@
 Notes:
 The syntax of WhereClause is missing in the boogie manual
 
+Changed syntax:
+- Multiple argument declarations with a single type

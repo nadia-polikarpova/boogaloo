@@ -171,20 +171,23 @@ checkFunctionDecl :: Context -> Id -> [Id] -> [FArg] -> FArg -> (Maybe Expressio
 checkFunctionDecl c name fv args ret body = 
 	do { 
 		scoped <- foldM checkIdType (setFV emptyContext fv) (concat (map fArgToList (args ++ [ret])));
-		case body of
-			Nothing -> return c -- ToDo: update context
-			Just e -> do { 
-				t <- checkExpression (c `setFV` fv `setVariables` (removeRet (variables scoped))) e; 
-				if t == snd ret 
-					then return c 
-					else throwError ("Function body type " ++ pretty t ++ " different from return type " ++ pretty (snd ret))
-				}
+		if missingFV /= [] then throwError ("Type variable(s) must occur in function arguments: " ++ separated ", " missingFV) else
+			case body of
+				Nothing -> return c -- ToDo: update context
+				Just e -> do { 
+					t <- checkExpression (c `setFV` fv `setVariables` (removeRet (variables scoped))) e; 
+					if t == snd ret 
+						then return c 
+						else throwError ("Function body type " ++ pretty t ++ " different from return type " ++ pretty (snd ret))
+					}
 		}
 	where 
 		fArgToList (name, t) = case name of
 			Just id -> [(id, t)]
 			Nothing -> []
 		removeRet = M.delete (fromMaybe "" (fst ret))
+		missingFV = filter (not . freeInArgs) fv
+		freeInArgs v = any (isFree v) (map snd args)
 
 -- ToDo: check that type constructors are valid and resolve type synonims, check that type variables are fresh, add constants to constants
 checkIdType :: Context -> IdType -> Checked Context
