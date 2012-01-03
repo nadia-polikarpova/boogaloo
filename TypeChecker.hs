@@ -3,66 +3,100 @@ module TypeChecker where
 import AST
 import Tokens
 import Data.List
+import Data.Maybe
 import qualified Data.Map as M
 import Control.Monad.Identity
 import Control.Monad.Error
+import Control.Applicative
 
 -- | Result of type checking: either 'a' or an error with strings message
 type Checked a = ErrorT String Identity a
 
 {- Context -}
 
--- | Typechecking context: variable type binding, type variables
+-- | Typechecking context: variable-type binding, free type variables
 type Context = (M.Map Id Type, [Id])
 
 -- | Variable type binding of context c
 variables c = fst c
 
 -- | Type arguments of context c
-typeArgs c = snd c
+freeTypeVars c = snd c
 
--- | Add a new variable type binding to c
+-- | Add a new variable-type binding to c
 addVariable (vars, tArgs) i t = (M.insert i t vars, tArgs)
+
+-- | deleteAll keys m : map m with keys removed from its domain
+deleteAll :: Ord k => [k] -> M.Map k a -> M.Map k a
+deleteAll keys m = foldr M.delete m keys
 
 {- Types -}
 
--- | typeInstance bindings t returns type t with all free type variables instantiated according to bindings.
--- | All variables in the domain of bindings are considered free. 
-typeInstance :: M.Map Id Type -> Type -> Type
-typeInstance _ BoolType = BoolType
-typeInstance _ IntType = IntType
-typeInstance bindings (Instance id []) = case M.lookup id bindings of
+-- | substitution binding t : type t with all free type variables instantiated according to binding.
+-- All variables in the domain of bindings are considered free if not explicitly bound. 
+substitution :: M.Map Id Type -> Type -> Type
+substitution _ BoolType = BoolType
+substitution _ IntType = IntType
+substitution binding (Instance id []) = case M.lookup id binding of
 	Just t -> t
 	Nothing -> Instance id []
-typeInstance bindings (Instance id args) = Instance id (map (typeInstance bindings) args)
-typeInstance bindings (MapType args domains range) = MapType args (map (typeInstance removedBound) domains) (typeInstance removedBound range)
-	where removedBound = foldr M.delete bindings args
-
--- | twoContextSame args1 ts1 args2 ts2 returns whether all ts1 are the same types as respective ts2 with free variable sets args1 and args2 respectively;	
--- | namely if they are equal for some permutation of type arguments, instantiated with the same actuals.
-twoContextSame :: [Id] -> [Type] -> [Id] -> [Type] -> Bool
-twoContextSame args1 ts1 args2 ts2 = length args1 == length args2 && or (map sameWithArgsOrder (permutations args2))
-	where 	
-		sameWithArgsOrder argsOrder = and (zipWith (==) ts1 (map (replacedArgs argsOrder) ts2))
-		replacedArgs argsOrder = typeInstance (M.fromList (zip argsOrder (map idType args1)))
+substitution binding (Instance id args) = Instance id (map (substitution binding) args)
+substitution binding (MapType bv domains range) = MapType bv (map (substitution removeBound) domains) (substitution removeBound range)
+	where removeBound = deleteAll bv binding
+	
+-- | isFree x t : does x occur as a free type variable in t?
+-- x must not be a name of a type constructor.	
+isFree :: Id -> Type -> Bool
+isFree x (Instance y []) = x == y
+isFree x (Instance y args) = any (isFree x) args
+isFree x (MapType bv domains range) = x `notElem` bv && any (isFree x) (range:domains)
+isFree x _ = False
+	
+-- | unifier fv xs ys : most general unifier of xs and ys with free variables fv 	
+unifier :: [Id] -> [Type] -> [Type] -> Maybe (M.Map Id Type)
+unifier _ [] [] = Just M.empty
+unifier fv (IntType:xs) (IntType:ys) = unifier fv xs ys
+unifier fv (BoolType:xs) (BoolType:ys) = unifier fv xs ys
+unifier fv ((Instance id1 args1):xs) ((Instance id2 args2):ys) | id1 == id2 = unifier fv (args1 ++ xs) (args2 ++ ys)
+unifier fv ((Instance id []):xs) (y:ys) | id `elem` fv = 
+	if isFree id y then Nothing 
+	else M.insert id y <$> unifier fv (update xs) (update ys)
+		where update = map (substitution (M.singleton id y))
+unifier fv (x:xs) ((Instance id []):ys) | id `elem` fv = 
+	if isFree id x then Nothing 
+	else M.insert id x <$> unifier fv (update xs) (update ys)
+		where update = map (substitution (M.singleton id x))
+unifier fv ((MapType bv1 domains1 range1):xs) ((MapType bv2 domains2 range2):ys) =
+	if length bv1 /= length bv2 || length domains1 /= length domains2 then Nothing
+	else case innerUnifier of 
+		Nothing -> Nothing
+		Just u -> if all isBV (M.elems (bound u)) && not (any hasBV (M.elems (free u)))
+			then M.union (free u) <$> unifier fv (update u xs) (update u ys) 
+			else Nothing
+		where
+			-- unifier for the components of map types m1 and m2, where bound variables of m1 are considered free, and those of m2 are considered constants and given fresh names 
+			innerUnifier = unifier (fv ++ bv1) (range1:domains1) (map replacedBV (range2:domains2))
+			-- substitution of bound variables of m2 with fresh names
+			replacedBV = substitution (M.fromList (zip bv2 (map idType freshBVNames)))
+			-- fresh names for bound variables of m2: with non-identifier chanarcter prepended 
+			freshBVNames = map (nonIdChar:) bv2
+			-- does a type correspond to one of the fresh bound variables of m2?
+			isBV (Instance id []) = id `elem` freshBVNames
+			isBV _ = False
+			-- does type t contain any fresh bound variables of m2?
+			hasBV t = any (flip isFree t) freshBVNames
+			-- binding restricted to free variables
+			free = deleteAll bv1
+			-- binding restricted to bound variables
+			bound = deleteAll (fv \\ bv1)
+			-- type list updated with all free variables updated according to binding u
+			update u = map (substitution (free u))
+unifier _ _ _ = Nothing
 
 -- | Equality of types
 instance Eq Type where
-	BoolType == BoolType = True
-	IntType == IntType = True
-	Instance id1 args1 == Instance id2 args2 = id1 == id2 && and (zipWith (==) args1 args2)
-	MapType args1 domains1 range1 == MapType args2 domains2 range2 = twoContextSame args1 (range1 : domains1) args2 (range2 : domains2)
-	_ == _ = False
-
-maybeSame :: Context -> Type -> Type -> Bool
-maybeSame _ BoolType BoolType = True
-maybeSame _ IntType IntType = True
-maybeSame c (Instance id1 args1) (Instance id2 args2) = id1 == id2 && and (zipWith (maybeSame c) args1 args2)
-maybeSame c (Instance id []) _ | elem id (typeArgs c) = True
-maybeSame c _ (Instance id []) | elem id (typeArgs c) = True
--- ToDo: equality of map types? maybeSame for map types? do some standartization of type args names?
-
-
+	t1 == t2 = isJust (unifier [] [t1] [t2])
+	
 {- Expressions -}
 
 {- requires all types in the context are valid and type synonims are resolved -}
@@ -97,7 +131,7 @@ checkBinaryExpression c op e1 e2
 	| elem op [Plus, Minus, Times, Div, Mod] = checkTypes (\t1 t2 -> t1 == IntType && t2 == IntType) IntType
 	| elem op [And, Or, Implies, Equiv] = checkTypes (\t1 t2 -> t1 == BoolType && t2 == BoolType) BoolType
 	| elem op [Ls, Leq, Gt, Geq] = checkTypes (\t1 t2 -> t1 == IntType && t2 == IntType) BoolType
-	| elem op [Eq, Neq] = checkTypes (maybeSame c) BoolType
+	| elem op [Eq, Neq] = checkTypes (\t1 t2 -> isJust (unifier (freeTypeVars c) [t1] [t2])) BoolType
 	| op == Lc = checkTypes (==) BoolType
 	where 
 		checkTypes pred ret = do { t1 <- checkExpression c e1;

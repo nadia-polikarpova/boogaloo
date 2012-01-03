@@ -50,4 +50,6 @@ otherOps = [":", ";", "::", ":=", "="]
 identifierChars = "_.$#\'`~^\\?"			   
 commentStart = "/*"
 commentEnd = "*/"
-commentLine = "//"			   
+commentLine = "//"
+
+nonIdChar = '*'			   
