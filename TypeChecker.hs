@@ -2,6 +2,7 @@ module TypeChecker where
 
 import AST
 import Tokens
+import Printer
 import Data.List
 import Data.Maybe
 import qualified Data.Map as M
@@ -14,17 +15,29 @@ type Checked a = ErrorT String Identity a
 
 {- Context -}
 
--- | Typechecking context: variable-type binding, free type variables
-type Context = (M.Map Id Type, [Id])
+-- | Typechecking context: variable-type binding, constant-type binding, free type variables
+type Context = (M.Map Id Type, M.Map Id Type, [Id])
 
--- | Variable type binding of context c
-variables c = fst c
+-- | Variable-type binding of a context
+variables (v, c, fv) = v
 
--- | Type arguments of context c
-freeTypeVars c = snd c
+-- | Variable-type binding of a context
+constants (v, c, fv) = c
 
--- | Add a new variable-type binding to c
-addVariable (vars, tArgs) i t = (M.insert i t vars, tArgs)
+-- | Free type variables of a context
+freeTypeVars (v, c, fv) = fv
+
+-- | Empty context
+emptyContext = (M.empty, M.empty, [])
+
+-- | Change variable-type binding of a context to v
+setVariables (_, c, fv) v = (v, c, fv)
+
+-- | Change constant-type binding of a context to c
+setConstants (v, _, fv) c = (v, c, fv)
+
+-- | Change free type variables of a context to fv
+setFV (v, c, _) fv = (v, c, fv)
 
 -- | deleteAll keys m : map m with keys removed from its domain
 deleteAll :: Ord k => [k] -> M.Map k a -> M.Map k a
@@ -107,7 +120,7 @@ checkExpression c e = case e of
 	Numeral n -> return IntType
 	Var id -> case M.lookup id (variables c) of
 		Just t -> return t
-		Nothing -> throwError ("Undeclared indentifier " ++ id) -- ToDo: if inside a function, cannot use global vars
+		Nothing -> throwError ("Undeclared identifier " ++ id)
 	Application id args -> throwError ("Todo")
 	MapSelection id args -> throwError ("Todo")
 	MapUpdate is args val -> throwError ("Todo")
@@ -124,7 +137,7 @@ checkUnaryExpression c op e
 		checkType t ret = do { t' <- checkExpression c e;
 			if t' == t then return ret else throwError (errorMsg t' op)
 			}
-		errorMsg t op = "Invalid argument type " ++ show t ++ " to unary operator" ++ unOpName op
+		errorMsg t op = "Invalid argument type " ++ pretty t ++ " to unary operator" ++ pretty op
 	
 checkBinaryExpression :: Context -> BinOp -> Expression -> Expression -> Checked Type
 checkBinaryExpression c op e1 e2
@@ -138,31 +151,44 @@ checkBinaryExpression c op e1 e2
 			t2 <- checkExpression c e2;
 			if pred t1 t2 then return ret else throwError (errorMsg t1 t2 op)
 			}	
-		errorMsg t1 t2 op = "Invalid argument types " ++ show t1 ++ " and " ++ show t2 ++ " to binary operator" ++ binOpName op
+		errorMsg t1 t2 op = "Invalid argument types " ++ pretty t1 ++ " and " ++ pretty t2 ++ " to binary operator" ++ pretty op
 
 {- Statements -}
 
 {- Declarations -}
 
 checkProgram :: Program -> Checked Context
-checkProgram p = foldM checkDecl (M.empty, []) p
+checkProgram p = foldM checkDecl emptyContext p
 
 checkDecl :: Context -> Decl -> Checked Context
 checkDecl c d = case d of
 	VarDecl vars -> foldM checkIdType c (map noWhere vars)
 	ConstantDecl _ ids t _ _ -> foldM checkIdType c (zip ids (repeat t))
-	FunctionDecl _ tArgs args ret body -> 
-		do { scoped <- foldM checkIdType (M.empty, tArgs) (concat (map fArgToList (args ++ [ret])));
-		-- ToDo: Check body
-		return c }
-		where fArgToList (name, t) = case name of
+	FunctionDecl name fv args ret body -> checkFunctionDecl c name fv args ret body
+	otherwise -> return c
+	
+checkFunctionDecl :: Context -> Id -> [Id] -> [FArg] -> FArg -> (Maybe Expression) -> Checked Context
+checkFunctionDecl c name fv args ret body = 
+	do { 
+		scoped <- foldM checkIdType (setFV emptyContext fv) (concat (map fArgToList (args ++ [ret])));
+		case body of
+			Nothing -> return c -- ToDo: update context
+			Just e -> do { 
+				t <- checkExpression (c `setFV` fv `setVariables` (removeRet (variables scoped))) e; 
+				if t == snd ret 
+					then return c 
+					else throwError ("Function body type " ++ pretty t ++ " different from return type " ++ pretty (snd ret))
+				}
+		}
+	where 
+		fArgToList (name, t) = case name of
 			Just id -> [(id, t)]
 			Nothing -> []
-	otherwise -> return c
+		removeRet = M.delete (fromMaybe "" (fst ret))
 
--- ToDo: check that type constructors are valid and resolve type synonims, check that type variables are fresh
+-- ToDo: check that type constructors are valid and resolve type synonims, check that type variables are fresh, add constants to constants
 checkIdType :: Context -> IdType -> Checked Context
 checkIdType c (i, t) 	
 	| M.member i (variables c) = throwError ("Multiple declarations of variable or constant " ++ i) 
-	| otherwise = return (addVariable c i t)
+	| otherwise = return (setVariables c (M.insert i t (variables c)))
 	

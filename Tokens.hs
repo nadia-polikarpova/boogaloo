@@ -1,7 +1,6 @@
 module Tokens where
 
 import AST
-import Data.Maybe
 
 keywords :: [String]
 keywords = ["assert", "assume", "axiom", "bool", "break", "call", "complete", -- ToDO: bit vector keywords omitted
@@ -18,10 +17,7 @@ token node table = case lookup node table of
 unOpTokens :: [(UnOp, String)]
 unOpTokens = [(Neg, "-"),
               (Not, "!")]
-			  
-unOpName :: UnOp -> String
-unOpName op = fromJust (lookup op unOpTokens)			  
-			  			  
+			  			  			  
 binOpTokens :: [(BinOp, String)]
 binOpTokens = [(Plus,    "+"),
                (Minus,   "-"),
@@ -41,9 +37,6 @@ binOpTokens = [(Plus,    "+"),
 			   (Gt,      ">"),
 			   (Geq,     ">=")]
 			   
-binOpName :: BinOp -> String
-binOpName op = fromJust (lookup op binOpTokens)
-
 otherOps :: [String]
 otherOps = [":", ";", "::", ":=", "="] 
 

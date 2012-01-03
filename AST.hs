@@ -1,5 +1,5 @@
 {- AST for Boogie -}
-module AST where 
+module AST where
 
 {- Basic -}
 type Id = String
@@ -11,7 +11,7 @@ data Type = BoolType | IntType | {-BitVectorType Int |-}
 	MapType [Id] [Type] Type |
 	Instance Id [Type]
 	deriving Show
-	
+
 -- | Type denoted by id	without arguments
 idType id = Instance id []
 
