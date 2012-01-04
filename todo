@@ -2,7 +2,7 @@
 	- bit vectors
 
 - Type Checker
-	- Expressions: map update, quantified
+	- Expressions: quantified
 	- Separate variables from constants
 	- Check type declarations
 	- Resolve type synonims

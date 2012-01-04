@@ -137,7 +137,7 @@ checkExpression c e = case e of
 		Just t -> return t
 	Application id args -> checkApplication c id args
 	MapSelection m args -> checkMapSelection c m args
-	MapUpdate m args val -> throwError ("Todo")
+	MapUpdate m args val -> checkMapUpdate c m args val
 	Old e1 -> checkExpression c e1 -- ToDo: only allowed in postconditions and implementation
 	UnaryExpression op e1 -> checkUnaryExpression c op e1
 	BinaryExpression op e1 e2 -> checkBinaryExpression c op e1 e2
@@ -169,6 +169,16 @@ checkMapSelection c m args = do {
 			}
 		t -> throwError ("Map selection applied to a non-map " ++ pretty m ++ " of type " ++ pretty t)
 	}
+	
+checkMapUpdate :: Context -> Expression -> [Expression] -> Expression -> Checked Type
+checkMapUpdate c m args val = do { 
+	t <- checkMapSelection c m args;
+	actualT <- checkExpression c val;
+	if t == actualT 
+		then checkExpression c m 
+		else throwError ("Update value type " ++ pretty actualT ++ " different from map range type " ++ pretty t)
+	}
+	
 	
 checkUnaryExpression :: Context -> UnOp -> Expression -> Checked Type
 checkUnaryExpression c op e
