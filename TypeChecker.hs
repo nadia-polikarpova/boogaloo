@@ -29,6 +29,9 @@ variables (Context v _ _ _) = v
 -- | Constant-type binding of a context
 constants (Context _ c _ _) = c
 
+-- | Bindings for variables and constants
+varConst (Context v c _ _) = M.union v c
+
 -- | Function-signature binding of a context
 functions (Context _ _ f _) = f
 
@@ -129,12 +132,12 @@ checkExpression c e = case e of
 	TT -> return BoolType
 	FF -> return BoolType
 	Numeral n -> return IntType
-	Var id -> case M.lookup id (variables c) of
+	Var id -> case M.lookup id (varConst c) of
 		Nothing -> throwError ("Not in scope: variable or constant " ++ id)
 		Just t -> return t
 	Application id args -> checkApplication c id args
-	MapSelection id args -> throwError ("Todo")
-	MapUpdate is args val -> throwError ("Todo")
+	MapSelection m args -> checkMapSelection c m args
+	MapUpdate m args val -> throwError ("Todo")
 	Old e1 -> checkExpression c e1 -- ToDo: only allowed in postconditions and implementation
 	UnaryExpression op e1 -> checkUnaryExpression c op e1
 	BinaryExpression op e1 e2 -> checkBinaryExpression c op e1 e2
@@ -151,6 +154,21 @@ checkApplication c id args = case M.lookup id (functions c) of
 				" in the call to " ++ id)
 			Just u -> return (substitution u retType)
 		}
+		
+checkMapSelection :: Context -> Expression -> [Expression] -> Checked Type
+checkMapSelection c m args = do {
+	mType <- checkExpression c m;
+	case mType of
+		MapType fv domainTypes rangeType -> do {
+			actualTypes <- mapM (checkExpression c) args;
+			case unifier fv domainTypes actualTypes of
+				Nothing -> throwError ("Could not match map domain types " ++ separated ", " (map pretty domainTypes) ++
+					" against map selection types " ++ separated ", " (map pretty actualTypes) ++
+					" for the map " ++ pretty m)
+				Just u -> return (substitution u rangeType)
+			}
+		t -> throwError ("Map selection applied to a non-map " ++ pretty m ++ " of type " ++ pretty t)
+	}
 	
 checkUnaryExpression :: Context -> UnOp -> Expression -> Checked Type
 checkUnaryExpression c op e

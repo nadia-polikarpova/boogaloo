@@ -2,7 +2,7 @@
 	- bit vectors
 
 - Type Checker
-	- Expressions: map selection, map update, quantified
+	- Expressions: map update, quantified
 	- Separate variables from constants
 	- Check type declarations
 	- Resolve type synonims
@@ -12,6 +12,7 @@
 	- Statements
 	- Procedure and implementation declarations
 	- Old expressions only allowed in post and implementation
+	- Improve error messages
 
 - Interpreter
 - Symbolic execution?
