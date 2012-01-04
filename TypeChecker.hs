@@ -15,29 +15,40 @@ type Checked a = ErrorT String Identity a
 
 {- Context -}
 
--- | Typechecking context: variable-type binding, constant-type binding, free type variables
-type Context = (M.Map Id Type, M.Map Id Type, [Id])
+-- | Function signature: argument types, return type
+data FSig = FSig [Id] [Type] Type
+	deriving Show
+
+-- | Typechecking context: variable-type binding, constant-type binding, function-signature binding, free type variables
+data Context = Context (M.Map Id Type) (M.Map Id Type) (M.Map Id FSig) [Id]
+	deriving Show
 
 -- | Variable-type binding of a context
-variables (v, c, fv) = v
+variables (Context v _ _ _) = v
 
--- | Variable-type binding of a context
-constants (v, c, fv) = c
+-- | Constant-type binding of a context
+constants (Context _ c _ _) = c
+
+-- | Function-signature binding of a context
+functions (Context _ _ f _) = f
 
 -- | Free type variables of a context
-freeTypeVars (v, c, fv) = fv
+freeTypeVars (Context _ _ _ fv) = fv
 
 -- | Empty context
-emptyContext = (M.empty, M.empty, [])
+emptyContext = Context M.empty M.empty M.empty []
 
 -- | Change variable-type binding of a context to v
-setVariables (_, c, fv) v = (v, c, fv)
+setVariables (Context _ c f fv) v = Context v c f fv
 
 -- | Change constant-type binding of a context to c
-setConstants (v, _, fv) c = (v, c, fv)
+setConstants (Context v _ f fv) c = Context v c f fv
+
+-- | Change constant-type binding of a context to c
+setFunctions (Context v c _ fv) f = Context v c f fv
 
 -- | Change free type variables of a context to fv
-setFV (v, c, _) fv = (v, c, fv)
+setFV (Context v c f _) fv = Context v c f fv
 
 -- | deleteAll keys m : map m with keys removed from its domain
 deleteAll :: Ord k => [k] -> M.Map k a -> M.Map k a
@@ -119,15 +130,27 @@ checkExpression c e = case e of
 	FF -> return BoolType
 	Numeral n -> return IntType
 	Var id -> case M.lookup id (variables c) of
+		Nothing -> throwError ("Not in scope: variable or constant " ++ id)
 		Just t -> return t
-		Nothing -> throwError ("Undeclared identifier " ++ id)
-	Application id args -> throwError ("Todo")
+	Application id args -> checkApplication c id args
 	MapSelection id args -> throwError ("Todo")
 	MapUpdate is args val -> throwError ("Todo")
 	Old e1 -> checkExpression c e1 -- ToDo: only allowed in postconditions and implementation
 	UnaryExpression op e1 -> checkUnaryExpression c op e1
 	BinaryExpression op e1 e2 -> checkBinaryExpression c op e1 e2
-	otherwise -> throwError ("Type error in expression") 
+	otherwise -> throwError ("Type error in expression")
+
+checkApplication :: Context -> Id -> [Expression] -> Checked Type
+checkApplication c id args = case M.lookup id (functions c) of
+	Nothing -> throwError ("Not in scope: function " ++ id)
+	Just (FSig fv argTypes retType) -> do {
+		actualTypes <- mapM (checkExpression c) args;
+		case unifier fv argTypes actualTypes of
+			Nothing -> throwError ("Could not match formal argument types " ++ separated ", " (map pretty argTypes) ++
+				" against actual argument types " ++ separated ", " (map pretty actualTypes) ++
+				" in the call to " ++ id)
+			Just u -> return (substitution u retType)
+		}
 	
 checkUnaryExpression :: Context -> UnOp -> Expression -> Checked Type
 checkUnaryExpression c op e
@@ -173,11 +196,11 @@ checkFunctionDecl c name fv args ret body =
 		scoped <- foldM checkIdType (setFV emptyContext fv) (concat (map fArgToList (args ++ [ret])));
 		if missingFV /= [] then throwError ("Type variable(s) must occur in function arguments: " ++ separated ", " missingFV) else
 			case body of
-				Nothing -> return c -- ToDo: update context
+				Nothing -> return (update c)
 				Just e -> do { 
 					t <- checkExpression (c `setFV` fv `setVariables` (removeRet (variables scoped))) e; 
 					if t == snd ret 
-						then return c 
+						then return (update c) 
 						else throwError ("Function body type " ++ pretty t ++ " different from return type " ++ pretty (snd ret))
 					}
 		}
@@ -188,6 +211,7 @@ checkFunctionDecl c name fv args ret body =
 		removeRet = M.delete (fromMaybe "" (fst ret))
 		missingFV = filter (not . freeInArgs) fv
 		freeInArgs v = any (isFree v) (map snd args)
+		update c = setFunctions c (M.insert name (FSig fv (map snd args) (snd ret)) (functions c))
 
 -- ToDo: check that type constructors are valid and resolve type synonims, check that type variables are fresh, add constants to constants
 checkIdType :: Context -> IdType -> Checked Context

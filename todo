@@ -2,8 +2,7 @@
 	- bit vectors
 
 - Type Checker
-	- Function types in context, update context when checking function
-	- Expressions: application, map selection, map update, quantified
+	- Expressions: map selection, map update, quantified
 	- Separate variables from constants
 	- Check type declarations
 	- Resolve type synonims
