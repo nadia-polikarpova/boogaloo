@@ -141,7 +141,7 @@ checkExpression c e = case e of
 	Old e1 -> checkExpression c e1 -- ToDo: only allowed in postconditions and implementation
 	UnaryExpression op e1 -> checkUnaryExpression c op e1
 	BinaryExpression op e1 e2 -> checkBinaryExpression c op e1 e2
-	otherwise -> throwError ("Type error in expression")
+	Quantified qop fv vars e -> checkQuantified c qop fv vars e
 
 checkApplication :: Context -> Id -> [Expression] -> Checked Type
 checkApplication c id args = case M.lookup id (functions c) of
@@ -203,7 +203,26 @@ checkBinaryExpression c op e1 e2
 			if pred t1 t2 then return ret else throwError (errorMsg t1 t2 op)
 			}	
 		errorMsg t1 t2 op = "Invalid argument types " ++ pretty t1 ++ " and " ++ pretty t2 ++ " to binary operator" ++ pretty op
-
+		
+checkQuantified :: Context -> QOp -> [Id] -> [IdType] -> Expression -> Checked Type
+checkQuantified c _ fv vars e = if not (null duplicateFV) 
+	then throwError ("Multiple declarations of type variable(s) " ++ separated ", " duplicateFV)
+	else do {
+		scoped <- foldM checkIdType (c `setFV` (freeTypeVars c ++ fv)) vars;
+		if not (null missingFV) 
+		then throwError ("Type variable(s) must occur in the bound variables of the quantification: " ++ separated ", " missingFV) 
+		else do {
+			t <- checkExpression (c `setFV` (freeTypeVars c ++ fv) `setVariables` (M.union (variables c) (variables scoped))) e;
+			case t of
+				BoolType -> return BoolType;
+				_ -> throwError ("Quantified expression type " ++ pretty t ++ " different from bool")
+		}
+	}
+	where
+		duplicateFV = intersect fv (freeTypeVars c)
+		missingFV = filter (not . freeInVars) fv
+		freeInVars v = any (isFree v) (map snd vars)
+		
 {- Statements -}
 
 {- Declarations -}
@@ -221,8 +240,8 @@ checkDecl c d = case d of
 checkFunctionDecl :: Context -> Id -> [Id] -> [FArg] -> FArg -> (Maybe Expression) -> Checked Context
 checkFunctionDecl c name fv args ret body = 
 	do { 
-		scoped <- foldM checkIdType (setFV emptyContext fv) (concat (map fArgToList (args ++ [ret])));
-		if missingFV /= [] then throwError ("Type variable(s) must occur in function arguments: " ++ separated ", " missingFV) else
+		scoped <- foldM checkIdType (emptyContext `setFV` fv) (concat (map fArgToList (args ++ [ret])));
+		if not (null missingFV) then throwError ("Type variable(s) must occur in function arguments: " ++ separated ", " missingFV) else
 			case body of
 				Nothing -> return (update c)
 				Just e -> do { 
@@ -239,11 +258,11 @@ checkFunctionDecl c name fv args ret body =
 		removeRet = M.delete (fromMaybe "" (fst ret))
 		missingFV = filter (not . freeInArgs) fv
 		freeInArgs v = any (isFree v) (map snd args)
-		update c = setFunctions c (M.insert name (FSig fv (map snd args) (snd ret)) (functions c))
+		update c = c `setFunctions` (M.insert name (FSig fv (map snd args) (snd ret)) (functions c))
 
 -- ToDo: check that type constructors are valid and resolve type synonims, check that type variables are fresh, add constants to constants
 checkIdType :: Context -> IdType -> Checked Context
 checkIdType c (i, t) 	
 	| M.member i (variables c) = throwError ("Multiple declarations of variable or constant " ++ i) 
-	| otherwise = return (setVariables c (M.insert i t (variables c)))
+	| otherwise = return (c `setVariables` (M.insert i t (variables c)))
 	
