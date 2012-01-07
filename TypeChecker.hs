@@ -19,39 +19,52 @@ type Checked a = ErrorT String Identity a
 data FSig = FSig [Id] [Type] Type
 	deriving Show
 
--- | Typechecking context: variable-type binding, constant-type binding, function-signature binding, free type variables
-data Context = Context (M.Map Id Type) (M.Map Id Type) (M.Map Id FSig) [Id]
+-- | Typechecking context: global variable-type binding, local variable-type binding, constant-type binding, function-signature binding, free type variables
+data Context = Context (M.Map Id Type) (M.Map Id Type) (M.Map Id Type) (M.Map Id FSig) [Id]
 	deriving Show
 
--- | Variable-type binding of a context
-variables (Context v _ _ _) = v
+-- | Global variable-type binding of a context
+globals (Context g _ _ _ _) = g
+
+-- | Local variable-type binding of a context
+locals (Context _ l _ _ _) = l
 
 -- | Constant-type binding of a context
-constants (Context _ c _ _) = c
-
--- | Bindings for variables and constants
-varConst (Context v c _ _) = M.union v c
+constants (Context _ _ c _ _) = c
 
 -- | Function-signature binding of a context
-functions (Context _ _ f _) = f
+functions (Context _ _ _ f _) = f
 
 -- | Free type variables of a context
-freeTypeVars (Context _ _ _ fv) = fv
+freeTypeVars (Context _ _ _ _ fv) = fv
 
 -- | Empty context
-emptyContext = Context M.empty M.empty M.empty []
+emptyContext = Context M.empty M.empty M.empty M.empty []
 
 -- | Change variable-type binding of a context to v
-setVariables (Context _ c f fv) v = Context v c f fv
+setGlobals (Context _ l c f fv) g = Context g l c f fv
+
+-- | Change variable-type binding of a context to v
+setLocals (Context g _ c f fv) l = Context g l c f fv
 
 -- | Change constant-type binding of a context to c
-setConstants (Context v _ f fv) c = Context v c f fv
+setConstants (Context g l _ f fv) c = Context g l c f fv
 
 -- | Change constant-type binding of a context to c
-setFunctions (Context v c _ fv) f = Context v c f fv
+setFunctions (Context g l c _ fv) f = Context g l c f fv
 
 -- | Change free type variables of a context to fv
-setFV (Context v c f _) fv = Context v c f fv
+setFV (Context g l c f _) fv = Context g l c f fv
+
+-- | Binding for global variables and constants
+globConst c = M.union (globals c) (constants c)
+
+-- | Binding for all variables and constants (local variables are chosen when conincide with global names)
+varConst c = M.union (locals c) (globConst c)
+
+-- | insertIdType get set c i t : insert pair i-t into the (get c) binding of the context c, using setter set
+insertIdType :: (Context -> M.Map Id Type) -> (Context -> M.Map Id Type -> Context) -> Context -> Id -> Type -> Context
+insertIdType get set c i t = c `set` (M.insert i t (get c))
 
 -- | deleteAll keys m : map m with keys removed from its domain
 deleteAll :: Ord k => [k] -> M.Map k a -> M.Map k a
@@ -208,11 +221,11 @@ checkQuantified :: Context -> QOp -> [Id] -> [IdType] -> Expression -> Checked T
 checkQuantified c _ fv vars e = if not (null duplicateFV) 
 	then throwError ("Multiple declarations of type variable(s) " ++ separated ", " duplicateFV)
 	else do {
-		scoped <- foldM checkIdType (c `setFV` (freeTypeVars c ++ fv)) vars;
+		scoped <- foldM (checkIdType locals (insertIdType locals setLocals)) (c `setFV` (freeTypeVars c ++ fv)) vars;
 		if not (null missingFV) 
 		then throwError ("Type variable(s) must occur in the bound variables of the quantification: " ++ separated ", " missingFV) 
 		else do {
-			t <- checkExpression (c `setFV` (freeTypeVars c ++ fv) `setVariables` (M.union (variables c) (variables scoped))) e;
+			t <- checkExpression scoped e;
 			case t of
 				BoolType -> return BoolType;
 				_ -> throwError ("Quantified expression type " ++ pretty t ++ " different from bool")
@@ -232,20 +245,20 @@ checkProgram p = foldM checkDecl emptyContext p
 
 checkDecl :: Context -> Decl -> Checked Context
 checkDecl c d = case d of
-	VarDecl vars -> foldM checkIdType c (map noWhere vars)
-	ConstantDecl _ ids t _ _ -> foldM checkIdType c (zip ids (repeat t))
+	VarDecl vars -> foldM (checkIdType varConst (insertIdType globals setGlobals)) c (map noWhere vars)
+	ConstantDecl _ ids t _ _ -> foldM (checkIdType varConst (insertIdType constants setConstants)) c (zip ids (repeat t))
 	FunctionDecl name fv args ret body -> checkFunctionDecl c name fv args ret body
-	otherwise -> return c
+	otherwise -> return c	
 	
 checkFunctionDecl :: Context -> Id -> [Id] -> [FArg] -> FArg -> (Maybe Expression) -> Checked Context
 checkFunctionDecl c name fv args ret body = 
 	do { 
-		scoped <- foldM checkIdType (emptyContext `setFV` fv) (concat (map fArgToList (args ++ [ret])));
+		scoped <- foldM (checkIdType locals (insertIdType locals setLocals)) (c `setFV` fv) (concat (map fArgToList (args ++ [ret])));
 		if not (null missingFV) then throwError ("Type variable(s) must occur in function arguments: " ++ separated ", " missingFV) else
 			case body of
 				Nothing -> return (update c)
 				Just e -> do { 
-					t <- checkExpression (c `setFV` fv `setVariables` (removeRet (variables scoped))) e; 
+					t <- checkExpression (scoped `setGlobals` M.empty `setLocals` (removeRet (locals scoped))) e; 
 					if t == snd ret 
 						then return (update c) 
 						else throwError ("Function body type " ++ pretty t ++ " different from return type " ++ pretty (snd ret))
@@ -260,9 +273,9 @@ checkFunctionDecl c name fv args ret body =
 		freeInArgs v = any (isFree v) (map snd args)
 		update c = c `setFunctions` (M.insert name (FSig fv (map snd args) (snd ret)) (functions c))
 
--- ToDo: check that type constructors are valid and resolve type synonims, check that type variables are fresh, add constants to constants
-checkIdType :: Context -> IdType -> Checked Context
-checkIdType c (i, t) 	
-	| M.member i (variables c) = throwError ("Multiple declarations of variable or constant " ++ i) 
-	| otherwise = return (c `setVariables` (M.insert i t (variables c)))
+-- ToDo: check that type constructors are valid and resolve type synonims, check that type variables are fresh
+checkIdType :: (Context -> M.Map Id Type) -> (Context -> Id -> Type -> Context) -> Context -> IdType -> Checked Context
+checkIdType get set c (i, t) 	
+	| M.member i (get c) = throwError ("Multiple declarations of variable or constant " ++ i) 
+	| otherwise = return (set c i t)
 	

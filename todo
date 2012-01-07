@@ -2,8 +2,6 @@
 	- bit vectors
 
 - Type Checker
-	- Separate variables from constants
-	- Separate globals from locals, change this in the quantified expression
 	- Check type declarations
 	- Resolve type synonims
 	- Check correctness of types (btw not only in id declarations, but also in nameless function args...)
