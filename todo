@@ -2,10 +2,10 @@
 	- bit vectors
 
 - Type Checker
-	- Check type declarations
-	- Resolve type synonims
-	- Check correctness of types (btw not only in id declarations, but also in nameless function args...)
 	- Axiom declarations
+	- Treat function bodies as axioms
+	- Change order of processing declarations: first types, then vars, consts and signatures, then bodies of type synonyms, axioms/implementations
+	- Deal with cyclic type synonyms
 	- Add procedures to context
 	- Statements
 	- Procedure and implementation declarations

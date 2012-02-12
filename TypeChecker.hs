@@ -19,48 +19,70 @@ type Checked a = ErrorT String Identity a
 data FSig = FSig [Id] [Type] Type
 	deriving Show
 
--- | Typechecking context: global variable-type binding, local variable-type binding, constant-type binding, function-signature binding, free type variables
-data Context = Context (M.Map Id Type) (M.Map Id Type) (M.Map Id Type) (M.Map Id FSig) [Id]
+-- | Typechecking context: 
+--	global variable-type binding, 
+--	local variable-type binding, 
+--	constant-type binding, 
+--	function-signature binding,
+--	type constructor arity,
+--	type synonym to value binding,
+--	free type variables
+data Context = Context (M.Map Id Type) (M.Map Id Type) (M.Map Id Type) (M.Map Id FSig) (M.Map Id Int) (M.Map Id ([Id], Type)) [Id]
 	deriving Show
 
 -- | Global variable-type binding of a context
-globals (Context g _ _ _ _) = g
+globals (Context g _ _ _ _ _ _) = g
 
 -- | Local variable-type binding of a context
-locals (Context _ l _ _ _) = l
+locals (Context _ l _ _ _ _ _) = l
 
 -- | Constant-type binding of a context
-constants (Context _ _ c _ _) = c
+constants (Context _ _ c _ _ _ _) = c
 
 -- | Function-signature binding of a context
-functions (Context _ _ _ f _) = f
+functions (Context _ _ _ f _ _ _) = f
+
+-- | Type constructor arity
+typeConstructors (Context _ _ _ _ tc _ _) = tc
+
+-- | Type synonym to value binding
+typeSynonyms (Context _ _ _ _ _ ts _) = ts
 
 -- | Free type variables of a context
-freeTypeVars (Context _ _ _ _ fv) = fv
+freeTypeVars (Context _ _ _ _ _ _ fv) = fv
 
 -- | Empty context
-emptyContext = Context M.empty M.empty M.empty M.empty []
+emptyContext = Context M.empty M.empty M.empty M.empty M.empty M.empty []
 
 -- | Change variable-type binding of a context to v
-setGlobals (Context _ l c f fv) g = Context g l c f fv
+setGlobals (Context _ l c f tc ts fv) g = Context g l c f tc ts fv
 
 -- | Change variable-type binding of a context to v
-setLocals (Context g _ c f fv) l = Context g l c f fv
+setLocals (Context g _ c f tc ts fv) l = Context g l c f tc ts fv
 
 -- | Change constant-type binding of a context to c
-setConstants (Context g l _ f fv) c = Context g l c f fv
+setConstants (Context g l _ f tc ts fv) c = Context g l c f tc ts fv
 
 -- | Change constant-type binding of a context to c
-setFunctions (Context g l c _ fv) f = Context g l c f fv
+setFunctions (Context g l c _ tc ts fv) f = Context g l c f tc ts fv
 
 -- | Change free type variables of a context to fv
-setFV (Context g l c f _) fv = Context g l c f fv
+setTypeConstructors (Context g l c f _ ts fv) tc = Context g l c f tc ts fv
+
+-- | Change free type variables of a context to fv
+setTypeSynonyms (Context g l c f tc _ fv) ts = Context g l c f tc ts fv
+
+-- | Change free type variables of a context to fv
+setFV (Context g l c f tc ts _) fv = Context g l c f tc ts fv
 
 -- | Binding for global variables and constants
 globConst c = M.union (globals c) (constants c)
 
 -- | Binding for all variables and constants (local variables are chosen when conincide with global names)
 varConst c = M.union (locals c) (globConst c)
+
+-- | Names of type constructors and synonyms
+typeNames c = M.keys (typeConstructors c) ++ M.keys (typeSynonyms c)
 
 -- | insertIdType get set c i t : insert pair i-t into the (get c) binding of the context c, using setter set
 insertIdType :: (Context -> M.Map Id Type) -> (Context -> M.Map Id Type -> Context) -> Context -> Id -> Type -> Context
@@ -136,10 +158,43 @@ unifier _ _ _ = Nothing
 -- | Equality of types
 instance Eq Type where
 	t1 == t2 = isJust (unifier [] [t1] [t2])
+
+-- | checkType c t : check that t is a correct type in context c (all type names exist and have correct number of arguments)
+checkType :: Context -> Type -> Checked Type
+checkType c (MapType fv domains range) = do { domains' <- mapM (checkType c') domains;
+		range' <- checkType c' range;
+		return (MapType fv domains range)}
+	where c' = c `setFV` (freeTypeVars c ++ fv)
+checkType c (Instance name args)
+	| name `elem` freeTypeVars c && null args = return (Instance name args)
+	| M.member name (typeConstructors c) = if n == length args 
+		then do { args' <- mapM (checkType c) args;
+			return (Instance name args')}
+		else throwError ("Wrong number of arguments " ++ show (length args) ++ " given to the type constructor " ++ name ++ " (expected " ++ show n ++ ")")
+	| M.member name (typeSynonyms c) = if length formals == length args
+		then do { args' <- mapM (checkType c) args;
+			return (Instance name args')}
+		else throwError ("Wrong number of arguments " ++ show (length args) ++ " given to the type synonym " ++ name ++ " (expected " ++ show (length formals) ++ ")")
+	| otherwise = throwError ("Not in scope: type constructor or synonym " ++ name)
+		where 
+			n = (M.!) (typeConstructors c) name
+			formals = fst ((M.!) (typeSynonyms c) name)
+checkType _ t = return t
+
+-- | resolve c t : type t with all type synonyms resolved according to binding in c			
+resolve :: Context -> Type -> Type
+resolve c (MapType fv domains range) = MapType fv (map (resolve c') domains) (resolve c' range)
+	where c' = c `setFV` (freeTypeVars c ++ fv)
+resolve c (Instance name args) 
+	| name `elem` freeTypeVars c = (Instance name args)
+	| otherwise = case M.lookup name (typeSynonyms c) of
+		Nothing -> Instance name (map (resolve c) args)
+		Just (formals, t) -> resolve c (substitution (M.fromList (zip formals args)) t) -- ToDo: check must be done before that synonym declarations are not cyclic
+resolve _ t = t 	
 	
 {- Expressions -}
 
-{- requires all types in the context are valid and type synonims are resolved -}
+{- requires all types in the context are valid and type synonyms are resolved -}
 checkExpression :: Context -> Expression -> Checked Type
 checkExpression c e = case e of
 	TT -> return BoolType
@@ -195,23 +250,23 @@ checkMapUpdate c m args val = do {
 	
 checkUnaryExpression :: Context -> UnOp -> Expression -> Checked Type
 checkUnaryExpression c op e
-	| op == Neg = checkType IntType IntType
-	| op == Not = checkType BoolType BoolType
+	| op == Neg = matchType IntType IntType
+	| op == Not = matchType BoolType BoolType
 	where 
-		checkType t ret = do { t' <- checkExpression c e;
+		matchType t ret = do { t' <- checkExpression c e;
 			if t' == t then return ret else throwError (errorMsg t' op)
 			}
 		errorMsg t op = "Invalid argument type " ++ pretty t ++ " to unary operator" ++ pretty op
 	
 checkBinaryExpression :: Context -> BinOp -> Expression -> Expression -> Checked Type
 checkBinaryExpression c op e1 e2
-	| elem op [Plus, Minus, Times, Div, Mod] = checkTypes (\t1 t2 -> t1 == IntType && t2 == IntType) IntType
-	| elem op [And, Or, Implies, Equiv] = checkTypes (\t1 t2 -> t1 == BoolType && t2 == BoolType) BoolType
-	| elem op [Ls, Leq, Gt, Geq] = checkTypes (\t1 t2 -> t1 == IntType && t2 == IntType) BoolType
-	| elem op [Eq, Neq] = checkTypes (\t1 t2 -> isJust (unifier (freeTypeVars c) [t1] [t2])) BoolType
-	| op == Lc = checkTypes (==) BoolType
+	| elem op [Plus, Minus, Times, Div, Mod] = matchTypes (\t1 t2 -> t1 == IntType && t2 == IntType) IntType
+	| elem op [And, Or, Implies, Equiv] = matchTypes (\t1 t2 -> t1 == BoolType && t2 == BoolType) BoolType
+	| elem op [Ls, Leq, Gt, Geq] = matchTypes (\t1 t2 -> t1 == IntType && t2 == IntType) BoolType
+	| elem op [Eq, Neq] = matchTypes (\t1 t2 -> isJust (unifier (freeTypeVars c) [t1] [t2])) BoolType
+	| op == Lc = matchTypes (==) BoolType
 	where 
-		checkTypes pred ret = do { t1 <- checkExpression c e1;
+		matchTypes pred ret = do { t1 <- checkExpression c e1;
 			t2 <- checkExpression c e2;
 			if pred t1 t2 then return ret else throwError (errorMsg t1 t2 op)
 			}	
@@ -245,14 +300,26 @@ checkProgram p = foldM checkDecl emptyContext p
 
 checkDecl :: Context -> Decl -> Checked Context
 checkDecl c d = case d of
+	TypeDecl finite name args value -> checkTypeDecl c finite name args value
 	VarDecl vars -> foldM (checkIdType varConst (insertIdType globals setGlobals)) c (map noWhere vars)
 	ConstantDecl _ ids t _ _ -> foldM (checkIdType varConst (insertIdType constants setConstants)) c (zip ids (repeat t))
 	FunctionDecl name fv args ret body -> checkFunctionDecl c name fv args ret body
 	otherwise -> return c	
 	
+checkTypeDecl :: Context -> Bool -> Id -> [Id] -> (Maybe Type) -> Checked Context 
+checkTypeDecl c _ name formals value
+	| name `elem` (typeNames c) = throwError ("Multiple declarations of type constructor or synonym " ++ name) 
+	| not (null reservedFormals) = throwError ("Names already reserved for type constructors or synonyms: " ++ separated ", " reservedFormals)
+	| otherwise = case value of
+		Nothing -> return (c `setTypeConstructors` (M.insert name (length formals) (typeConstructors c)))
+		Just t -> do { t' <- checkType (c `setFV` formals) t;
+			return (c `setTypeSynonyms` (M.insert name (formals, t') (typeSynonyms c))) }
+		where reservedFormals = intersect (typeNames c) formals			
+	
 checkFunctionDecl :: Context -> Id -> [Id] -> [FArg] -> FArg -> (Maybe Expression) -> Checked Context
 checkFunctionDecl c name fv args ret body = 
 	do { 
+		mapM (checkType c) (map snd [fArg | fArg <- ret : args , isNothing (fst fArg)]); -- ToDo: types are checked in wrong order (first all without ids)
 		scoped <- foldM (checkIdType locals (insertIdType locals setLocals)) (c `setFV` fv) (concat (map fArgToList (args ++ [ret])));
 		if not (null missingFV) then throwError ("Type variable(s) must occur in function arguments: " ++ separated ", " missingFV) else
 			case body of
@@ -273,9 +340,10 @@ checkFunctionDecl c name fv args ret body =
 		freeInArgs v = any (isFree v) (map snd args)
 		update c = c `setFunctions` (M.insert name (FSig fv (map snd args) (snd ret)) (functions c))
 
--- ToDo: check that type constructors are valid and resolve type synonims, check that type variables are fresh
+-- ToDo: check that type constructors are valid and resolve type synonyms, check that type variables are fresh
 checkIdType :: (Context -> M.Map Id Type) -> (Context -> Id -> Type -> Context) -> Context -> IdType -> Checked Context
 checkIdType get set c (i, t) 	
-	| M.member i (get c) = throwError ("Multiple declarations of variable or constant " ++ i) 
-	| otherwise = return (set c i t)
+	| M.member i (get c) = throwError ("Multiple declarations of variable or constant " ++ i)
+	| otherwise = do { t' <- checkType c t;
+		return (set c i (resolve c t)) }
 	
