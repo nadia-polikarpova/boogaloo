@@ -1,3 +1,4 @@
+{- Parsec-based parser for Boogie 2 -}
 module Parser where
 
 import AST

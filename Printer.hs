@@ -1,3 +1,4 @@
+{- Pretty printer for Boogie 2 -}
 module Printer where
 
 import AST

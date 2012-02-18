@@ -1,3 +1,4 @@
+{- Type checker for Boogie 2 -}
 module TypeChecker where
 
 import AST
@@ -320,8 +321,7 @@ checkTypeDecl c _ name formals value
 checkFunctionDecl :: Context -> Id -> [Id] -> [FArg] -> FArg -> (Maybe Expression) -> Checked Context
 checkFunctionDecl c name fv args ret body = 
 	do { 
-		mapM (checkType c) (map snd [fArg | fArg <- ret : args , isNothing (fst fArg)]); -- ToDo: types are checked in wrong order (first all without ids)
-		scoped <- foldM (checkIdType locals (insertIdType locals setLocals)) (c `setFV` fv) (concat (map fArgToList (args ++ [ret])));
+		scoped <- foldM (checkFArg locals (insertIdType locals setLocals)) (c `setFV` fv) (args ++ [ret]);
 		if not (null missingFV) then throwError ("Type variable(s) must occur in function arguments: " ++ separated ", " missingFV) else
 			case body of
 				Nothing -> return (update c)
@@ -336,6 +336,9 @@ checkFunctionDecl c name fv args ret body =
 		fArgToList (name, t) = case name of
 			Just id -> [(id, t)]
 			Nothing -> []
+		checkFArg get set c fArg = case fArg of
+			(Just id, t) -> checkIdType get set c (id, t)
+			(Nothing, t) -> do { checkType c t; return c }
 		removeRet = M.delete (fromMaybe "" (fst ret))
 		missingFV = filter (not . freeInArgs) fv
 		freeInArgs v = any (isFree v) (map snd args)
@@ -349,7 +352,6 @@ checkAxiomDecl c e = do {
 		else throwError ("Axiom type " ++ pretty t ++ " different from " ++ pretty BoolType)
 	}
 
--- ToDo: check that type constructors are valid and resolve type synonyms, check that type variables are fresh
 checkIdType :: (Context -> M.Map Id Type) -> (Context -> Id -> Type -> Context) -> Context -> IdType -> Checked Context
 checkIdType get set c (i, t) 	
 	| M.member i (get c) = throwError ("Multiple declarations of variable or constant " ++ i)

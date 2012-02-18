@@ -1,3 +1,4 @@
+{- Tokens used in Boogie 2 -}
 module Tokens where
 
 import AST

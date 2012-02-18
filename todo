@@ -2,7 +2,6 @@
 	- bit vectors
 
 - Type Checker
-	- Treat function bodies as axioms
 	- Change order of processing declarations: first types, then vars, consts and signatures, then bodies of type synonyms, axioms/implementations
 	- Deal with cyclic type synonyms
 	- Add procedures to context
