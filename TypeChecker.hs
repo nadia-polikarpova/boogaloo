@@ -283,7 +283,7 @@ checkQuantified c _ fv vars e = if not (null duplicateFV)
 			t <- checkExpression scoped e;
 			case t of
 				BoolType -> return BoolType;
-				_ -> throwError ("Quantified expression type " ++ pretty t ++ " different from bool")
+				_ -> throwError ("Quantified expression type " ++ pretty t ++ " different from " ++ pretty BoolType)
 		}
 	}
 	where
@@ -304,6 +304,7 @@ checkDecl c d = case d of
 	VarDecl vars -> foldM (checkIdType varConst (insertIdType globals setGlobals)) c (map noWhere vars)
 	ConstantDecl _ ids t _ _ -> foldM (checkIdType varConst (insertIdType constants setConstants)) c (zip ids (repeat t))
 	FunctionDecl name fv args ret body -> checkFunctionDecl c name fv args ret body
+	AxiomDecl e -> checkAxiomDecl c e
 	otherwise -> return c	
 	
 checkTypeDecl :: Context -> Bool -> Id -> [Id] -> (Maybe Type) -> Checked Context 
@@ -339,6 +340,14 @@ checkFunctionDecl c name fv args ret body =
 		missingFV = filter (not . freeInArgs) fv
 		freeInArgs v = any (isFree v) (map snd args)
 		update c = c `setFunctions` (M.insert name (FSig fv (map snd args) (snd ret)) (functions c))
+		
+checkAxiomDecl :: Context -> Expression -> Checked Context
+checkAxiomDecl c e = do { 
+	t <- checkExpression (setGlobals c M.empty) e;
+	if t == BoolType 
+		then return c
+		else throwError ("Axiom type " ++ pretty t ++ " different from " ++ pretty BoolType)
+	}
 
 -- ToDo: check that type constructors are valid and resolve type synonyms, check that type variables are fresh
 checkIdType :: (Context -> M.Map Id Type) -> (Context -> Id -> Type -> Context) -> Context -> IdType -> Checked Context
