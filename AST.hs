@@ -32,15 +32,15 @@ data QOp = Forall | Exists
 	deriving (Eq, Show)
 	
 data Expression = FF | TT |
-	Numeral Integer | 								-- Numeral value
-	Var Id | 										-- Var name
-	Application Id [Expression] |					-- Application function_name args
-	MapSelection Expression [Expression] |			-- MapSelection map indexes
+	Numeral Integer | 								              -- Numeral value
+	Var Id | 										                    -- Var name
+	Application Id [Expression] |					          -- Application function_name args
+	MapSelection Expression [Expression] |			    -- MapSelection map indexes
 	MapUpdate Expression [Expression] Expression |	-- MapUpdate map indexes rhs
 	Old Expression |
 	UnaryExpression UnOp Expression |
 	BinaryExpression BinOp Expression Expression |
-	Quantified QOp [Id] [IdType] Expression			-- Quantified quantifier type_vars bound_vars expression
+	Quantified QOp [Id] [IdType] Expression			    -- Quantified quantifier type_vars bound_vars expression
 	deriving Show
 	
 data WildcardExpression = Wildcard | Expr Expression
@@ -49,16 +49,16 @@ data WildcardExpression = Wildcard | Expr Expression
 {- Statements -}
 data Statement = Assert Expression |
 	Assume Expression |
-	Havoc [Id] |											-- Havoc var_names
-	Assign [(Id , [[Expression]])] [Expression] |			-- Assign var_map_selects rhss
-	Call [Id] Id [Expression] |								-- Call call_lhss proc_name args
-	CallForall Id [WildcardExpression] |					-- CallForall proc_name args
-	If WildcardExpression Block (Maybe Block) |				-- If wild_or_expr then_block else_block
+	Havoc [Id] |											                     -- Havoc var_names
+	Assign [(Id , [[Expression]])] [Expression] |			    -- Assign var_map_selects rhss
+	Call [Id] Id [Expression] |								            -- Call call_lhss proc_name args
+	CallForall Id [WildcardExpression] |					        -- CallForall proc_name args
+	If WildcardExpression Block (Maybe Block) |				    -- If wild_or_expr then_block else_block
 	While WildcardExpression [(Bool, Expression)] Block |	-- While wild_or_expr free_loop_inv loop_body
-	Break (Maybe Id) |										-- Break label
+	Break (Maybe Id) |										                -- Break label
 	Return |
-	Goto [Id] |												-- Goto labels
-	Skip 													-- only used at the end of a block
+	Goto [Id] |												                    -- Goto labels
+	Skip 													                        -- only used at the end of a block
 	deriving Show
 
 -- | Statement labeled by multiple labels
@@ -72,21 +72,21 @@ singletonBlock s = [([], s)]
 {- Contracts -}
 
 data Spec = Requires Expression Bool |	-- Requires e free 
-	Modifies [Id] Bool | 				-- Modifies var_names free
-	Ensures Expression Bool				-- Ensures e free
+	Modifies [Id] Bool | 				          -- Modifies var_names free
+	Ensures Expression Bool				        -- Ensures e free
 	deriving Show
 
 {- Declarations -}
 
 data Decl = 
-	TypeDecl Bool Id [Id] (Maybe Type) |									-- TypeDecl finite name args synonym_value
-	ConstantDecl Bool [Id] Type ParentInfo Bool |							-- ConstantDecl unique names type orderSpec complete
-	FunctionDecl Id [Id] [FArg] FArg (Maybe Expression) |					-- FunctionDecl name type_args args ret body
+	TypeDecl Bool Id [Id] (Maybe Type) |									                  -- TypeDecl finite name formals synonym_value
+	ConstantDecl Bool [Id] Type ParentInfo Bool |					                  -- ConstantDecl unique names type orderSpec complete
+	FunctionDecl Id [Id] [FArg] FArg (Maybe Expression) |	                  -- FunctionDecl name type_args formals ret body
 	AxiomDecl Expression |
 	VarDecl [IdTypeWhere] |
-	ProcedureDecl Id [Id] [IdTypeWhere] [IdTypeWhere] [Spec] (Maybe Body) |	-- ProcedureDecl name type_args args rets contract body 
-	ImplementationDecl Id [Id] [IdType] [IdType] [Body]						-- ImplementationDecl name type_args args rets body
-	deriving Show
+	ProcedureDecl Id [Id] [IdTypeWhere] [IdTypeWhere] [Spec] (Maybe Body) |	-- ProcedureDecl name type_args formals rets contract body 
+	ImplementationDecl Id [Id] [IdType] [IdType] [Body]						          -- ImplementationDecl name type_args formals rets body
+  deriving Show
 
 {- Misc -}
 

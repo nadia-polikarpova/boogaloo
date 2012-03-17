@@ -1,15 +1,19 @@
+- General
+	- Replace context with a record
+	- Beautify parser
+
 - Parser
 	- bit vectors
 
 - Type Checker
-	- Change order of processing declarations: first types, then vars, consts and signatures, then bodies of type synonyms, axioms/implementations
-	- Deal with cyclic type synonyms
+	- Check freshness of type variables in map types, functions, procedures, quantified expressions
 	- Add procedures to context
 	- Statements
 	- Procedure and implementation declarations
 	- Old expressions only allowed in post and implementation
 	- Improve error messages
 
+- Pretty printer
 - Interpreter
 - Symbolic execution?
 
