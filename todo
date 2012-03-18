@@ -1,14 +1,14 @@
 - General
-	- Replace context with a record
 	- Beautify parser
 
 - Parser
 	- bit vectors
 
 - Type Checker
-	- Check freshness of type variables in map types, functions, procedures, quantified expressions
+	- Check freshness of type variables in map types, functions, procedures, quantified expressions (also that it's not declared more than once in the same declaration)
 	- Add procedures to context
 	- Statements
+	- Check where parts of var decls
 	- Procedure and implementation declarations
 	- Old expressions only allowed in post and implementation
 	- Improve error messages
