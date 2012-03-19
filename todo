@@ -1,7 +1,5 @@
-- General
-	- Beautify parser
-
 - Parser
+	- new syntax
 	- bit vectors
 
 - Type Checker
