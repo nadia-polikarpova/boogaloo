@@ -9,6 +9,7 @@
 	- Procedure and implementation declarations
 	- Old expressions only allowed in post and implementation
 	- Improve error messages
+	- Don't pass the whole context through in all the passes?
 
 - Pretty printer
 - Interpreter

@@ -254,9 +254,9 @@ checkQuantified c _ fv vars e = do
 checkProgram :: Program -> Checked Context
 checkProgram p = do
   pass1 <- foldM collectTypes emptyContext p                  -- collect type names from type declarations
-  pass2 <- foldM checkTypeSynonyms pass1 p                    -- check values of type synonyms
-  mapM_ (checkCycles pass2) (M.keys (ctxTypeSynonyms pass2))  -- check that type synonyms do not form a cycle 
-  pass4 <- foldM checkSignatures pass2 p                      -- check variable, constant, function and procedure signatures
+  mapM_ (checkTypeSynonyms pass1) p                           -- check values of type synonyms
+  mapM_ (checkCycles pass1) (M.keys (ctxTypeSynonyms pass1))  -- check that type synonyms do not form a cycle 
+  pass4 <- foldM checkSignatures pass1 p                      -- check variable, constant, function and procedure signatures
   foldM checkBodies pass4 p                                   -- check axioms, function and procedure bodies
 
 -- | Collect type names from type declarations
@@ -265,23 +265,21 @@ collectTypes c d = case d of
   TypeDecl finite name formals value -> checkTypeDecl c name formals value
   otherwise -> return c  
 
--- | Check freshness of type constructors and type variable names, and save type constructor in the context  
+-- | Check uniqueness of type constructors and synonyms, and them in the context  
 checkTypeDecl :: Context -> Id -> [Id] -> (Maybe Type) -> Checked Context 
 checkTypeDecl c name formals value
   | name `elem` (typeNames c) = throwError ("Multiple declarations of type constructor or synonym " ++ name) 
-  | not (null reservedFormals) = throwError ("Names already reserved for type constructors or synonyms: " ++ separated ", " reservedFormals)
   | otherwise = case value of
     Nothing -> return c { ctxTypeConstructors = M.insert name (length formals) (ctxTypeConstructors c) }
     Just t -> return c { ctxTypeSynonyms = M.insert name (formals, t) (ctxTypeSynonyms c) }
-    where reservedFormals = intersect (typeNames c) formals  
 
--- | Check that values of all type synonyms are valid types and save them in the context
-checkTypeSynonyms :: Context -> Decl -> Checked Context
+-- | Check that type arguments of type synonyms are fresh and values are valid types
+checkTypeSynonyms :: Context -> Decl -> Checked ()
 checkTypeSynonyms c d = case d of
   TypeDecl finite name formals (Just t) -> do
-    checkType c { ctxTypeVars = formals } t
-    return c { ctxTypeSynonyms = M.insert name (formals, t) (ctxTypeSynonyms c) }
-  otherwise -> return c
+    c' <- foldM checkTypeVar c formals 
+    checkType c' t
+  otherwise -> return ()
 
 -- | Check if type synonym declarations have cyclic dependences; do not modify context  
 checkCycles :: Context -> Id -> Checked ()
