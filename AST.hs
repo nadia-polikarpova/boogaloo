@@ -91,11 +91,14 @@ data Decl =
 {- Misc -}
 
 type IdType = (Id, Type)
-type IdTypeWhere = (Id, Type, Expression)
+data IdTypeWhere = IdTypeWhere { 
+  itwId :: Id, 
+  itwType :: Type, 
+  itwWhere :: Expression 
+  } deriving Show
 type FArg = (Maybe Id, Type)
 type Body = ([IdTypeWhere], Block)
 type ParentEdge = (Bool, Id)
 type ParentInfo = Maybe [ParentEdge]
 
-noWhere :: IdTypeWhere -> IdType
-noWhere (id, t, _) = (id, t)
+noWhere itw = (itwId itw, itwType itw)

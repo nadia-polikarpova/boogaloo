@@ -390,35 +390,52 @@ program = do
 {- Contracts -}
 
 spec :: Parser Spec
-spec = do { free <- hasKeyword "free";
-  do { reserved "requires"; e <- e0; semi; return (Requires e free) } <|> 
-  do { reserved "modifies"; ids <- commaSep identifier; semi; return (Modifies ids free) } <|> 
-  do { reserved "ensures"; e <- e0; semi; return (Ensures e free) }
-  }
+spec = do
+  free <- hasKeyword "free"
+  choice [
+    do
+      reserved "requires"
+      e <- e0
+      semi
+      return $ Requires e free,
+    do
+      reserved "modifies"
+      ids <- commaSep identifier
+      semi
+      return $ Modifies ids free,
+    do
+      reserved "ensures"
+      e <- e0
+      semi
+      return $ Ensures e free]
 
 {- Misc -}
 
 skip :: Parser a -> Parser ()
-skip p = do { p; return () }
+skip p = p >> return ()
 
 hasKeyword :: String -> Parser Bool
-hasKeyword s = option False (do { reserved s; return True })
+hasKeyword s = option False (reserved s >> return True)
 
 idsType :: Parser ([Id], Type)
-idsType = do { ids <- commaSep1 identifier; reservedOp ":"; t <- type_; return (ids, t) }
+idsType = do
+  ids <- commaSep1 identifier
+  reservedOp ":"
+  t <- type_
+  return (ids, t)
 
 ungroup :: [([Id], Type)] -> [(IdType)]
 ungroup = concat . (map (\x -> zip (fst x) (repeat (snd x))))
 
 idsTypeWhere :: Parser ([Id], Type, Expression)
-idsTypeWhere = do { ids <- idsType; e <- option TT ( do {reserved "where"; e0 }); return ((fst ids), (snd ids), e) }
+idsTypeWhere = do
+  ids <- idsType
+  e <- option TT (reserved "where" >> e0)
+  return ((fst ids), (snd ids), e)
 
-ungroupWhere :: [([Id], Type, Expression)] -> [(IdTypeWhere)]
-ungroupWhere = concat . (map (\x -> zip3 (fst3 x) (repeat (snd3 x)) (repeat (trd3 x))))
-  where
-    fst3 (a, b, c) = a
-    snd3 (a, b, c) = b
-    trd3 (a, b, c) = c
+ungroupWhere :: [([Id], Type, Expression)] -> [IdTypeWhere]
+ungroupWhere vars = concat (map ungroupWhereOne vars)
+  where ungroupWhereOne (ids, t, e) = zipWith3 IdTypeWhere ids (repeat t) (repeat e)
 
 trigAttr :: Parser ()
 trigAttr = (try trigger) <|> attribute <?> "attribute or trigger"
@@ -427,4 +444,8 @@ trigger :: Parser ()
 trigger = skip (braces (commaSep1 e0)) <?> "trigger"
 
 attribute :: Parser ()
-attribute = skip (braces (do {reservedOp ":"; identifier; commaSep1 ((skip e0) <|> (skip stringLiteral))})) <?> "attribute"
+attribute = skip (braces (do
+  reservedOp ":"
+  identifier
+  commaSep1 (skip e0 <|> skip stringLiteral)
+  )) <?> "attribute"

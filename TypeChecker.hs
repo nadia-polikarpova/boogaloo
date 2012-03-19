@@ -16,27 +16,35 @@ type Checked a = ErrorT String Identity a
 
 {- Context -}
 
--- | Function signature: argument types, return type
+-- | Function signature: type variables, argument types, return type
 data FSig = FSig [Id] [Type] Type
+  deriving Show
+  
+-- | Procedure signature: type variables, argument types, return types
+data PSig = PSig [Id] [Type] [Type]
   deriving Show
 
 -- | Typechecking context: 
 data Context = Context
   {
-    ctxGlobals :: M.Map Id Type,              --  global variable-type binding, 
-    ctxLocals :: M.Map Id Type,               --  local variable-type binding, 
-    ctxConstants :: M.Map Id Type,            --  constant-type binding, 
-    ctxFunctions :: M.Map Id FSig,            --  function-signature binding,
     ctxTypeConstructors :: M.Map Id Int,      --  type constructor arity,
     ctxTypeSynonyms :: M.Map Id ([Id], Type), --  type synonym to value binding,
-    ctxTypeVars :: [Id]                       --  free type variables
+    ctxGlobals :: M.Map Id Type,              --  global variable-type binding, 
+    ctxConstants :: M.Map Id Type,            --  constant-type binding, 
+    ctxFunctions :: M.Map Id FSig,            --  function-signature binding,
+    ctxProcedures :: M.Map Id PSig,           --  procedure-signature binding,
+    ctxTypeVars :: [Id],                      --  free type variables
+    ctxLocals :: M.Map Id Type                --  local variable-type binding, 
   } deriving Show
 
-emptyContext = Context M.empty M.empty M.empty M.empty M.empty M.empty []
+emptyContext = Context M.empty M.empty M.empty M.empty M.empty M.empty [] M.empty
 
 setGlobals ctx g    = ctx { ctxGlobals = g }
 setLocals ctx l     = ctx { ctxLocals = l }
 setConstants ctx c  = ctx { ctxConstants = c }
+
+-- | Names of type constructors and synonyms
+typeNames c = M.keys (ctxTypeConstructors c) ++ M.keys (ctxTypeSynonyms c)
 
 -- | Binding for global variables and constants
 globConst c = M.union (ctxGlobals c) (ctxConstants c)
@@ -44,8 +52,8 @@ globConst c = M.union (ctxGlobals c) (ctxConstants c)
 -- | Binding for all variables and constants (local variables are chosen when conincide with global names)
 varConst c = M.union (ctxLocals c) (globConst c)
 
--- | Names of type constructors and synonyms
-typeNames c = M.keys (ctxTypeConstructors c) ++ M.keys (ctxTypeSynonyms c)
+-- | Names of functions and procedures
+funProcNames c = M.keys (ctxFunctions c) ++ M.keys (ctxProcedures c)
 
 -- | deleteAll keys m : map m with keys removed from its domain
 deleteAll :: Ord k => [k] -> M.Map k a -> M.Map k a
@@ -304,6 +312,7 @@ checkSignatures c d = case d of
   VarDecl vars -> foldM (checkIdType varConst ctxGlobals setGlobals) c (map noWhere vars)
   ConstantDecl _ ids t _ _ -> foldM (checkIdType varConst ctxConstants setConstants) c (zip ids (repeat t))
   FunctionDecl name fv args ret _ -> checkFunctionSignature c name fv args ret
+  ProcedureDecl name fv args rets _ _ -> checkProcSignature c name fv args rets
   otherwise -> return c
 
 -- | checkIdType scope get set c idType: check that declaration idType is fresh in scope, and if so add it to (get c) using (set c) 
@@ -315,7 +324,7 @@ checkIdType scope get set c (i, t)
 -- | Check uniqueness of function name, types of formals and add function to context
 checkFunctionSignature :: Context -> Id -> [Id] -> [FArg] -> FArg -> Checked Context
 checkFunctionSignature c name fv args ret
-  | M.member name (ctxFunctions c) = throwError ("Multiple declarations of function " ++ name)
+  | name `elem` funProcNames c = throwError ("Multiple declarations of function or procedure " ++ name)
   | otherwise = do
     c' <- foldM checkTypeVar c fv
     foldM checkFArg c' (args ++ [ret])
@@ -327,6 +336,20 @@ checkFunctionSignature c name fv args ret
       checkFArg c (Nothing, t) = checkType c t >> return c
       missingFV = filter (not . freeInArgs) fv
       freeInArgs v = any (isFree v) (map snd args)
+      
+checkProcSignature :: Context -> Id -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> Checked Context
+checkProcSignature c name fv args rets
+  | name `elem` funProcNames c = throwError ("Multiple declarations of function or procedure " ++ name)
+  | otherwise = do
+    c' <- foldM checkTypeVar c fv
+    foldM checkPArg c' (args ++ rets)
+    if not (null missingFV) 
+      then throwError ("Type variable(s) must occur in procedure arguments: " ++ separated ", " missingFV)
+      else return c { ctxProcedures = M.insert name (PSig fv (map itwType args) (map itwType rets)) (ctxProcedures c) }
+    where 
+      checkPArg c arg = checkIdType ctxLocals ctxLocals setLocals c (noWhere arg)
+      missingFV = filter (not . freeInArgs) fv
+      freeInArgs v = any (isFree v) (map itwType args)
 
 -- | Check axioms, function and procedure bodies      
 checkBodies :: Context -> Decl -> Checked ()
@@ -338,8 +361,8 @@ checkBodies c d = case d of
   
 -- | Check that "where" part is a valid boolean expression
 checkWhere :: Context -> IdTypeWhere -> Checked ()
-checkWhere c (_, _, w) = do
-  t <- checkExpression c w
+checkWhere c var = do
+  t <- checkExpression c (itwWhere var)
   if t == BoolType 
     then return ()
     else throwError ("Where-clause type " ++ pretty t ++ " different from " ++ pretty BoolType)

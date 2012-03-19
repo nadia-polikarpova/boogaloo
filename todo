@@ -3,9 +3,8 @@
 	- bit vectors
 
 - Type Checker
-	- Add procedures to context
 	- Statements
-	- Procedure and implementation declarations
+	- Procedure and implementation bodies
 	- Old expressions only allowed in post and implementation
 	- Improve error messages
 	- Don't pass the whole context through in all the passes?
