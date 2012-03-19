@@ -118,12 +118,19 @@ unifier _ _ _ = Nothing
 instance Eq Type where
   t1 == t2 = isJust (unifier [] [t1] [t2])
 
+-- | Check that a type variable is fresh and add it to context  
+checkTypeVar :: Context -> Id -> Checked Context
+checkTypeVar c v
+  | v `elem` typeNames c = throwError (v ++ " already used as a type constructor or synonym")
+  | v `elem` ctxTypeVars c = throwError ("Multiple decalartions of type variable " ++ v)
+  | otherwise = return c { ctxTypeVars = v : ctxTypeVars c }
+
 -- | checkType c t : check that t is a correct type in context c (i.e. that all type names exist and have correct number of arguments)
 checkType :: Context -> Type -> Checked ()
 checkType c (MapType fv domains range) = do
+  c' <- foldM checkTypeVar c fv
   mapM (checkType c') domains
   checkType c' range
-  where c' = c { ctxTypeVars = ctxTypeVars c ++ fv }
 checkType c (Instance name args)
   | name `elem` ctxTypeVars c && null args = return ()
   | M.member name (ctxTypeConstructors c) = if n == length args 
@@ -225,19 +232,17 @@ checkBinaryExpression c op e1 e2
     errorMsg t1 t2 op = "Invalid argument types " ++ pretty t1 ++ " and " ++ pretty t2 ++ " to binary operator" ++ pretty op
     
 checkQuantified :: Context -> QOp -> [Id] -> [IdType] -> Expression -> Checked Type
-checkQuantified c _ fv vars e = if not (null duplicateFV) 
-  then throwError ("Multiple declarations of type variable(s) " ++ separated ", " duplicateFV)
-  else do
-    quantifiedScope <- foldM (checkIdType ctxLocals ctxLocals setLocals) c { ctxTypeVars = ctxTypeVars c ++ fv } vars
-    if not (null missingFV)
-      then throwError ("Type variable(s) must occur in the bound variables of the quantification: " ++ separated ", " missingFV) 
-      else do
-        t <- checkExpression quantifiedScope e
-        case t of
-          BoolType -> return BoolType
-          _ -> throwError ("Quantified expression type " ++ pretty t ++ " different from " ++ pretty BoolType)
+checkQuantified c _ fv vars e = do
+  c' <- foldM checkTypeVar c fv
+  quantifiedScope <- foldM (checkIdType ctxLocals ctxLocals setLocals) c' vars
+  if not (null missingFV)
+    then throwError ("Type variable(s) must occur in the bound variables of the quantification: " ++ separated ", " missingFV) 
+    else do
+      t <- checkExpression quantifiedScope e
+      case t of
+        BoolType -> return BoolType
+        _ -> throwError ("Quantified expression type " ++ pretty t ++ " different from " ++ pretty BoolType)
   where
-    duplicateFV = intersect fv (ctxTypeVars c)
     missingFV = filter (not . freeInVars) fv
     freeInVars v = any (isFree v) (map snd vars)
     
@@ -313,7 +318,8 @@ checkFunctionSignature :: Context -> Id -> [Id] -> [FArg] -> FArg -> Checked Con
 checkFunctionSignature c name fv args ret
   | M.member name (ctxFunctions c) = throwError ("Multiple declarations of function " ++ name)
   | otherwise = do
-    foldM checkFArg (c { ctxTypeVars = fv }) (args ++ [ret])
+    c' <- foldM checkTypeVar c fv
+    foldM checkFArg c' (args ++ [ret])
     if not (null missingFV) 
       then throwError ("Type variable(s) must occur in function arguments: " ++ separated ", " missingFV)
       else return c { ctxFunctions = M.insert name (FSig fv (map snd args) (snd ret)) (ctxFunctions c) }
