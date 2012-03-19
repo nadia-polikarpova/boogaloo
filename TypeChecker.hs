@@ -257,7 +257,8 @@ checkProgram p = do
   mapM_ (checkTypeSynonyms pass1) p                           -- check values of type synonyms
   mapM_ (checkCycles pass1) (M.keys (ctxTypeSynonyms pass1))  -- check that type synonyms do not form a cycle 
   pass4 <- foldM checkSignatures pass1 p                      -- check variable, constant, function and procedure signatures
-  foldM checkBodies pass4 p                                   -- check axioms, function and procedure bodies
+  mapM_ (checkBodies pass4) p                                 -- check axioms, function and procedure bodies
+  return pass4
 
 -- | Collect type names from type declarations
 collectTypes :: Context -> Decl -> Checked Context
@@ -328,29 +329,38 @@ checkFunctionSignature c name fv args ret
       freeInArgs v = any (isFree v) (map snd args)
 
 -- | Check axioms, function and procedure bodies      
-checkBodies :: Context -> Decl -> Checked Context
+checkBodies :: Context -> Decl -> Checked ()
 checkBodies c d = case d of
+  VarDecl vars -> mapM_ (checkWhere c) vars
   FunctionDecl name fv args ret (Just body) -> checkFunctionBody c fv args ret body
   AxiomDecl e -> checkAxiom c e
-  otherwise -> return c    
+  otherwise -> return ()    
+  
+-- | Check that "where" part is a valid boolean expression
+checkWhere :: Context -> IdTypeWhere -> Checked ()
+checkWhere c (_, _, w) = do
+  t <- checkExpression c w
+  if t == BoolType 
+    then return ()
+    else throwError ("Where-clause type " ++ pretty t ++ " different from " ++ pretty BoolType)
   
 -- | Check that function body is a valid expression of the same type as the function return type
-checkFunctionBody :: Context -> [Id] -> [FArg] -> FArg -> Expression -> Checked Context
+checkFunctionBody :: Context -> [Id] -> [FArg] -> FArg -> Expression -> Checked ()
 checkFunctionBody c fv args ret body = do 
   functionScope <- (foldM addFArg (c { ctxTypeVars = fv }) args)
   t <- checkExpression functionScope { ctxGlobals = M.empty } body 
   if t == snd ret 
-    then return c
+    then return ()
     else throwError ("Function body type " ++ pretty t ++ " different from return type " ++ pretty (snd ret))
   where 
     addFArg c (Just id, t) = checkIdType ctxLocals ctxLocals setLocals c (id, t)
     addFArg c  _ = return c
 
 -- | Check that axiom is a valid boolean expression    
-checkAxiom :: Context -> Expression -> Checked Context
+checkAxiom :: Context -> Expression -> Checked ()
 checkAxiom c e = do
   t <- checkExpression c {ctxGlobals = M.empty } e
   if t == BoolType 
-    then return c
+    then return ()
     else throwError ("Axiom type " ++ pretty t ++ " different from " ++ pretty BoolType)
   

@@ -5,7 +5,6 @@
 - Type Checker
 	- Add procedures to context
 	- Statements
-	- Check where parts of var decls
 	- Procedure and implementation declarations
 	- Old expressions only allowed in post and implementation
 	- Improve error messages
