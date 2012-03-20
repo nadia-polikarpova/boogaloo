@@ -7,6 +7,7 @@ import Data.List
 import Text.ParserCombinators.Parsec hiding (token)
 import qualified Text.ParserCombinators.Parsec.Token as P
 import Text.ParserCombinators.Parsec.Expr
+import Control.Monad
 import Control.Applicative ((<$>), (<*>), (<*), (*>))
 
 {- Lexical analysis -}
@@ -350,13 +351,16 @@ procDecl = do
   tArgs <- typeArgs
   args <- parens (commaSep idsTypeWhere)
   rets <- option [] (reserved "returns" >> parens (commaSep idsTypeWhere))
-  do 
-    semi
-    specs <- many spec
-    return (ProcedureDecl name tArgs (ungroupWhere args) (ungroupWhere rets) specs Nothing) <|> do
-    specs <- many spec
-    b <- body
-    return (ProcedureDecl name tArgs (ungroupWhere args) (ungroupWhere rets) specs (Just b))
+  noBody name tArgs args rets <|> withBody name tArgs args rets
+  where 
+    noBody name tArgs args rets = do 
+      semi
+      specs <- many spec
+      return (ProcedureDecl name tArgs (ungroupWhere args) (ungroupWhere rets) specs Nothing)
+    withBody name tArgs args rets = do
+      specs <- many spec
+      b <- body
+      return (ProcedureDecl name tArgs (ungroupWhere args) (ungroupWhere rets) specs (Just b))
 
 implDecl :: Parser Decl
 implDecl = do
@@ -411,9 +415,6 @@ spec = do
 
 {- Misc -}
 
-skip :: Parser a -> Parser ()
-skip p = p >> return ()
-
 hasKeyword :: String -> Parser Bool
 hasKeyword s = option False (reserved s >> return True)
 
@@ -441,11 +442,11 @@ trigAttr :: Parser ()
 trigAttr = (try trigger) <|> attribute <?> "attribute or trigger"
 
 trigger :: Parser ()
-trigger = skip (braces (commaSep1 e0)) <?> "trigger"
+trigger = void (braces (commaSep1 e0)) <?> "trigger"
 
 attribute :: Parser ()
-attribute = skip (braces (do
+attribute = void (braces (do
   reservedOp ":"
   identifier
-  commaSep1 (skip e0 <|> skip stringLiteral)
+  commaSep1 (void e0 <|> void stringLiteral)
   )) <?> "attribute"

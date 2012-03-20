@@ -49,7 +49,7 @@ data WildcardExpression = Wildcard | Expr Expression
 {- Statements -}
 data Statement = Assert Expression |
 	Assume Expression |
-	Havoc [Id] |											                     -- Havoc var_names
+	Havoc [Id] |											                    -- Havoc var_names
 	Assign [(Id , [[Expression]])] [Expression] |			    -- Assign var_map_selects rhss
 	Call [Id] Id [Expression] |								            -- Call call_lhss proc_name args
 	CallForall Id [WildcardExpression] |					        -- CallForall proc_name args

@@ -4,7 +4,9 @@
 
 - Type Checker
 	- Statements
-	- Procedure and implementation bodies
+	- Keep track of labels
+	- Keep track of modifies clauses
+	- Check contracts
 	- Old expressions only allowed in post and implementation
 	- Improve error messages
 	- Don't pass the whole context through in all the passes?

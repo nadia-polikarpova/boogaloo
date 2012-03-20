@@ -33,24 +33,28 @@ data Context = Context
     ctxConstants :: M.Map Id Type,            --  constant-type binding, 
     ctxFunctions :: M.Map Id FSig,            --  function-signature binding,
     ctxProcedures :: M.Map Id PSig,           --  procedure-signature binding,
-    ctxTypeVars :: [Id],                      --  free type variables
-    ctxLocals :: M.Map Id Type                --  local variable-type binding, 
+    ctxTypeVars :: [Id],                      --  free type variables,
+    ctxIns :: M.Map Id Type,                  --  input parameter-type binding,
+    ctxLocals :: M.Map Id Type                --  local variable-type binding 
   } deriving Show
 
-emptyContext = Context M.empty M.empty M.empty M.empty M.empty M.empty [] M.empty
+emptyContext = Context M.empty M.empty M.empty M.empty M.empty M.empty [] M.empty M.empty
 
 setGlobals ctx g    = ctx { ctxGlobals = g }
+setIns ctx i        = ctx { ctxIns = i }
 setLocals ctx l     = ctx { ctxLocals = l }
 setConstants ctx c  = ctx { ctxConstants = c }
 
--- | Names of type constructors and synonyms
+-- | Type constructors and synonyms
 typeNames c = M.keys (ctxTypeConstructors c) ++ M.keys (ctxTypeSynonyms c)
-
--- | Binding for global variables and constants
-globConst c = M.union (ctxGlobals c) (ctxConstants c)
-
--- | Binding for all variables and constants (local variables are chosen when conincide with global names)
-varConst c = M.union (ctxLocals c) (globConst c)
+-- | Global variables and constants
+globalScope c = M.union (ctxGlobals c) (ctxConstants c)
+-- | Input parameters and local variables
+localScope c = M.union (ctxIns c) (ctxLocals c)
+-- | Global and local variables
+mutableVars c = M.union (ctxGlobals c) (ctxLocals c)
+-- | All variables and constants (local-scope preferred)
+allVars c = M.union (localScope c) (globalScope c)
 
 -- | Names of functions and procedures
 funProcNames c = M.keys (ctxFunctions c) ++ M.keys (ctxProcedures c)
@@ -172,7 +176,7 @@ checkExpression c e = case e of
   TT -> return BoolType
   FF -> return BoolType
   Numeral n -> return IntType
-  Var id -> case M.lookup id (varConst c) of
+  Var id -> case M.lookup id (allVars c) of
     Nothing -> throwError ("Not in scope: variable or constant " ++ id)
     Just t -> return t
   Application id args -> checkApplication c id args
@@ -242,7 +246,7 @@ checkBinaryExpression c op e1 e2
 checkQuantified :: Context -> QOp -> [Id] -> [IdType] -> Expression -> Checked Type
 checkQuantified c _ fv vars e = do
   c' <- foldM checkTypeVar c fv
-  quantifiedScope <- foldM (checkIdType ctxLocals ctxLocals setLocals) c' vars
+  quantifiedScope <- foldM (checkIdType localScope ctxIns setIns) c' vars
   if not (null missingFV)
     then throwError ("Type variable(s) must occur in the bound variables of the quantification: " ++ separated ", " missingFV) 
     else do
@@ -256,6 +260,37 @@ checkQuantified c _ fv vars e = do
     
 {- Statements -}
 
+checkStatement :: Context -> Statement -> Checked ()
+checkStatement c (Assert e) = compareType c BoolType e
+checkStatement c (Assume e) = compareType c BoolType e
+checkStatement c (Havoc vars) = checkHavoc c vars
+checkStatement c (Assign lhss rhss) = checkAssign c lhss rhss
+checkStatement _ _ = return ()
+
+checkHavoc :: Context -> [Id] -> Checked ()
+checkHavoc c vars = if not (null immutableLhss)
+  then throwError ("Havoc of immutable variable(s): " ++ separated ", " immutableLhss)
+  else return ()
+  where immutableLhss = vars \\ M.keys (mutableVars c)
+  
+checkAssign :: Context -> [(Id , [[Expression]])] -> [Expression] -> Checked ()
+checkAssign c lhss rhss = if length lhss /= length rhss 
+  then throwError ("Assignment has a different number of left- and right-hand sides")
+  else if vars /= nub vars
+    then throwError ("Variable occurs more than once in the left-handes of a parallel assignment")
+    else if not (null immutableLhss)
+      then throwError ("Assignment to immutable variable(s): " ++ separated ", " immutableLhss)
+      else zipWithM_ matchTypes lhss rhss
+  where 
+    vars = map fst lhss
+    immutableLhss = vars \\ M.keys (mutableVars c)
+    matchTypes (id, selects) e = do
+      l <- checkExpression c (foldl MapSelection (Var id) selects)
+      r <- checkExpression c e
+      if l /= r
+        then throwError ("Left-hand side type " ++ pretty l ++ " different from right-hand side type " ++ pretty r)
+        else return ()
+    
 {- Declarations -}
 
 -- | Check program in five passes
@@ -309,8 +344,8 @@ checkCycles c id = checkCyclesWith c id (value id)
 -- | Check variable, constant, function and procedures and add them to context
 checkSignatures :: Context -> Decl -> Checked Context
 checkSignatures c d = case d of
-  VarDecl vars -> foldM (checkIdType varConst ctxGlobals setGlobals) c (map noWhere vars)
-  ConstantDecl _ ids t _ _ -> foldM (checkIdType varConst ctxConstants setConstants) c (zip ids (repeat t))
+  VarDecl vars -> foldM (checkIdType globalScope ctxGlobals setGlobals) c (map noWhere vars)
+  ConstantDecl _ ids t _ _ -> foldM (checkIdType globalScope ctxConstants setConstants) c (zip ids (repeat t))
   FunctionDecl name fv args ret _ -> checkFunctionSignature c name fv args ret
   ProcedureDecl name fv args rets _ _ -> checkProcSignature c name fv args rets
   otherwise -> return c
@@ -332,7 +367,7 @@ checkFunctionSignature c name fv args ret
       then throwError ("Type variable(s) must occur in function arguments: " ++ separated ", " missingFV)
       else return c { ctxFunctions = M.insert name (FSig fv (map snd args) (snd ret)) (ctxFunctions c) }
     where 
-      checkFArg c (Just id, t) = checkIdType ctxLocals ctxLocals setLocals c (id, t)
+      checkFArg c (Just id, t) = checkIdType ctxIns ctxIns setIns c (id, t)
       checkFArg c (Nothing, t) = checkType c t >> return c
       missingFV = filter (not . freeInArgs) fv
       freeInArgs v = any (isFree v) (map snd args)
@@ -347,7 +382,7 @@ checkProcSignature c name fv args rets
       then throwError ("Type variable(s) must occur in procedure arguments: " ++ separated ", " missingFV)
       else return c { ctxProcedures = M.insert name (PSig fv (map itwType args) (map itwType rets)) (ctxProcedures c) }
     where 
-      checkPArg c arg = checkIdType ctxLocals ctxLocals setLocals c (noWhere arg)
+      checkPArg c arg = checkIdType ctxIns ctxIns setIns c (noWhere arg)
       missingFV = filter (not . freeInArgs) fv
       freeInArgs v = any (isFree v) (map itwType args)
 
@@ -357,33 +392,48 @@ checkBodies c d = case d of
   VarDecl vars -> mapM_ (checkWhere c) vars
   FunctionDecl name fv args ret (Just body) -> checkFunctionBody c fv args ret body
   AxiomDecl e -> checkAxiom c e
+  ProcedureDecl name fv args rets specs mb -> checkProcedureBody c fv args rets mb -- ToDo: check specs
   otherwise -> return ()    
   
 -- | Check that "where" part is a valid boolean expression
 checkWhere :: Context -> IdTypeWhere -> Checked ()
-checkWhere c var = do
-  t <- checkExpression c (itwWhere var)
-  if t == BoolType 
-    then return ()
-    else throwError ("Where-clause type " ++ pretty t ++ " different from " ++ pretty BoolType)
+checkWhere c var = compareType c BoolType (itwWhere var)
   
 -- | Check that function body is a valid expression of the same type as the function return type
 checkFunctionBody :: Context -> [Id] -> [FArg] -> FArg -> Expression -> Checked ()
 checkFunctionBody c fv args ret body = do 
-  functionScope <- (foldM addFArg (c { ctxTypeVars = fv }) args)
-  t <- checkExpression functionScope { ctxGlobals = M.empty } body 
-  if t == snd ret 
-    then return ()
-    else throwError ("Function body type " ++ pretty t ++ " different from return type " ++ pretty (snd ret))
+  functionScope <- foldM addFArg c { ctxTypeVars = fv } args
+  compareType functionScope { ctxGlobals = M.empty } (snd ret) body
   where 
-    addFArg c (Just id, t) = checkIdType ctxLocals ctxLocals setLocals c (id, t)
+    addFArg c (Just id, t) = checkIdType ctxIns ctxIns setIns c (id, t)
     addFArg c  _ = return c
+    
+-- | Check "where" parts of procedure arguments and statements in its body
+checkProcedureBody :: Context -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> (Maybe Body) -> Checked ()
+checkProcedureBody c fv args rets mb = do 
+  c' <- foldM (checkIdType localScope ctxIns setIns) c { ctxTypeVars = fv } (map noWhere args)
+  procScope <- foldM (checkIdType localScope ctxLocals setLocals) c' (map noWhere rets)
+  mapM_ (checkWhere procScope) (args ++ rets)
+  case mb of
+    Nothing -> return ()
+    Just body -> do
+      procBodyScope <- foldM (checkIdType localScope ctxLocals setLocals) procScope (map noWhere (fst body))
+      checkBlock procBodyScope (snd body)
+  where
+    checkBlock c block = mapM_ (checkStatement c) (map snd block) -- ToDo: keep track of labels
 
 -- | Check that axiom is a valid boolean expression    
 checkAxiom :: Context -> Expression -> Checked ()
-checkAxiom c e = do
-  t <- checkExpression c {ctxGlobals = M.empty } e
-  if t == BoolType 
+checkAxiom c e = compareType c {ctxGlobals = M.empty } BoolType e
+    
+{- Misc -}
+
+-- | compareType c t e: check that e is a valid expression in context c and its type is t
+compareType :: Context -> Type -> Expression -> Checked ()
+compareType c t e  = do
+  t' <- checkExpression c e
+  if t == t' 
     then return ()
-    else throwError ("Axiom type " ++ pretty t ++ " different from " ++ pretty BoolType)
+    else throwError ("Expected type " ++ pretty t ++ " and got " ++ pretty t')
+
   
