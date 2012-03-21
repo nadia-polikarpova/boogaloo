@@ -261,10 +261,11 @@ checkQuantified c _ fv vars e = do
 {- Statements -}
 
 checkStatement :: Context -> Statement -> Checked ()
-checkStatement c (Assert e) = compareType c BoolType e
-checkStatement c (Assume e) = compareType c BoolType e
+checkStatement c (Assert e) = compareType c "assertion" BoolType e
+checkStatement c (Assume e) = compareType c "assumption" BoolType e
 checkStatement c (Havoc vars) = checkHavoc c vars
 checkStatement c (Assign lhss rhss) = checkAssign c lhss rhss
+checkStatement c (Call lhss name args) = checkCall c lhss name args
 checkStatement _ _ = return ()
 
 checkHavoc :: Context -> [Id] -> Checked ()
@@ -274,23 +275,38 @@ checkHavoc c vars = if not (null immutableLhss)
   where immutableLhss = vars \\ M.keys (mutableVars c)
   
 checkAssign :: Context -> [(Id , [[Expression]])] -> [Expression] -> Checked ()
-checkAssign c lhss rhss = if length lhss /= length rhss 
-  then throwError ("Assignment has a different number of left- and right-hand sides")
+checkAssign c lhss rhss = do
+  checkLefts c (map fst lhss) (length rhss)
+  rTypes <- mapM (checkExpression c) rhss
+  zipWithM_ (compareType c "assignment left-hand side") rTypes (map selectExpr lhss) 
+  where
+    selectExpr (id, selects) = foldl MapSelection (Var id) selects
+        
+checkCall :: Context -> [Id] -> Id -> [Expression] -> Checked ()
+checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
+  Nothing -> throwError ("Not in scope: procedure " ++ name)
+  Just (PSig fv argTypes retTypes) -> do
+    actualArgTypes <- mapM (checkExpression c) args
+    case unifier fv argTypes actualArgTypes of
+      Nothing -> throwError ("Could not match formal argument types " ++ separated ", " (map pretty argTypes) ++
+        " against actual argument types " ++ separated ", " (map pretty actualArgTypes) ++
+        " in the call to " ++ name)
+      Just u -> do
+        checkLefts c lhss (length retTypes)
+        zipWithM_ (compareType c "call left-hand side") (map (substitution u) retTypes) (map Var lhss)
+
+-- | checkLefts c ids n: check that there are n ids, all ids are unique and denote mutable variables
+checkLefts :: Context -> [Id] -> Int -> Checked ()
+checkLefts c vars n = if length vars /= n 
+  then throwError ("Expected " ++ show n ++ " left-hand sides and got " ++ show (length vars))
   else if vars /= nub vars
-    then throwError ("Variable occurs more than once in the left-handes of a parallel assignment")
+    then throwError ("Variable occurs more than once among left-handes of a parallel assignment")
     else if not (null immutableLhss)
       then throwError ("Assignment to immutable variable(s): " ++ separated ", " immutableLhss)
-      else zipWithM_ matchTypes lhss rhss
+      else return ()
   where 
-    vars = map fst lhss
-    immutableLhss = vars \\ M.keys (mutableVars c)
-    matchTypes (id, selects) e = do
-      l <- checkExpression c (foldl MapSelection (Var id) selects)
-      r <- checkExpression c e
-      if l /= r
-        then throwError ("Left-hand side type " ++ pretty l ++ " different from right-hand side type " ++ pretty r)
-        else return ()
-    
+    immutableLhss = vars \\ M.keys (mutableVars c)      
+  
 {- Declarations -}
 
 -- | Check program in five passes
@@ -397,13 +413,13 @@ checkBodies c d = case d of
   
 -- | Check that "where" part is a valid boolean expression
 checkWhere :: Context -> IdTypeWhere -> Checked ()
-checkWhere c var = compareType c BoolType (itwWhere var)
+checkWhere c var = compareType c "where clause" BoolType (itwWhere var)
   
 -- | Check that function body is a valid expression of the same type as the function return type
 checkFunctionBody :: Context -> [Id] -> [FArg] -> FArg -> Expression -> Checked ()
 checkFunctionBody c fv args ret body = do 
   functionScope <- foldM addFArg c { ctxTypeVars = fv } args
-  compareType functionScope { ctxGlobals = M.empty } (snd ret) body
+  compareType functionScope { ctxGlobals = M.empty } "function body" (snd ret) body
   where 
     addFArg c (Just id, t) = checkIdType ctxIns ctxIns setIns c (id, t)
     addFArg c  _ = return c
@@ -424,16 +440,15 @@ checkProcedureBody c fv args rets mb = do
 
 -- | Check that axiom is a valid boolean expression    
 checkAxiom :: Context -> Expression -> Checked ()
-checkAxiom c e = compareType c {ctxGlobals = M.empty } BoolType e
+checkAxiom c e = compareType c {ctxGlobals = M.empty } "axiom" BoolType e
     
 {- Misc -}
 
--- | compareType c t e: check that e is a valid expression in context c and its type is t
-compareType :: Context -> Type -> Expression -> Checked ()
-compareType c t e  = do
+-- | compareType c msg t e: check that e is a valid expression in context c and its type is t
+compareType :: Context -> String -> Type -> Expression -> Checked ()
+compareType c msg t e = do
   t' <- checkExpression c e
   if t == t' 
     then return ()
-    else throwError ("Expected type " ++ pretty t ++ " and got " ++ pretty t')
-
+    else throwError ("Type of " ++ msg ++ " (" ++ pretty t' ++ ") is different from " ++ pretty t)
   
