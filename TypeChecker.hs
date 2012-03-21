@@ -266,6 +266,7 @@ checkStatement c (Assume e) = compareType c "assumption" BoolType e
 checkStatement c (Havoc vars) = checkHavoc c vars
 checkStatement c (Assign lhss rhss) = checkAssign c lhss rhss
 checkStatement c (Call lhss name args) = checkCall c lhss name args
+checkStatement c (CallForall name args) = checkCallForall c name args
 checkStatement _ _ = return ()
 
 checkHavoc :: Context -> [Id] -> Checked ()
@@ -294,6 +295,22 @@ checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
       Just u -> do
         checkLefts c lhss (length retTypes)
         zipWithM_ (compareType c "call left-hand side") (map (substitution u) retTypes) (map Var lhss)
+        
+checkCallForall :: Context -> Id -> [WildcardExpression] -> Checked ()
+checkCallForall c name args = case M.lookup name (ctxProcedures c) of
+  Nothing -> throwError ("Not in scope: procedure " ++ name)
+  Just (PSig fv argTypes _) -> do
+    actualArgTypes <- mapM (checkExpression c) concreteArgs
+    case unifier fv (concrete argTypes) actualArgTypes of
+      Nothing -> throwError ("Could not match formal argument types " ++ separated ", " (map pretty (concrete argTypes)) ++
+        " against actual argument types " ++ separated ", " (map pretty actualArgTypes) ++
+        " in the call to " ++ name)
+      Just u -> return ()
+  where
+    concreteArgs = [e | (Expr e) <- args]
+    concrete at = [at !! i | i <- [0..length args - 1], isConcrete (args !! i)]
+    isConcrete Wildcard = False
+    isConcrete (Expr _) = True
 
 -- | checkLefts c ids n: check that there are n ids, all ids are unique and denote mutable variables
 checkLefts :: Context -> [Id] -> Int -> Checked ()

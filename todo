@@ -5,7 +5,7 @@
 - Type Checker
 	- Statements
 	- Keep track of labels
-	- Keep track of modifies clauses
+	- Keep track of modifies clauses, in particular: call forall only allowed on mthods wo modifies clause
 	- Check contracts
 	- Old expressions only allowed in post and implementation
 	- Improve error messages

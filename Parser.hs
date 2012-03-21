@@ -19,7 +19,7 @@ opStart :: [Char]
 opStart = nub (map head opNames)
 
 opLetter :: [Char]
-opLetter = nub (concat (map tail opNames))
+opLetter = nub (concatMap tail opNames)
 
 boogieDef :: P.LanguageDef st
 boogieDef = P.LanguageDef 
@@ -426,7 +426,7 @@ idsType = do
   return (ids, t)
 
 ungroup :: [([Id], Type)] -> [(IdType)]
-ungroup = concat . (map (\x -> zip (fst x) (repeat (snd x))))
+ungroup = concatMap (\x -> zip (fst x) (repeat (snd x)))
 
 idsTypeWhere :: Parser ([Id], Type, Expression)
 idsTypeWhere = do
@@ -435,7 +435,7 @@ idsTypeWhere = do
   return ((fst ids), (snd ids), e)
 
 ungroupWhere :: [([Id], Type, Expression)] -> [IdTypeWhere]
-ungroupWhere vars = concat (map ungroupWhereOne vars)
+ungroupWhere = concatMap ungroupWhereOne
   where ungroupWhereOne (ids, t, e) = zipWith3 IdTypeWhere ids (repeat t) (repeat e)
 
 trigAttr :: Parser ()
