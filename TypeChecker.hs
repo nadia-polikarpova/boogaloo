@@ -311,19 +311,7 @@ checkCallForall c name args = case M.lookup name (ctxProcedures c) of
     concrete at = [at !! i | i <- [0..length args - 1], isConcrete (args !! i)]
     isConcrete Wildcard = False
     isConcrete (Expr _) = True
-
--- | checkLefts c ids n: check that there are n ids, all ids are unique and denote mutable variables
-checkLefts :: Context -> [Id] -> Int -> Checked ()
-checkLefts c vars n = if length vars /= n 
-  then throwError ("Expected " ++ show n ++ " left-hand sides and got " ++ show (length vars))
-  else if vars /= nub vars
-    then throwError ("Variable occurs more than once among left-handes of a parallel assignment")
-    else if not (null immutableLhss)
-      then throwError ("Assignment to immutable variable(s): " ++ separated ", " immutableLhss)
-      else return ()
-  where 
-    immutableLhss = vars \\ M.keys (mutableVars c)      
-  
+    
 {- Declarations -}
 
 -- | Check program in five passes
@@ -468,4 +456,16 @@ compareType c msg t e = do
   if t == t' 
     then return ()
     else throwError ("Type of " ++ msg ++ " (" ++ pretty t' ++ ") is different from " ++ pretty t)
+    
+-- | checkLefts c ids n: check that there are n ids, all ids are unique and denote mutable variables
+checkLefts :: Context -> [Id] -> Int -> Checked ()
+checkLefts c vars n = if length vars /= n 
+  then throwError ("Expected " ++ show n ++ " left-hand sides and got " ++ show (length vars))
+  else if vars /= nub vars
+    then throwError ("Variable occurs more than once among left-handes of a parallel assignment")
+    else if not (null immutableLhss)
+      then throwError ("Assignment to immutable variable(s): " ++ separated ", " immutableLhss)
+      else return ()
+  where 
+    immutableLhss = vars \\ M.keys (mutableVars c)    
   
