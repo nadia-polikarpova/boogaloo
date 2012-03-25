@@ -267,6 +267,8 @@ checkStatement c (Havoc vars) = checkHavoc c vars
 checkStatement c (Assign lhss rhss) = checkAssign c lhss rhss
 checkStatement c (Call lhss name args) = checkCall c lhss name args
 checkStatement c (CallForall name args) = checkCallForall c name args
+checkStatement c (If cond thenBlock elseBlock) = checkIf c cond thenBlock elseBlock
+checkStatement c (While cond invs b) = checkWhile c cond invs b
 checkStatement _ _ = return ()
 
 checkHavoc :: Context -> [Id] -> Checked ()
@@ -311,6 +313,24 @@ checkCallForall c name args = case M.lookup name (ctxProcedures c) of
     concrete at = [at !! i | i <- [0..length args - 1], isConcrete (args !! i)]
     isConcrete Wildcard = False
     isConcrete (Expr _) = True
+    
+checkIf :: Context -> WildcardExpression -> Block -> (Maybe Block) -> Checked ()
+checkIf c cond thenBlock elseBlock = do
+  case cond of
+    Wildcard -> return ()
+    Expr e -> compareType c "branching condition" BoolType e
+  checkBlock c thenBlock
+  case elseBlock of
+    Nothing -> return ()
+    Just b -> checkBlock c b
+    
+checkWhile :: Context -> WildcardExpression -> [(Bool, Expression)] -> Block -> Checked ()
+checkWhile c cond invs body = do
+  case cond of  
+    Wildcard -> return ()
+    Expr e -> compareType c "loop condition" BoolType e
+  mapM_ (compareType c "loop invariant" BoolType) (map snd invs)
+  checkBlock c body
     
 {- Declarations -}
 
@@ -439,9 +459,7 @@ checkProcedureBody c fv args rets mb = do
     Nothing -> return ()
     Just body -> do
       procBodyScope <- foldM (checkIdType localScope ctxLocals setLocals) procScope (map noWhere (fst body))
-      checkBlock procBodyScope (snd body)
-  where
-    checkBlock c block = mapM_ (checkStatement c) (map snd block) -- ToDo: keep track of labels
+      checkBlock procBodyScope (snd body)    
 
 -- | Check that axiom is a valid boolean expression    
 checkAxiom :: Context -> Expression -> Checked ()
@@ -467,5 +485,8 @@ checkLefts c vars n = if length vars /= n
       then throwError ("Assignment to immutable variable(s): " ++ separated ", " immutableLhss)
       else return ()
   where 
-    immutableLhss = vars \\ M.keys (mutableVars c)    
+    immutableLhss = vars \\ M.keys (mutableVars c)
+
+checkBlock :: Context -> Block -> Checked ()    
+checkBlock c block = mapM_ (checkStatement c) (map snd block) -- ToDo: keep track of labels    
   

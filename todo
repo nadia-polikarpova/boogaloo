@@ -5,11 +5,10 @@
 - Type Checker
 	- Statements
 	- Keep track of labels
-	- Keep track of modifies clauses, in particular: call forall only allowed on mthods wo modifies clause
+	- Keep track of modifies clauses, in particular: call forall only allowed on methods wo modifies clause
 	- Check contracts
 	- Old expressions only allowed in post and implementation
 	- Improve error messages
-	- Don't pass the whole context through in all the passes?
 
 - Pretty printer
 - Interpreter
