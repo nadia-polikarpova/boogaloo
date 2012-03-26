@@ -1,6 +1,9 @@
 {- AST for Boogie 2 -}
 module AST where
 
+import Data.Maybe
+import Data.List
+
 {- Basic -}
 
 type Id = String
@@ -75,6 +78,24 @@ data Spec = Requires Expression Bool |	-- Requires e free
 	Modifies [Id] Bool | 				          -- Modifies var_names free
 	Ensures Expression Bool				        -- Ensures e free
 	deriving Show
+  
+preconditions :: [Spec] -> [Expression]
+preconditions specs = catMaybes (map extractPre specs)
+  where 
+    extractPre (Requires e _) = Just e
+    extractPre _ = Nothing
+
+postconditions :: [Spec] -> [Expression]
+postconditions specs = catMaybes (map extractPost specs)
+  where 
+    extractPost (Ensures e _) = Just e
+    extractPost _ = Nothing
+    
+modifies :: [Spec] -> [Id]
+modifies specs = (nub . concat . catMaybes) (map extractMod specs)
+  where
+    extractMod (Modifies ids _) = Just ids
+    extractMod _ = Nothing
 
 {- Declarations -}
 
@@ -87,7 +108,7 @@ data Decl =
 	ProcedureDecl Id [Id] [IdTypeWhere] [IdTypeWhere] [Spec] (Maybe Body) |	-- ProcedureDecl name type_args formals rets contract body 
 	ImplementationDecl Id [Id] [IdType] [IdType] [Body]						          -- ImplementationDecl name type_args formals rets body
   deriving Show
-
+  
 {- Misc -}
 
 type IdType = (Id, Type)

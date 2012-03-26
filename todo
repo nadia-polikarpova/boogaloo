@@ -3,11 +3,11 @@
 	- bit vectors
 
 - Type Checker
-	- Statements
-	- Keep track of labels
-	- Keep track of modifies clauses, in particular: call forall only allowed on methods wo modifies clause
-	- Check contracts
-	- Old expressions only allowed in post and implementation
+	- In procedures keep track:
+		- Collect all labels (for gotos)
+		- In a loop? (for break)
+		- Labels of all enclosing statements (for break label)
+	- Implementations
 	- Improve error messages
 
 - Pretty printer
@@ -15,7 +15,8 @@
 - Symbolic execution?
 
 Notes:
-The syntax of WhereClause is missing in the boogie manual
+- Where clauses of in-paraneters: according to the manual can mention out-parameters, but actually can't
+- The syntax of WhereClause is missing in the boogie manual
 
 Changed syntax:
 - Multiple argument declarations with a single type
