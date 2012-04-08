@@ -4,7 +4,6 @@
 
 - Type Checker
 	- In procedures keep track:
-		- In a loop? (for break)
 		- Labels of all enclosing statements (for break label)
 	- Implementations
 	- Improve error messages
@@ -15,6 +14,7 @@
 
 Notes:
 - Where clauses of in-parameters: according to the manual can mention out-parameters, but actually can't
+- Breaks with labels. a: b: while(...) {break a;} is not allowed in the implementation (as is l: break l;), but seems to be allowed by the manual.
 - The syntax of WhereClause is missing in the boogie manual
 
 Changed syntax:

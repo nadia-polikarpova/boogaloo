@@ -38,7 +38,8 @@ data Context = Context
     ctxLocals :: M.Map Id Type,               -- local variable types
     ctxModifies :: [Id],                      -- variables in the modifies clause of the enclosing procedure
     ctxLabels :: [Id],                        -- all labels of the enclosing procedure body
-    ctxTwoState :: Bool                       -- is the context two-state? (procedure body or postcondition)
+    ctxTwoState :: Bool,                      -- is the context two-state? (procedure body or postcondition)
+    ctxInLoop :: Bool                         -- is context inside a loop body?
   } deriving Show
 
 emptyContext = Context {
@@ -53,7 +54,8 @@ emptyContext = Context {
     ctxLocals           = M.empty,
     ctxModifies         = [],
     ctxLabels           = [],
-    ctxTwoState         = False
+    ctxTwoState         = False,
+    ctxInLoop           = False
   }
 
 setGlobals ctx g    = ctx { ctxGlobals = g }
@@ -288,6 +290,7 @@ checkStatement c (CallForall name args) = checkCallForall c name args
 checkStatement c (If cond thenBlock elseBlock) = checkIf c cond thenBlock elseBlock
 checkStatement c (While cond invs b) = checkWhile c cond invs b
 checkStatement c (Goto ids) = checkGoto c ids
+checkStatement c (Break Nothing) = checkSimpleBreak c
 checkStatement _ _ = return ()
 
 checkAssign :: Context -> [(Id , [[Expression]])] -> [Expression] -> Checked ()
@@ -347,7 +350,7 @@ checkWhile c cond invs body = do
     Wildcard -> return ()
     Expr e -> compareType c "loop condition" BoolType e
   mapM_ (compareType c "loop invariant" BoolType) (map snd invs)
-  checkBlock c body
+  checkBlock c {ctxInLoop = True} body
 
 checkGoto :: Context -> [Id] -> Checked ()  
 checkGoto c ids = if not (null unknownLabels)
@@ -355,6 +358,11 @@ checkGoto c ids = if not (null unknownLabels)
   else return ()
   where
     unknownLabels = ids \\ ctxLabels c 
+    
+checkSimpleBreak :: Context -> Checked ()
+checkSimpleBreak c = if not (ctxInLoop c)
+  then throwError ("Break statement outside a loop")
+  else return ()
     
 {- Declarations -}
 
