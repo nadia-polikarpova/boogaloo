@@ -4,7 +4,6 @@
 
 - Type Checker
 	- In procedures keep track:
-		- Collect all labels (for gotos)
 		- In a loop? (for break)
 		- Labels of all enclosing statements (for break label)
 	- Implementations
@@ -15,7 +14,7 @@
 - Symbolic execution?
 
 Notes:
-- Where clauses of in-paraneters: according to the manual can mention out-parameters, but actually can't
+- Where clauses of in-parameters: according to the manual can mention out-parameters, but actually can't
 - The syntax of WhereClause is missing in the boogie manual
 
 Changed syntax:

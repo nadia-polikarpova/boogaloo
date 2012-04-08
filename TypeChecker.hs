@@ -37,6 +37,7 @@ data Context = Context
     ctxIns :: M.Map Id Type,                  -- input parameter types
     ctxLocals :: M.Map Id Type,               -- local variable types
     ctxModifies :: [Id],                      -- variables in the modifies clause of the enclosing procedure
+    ctxLabels :: [Id],                        -- all labels of the enclosing procedure body
     ctxTwoState :: Bool                       -- is the context two-state? (procedure body or postcondition)
   } deriving Show
 
@@ -51,6 +52,7 @@ emptyContext = Context {
     ctxIns              = M.empty,
     ctxLocals           = M.empty,
     ctxModifies         = [],
+    ctxLabels           = [],
     ctxTwoState         = False
   }
 
@@ -285,6 +287,7 @@ checkStatement c (Call lhss name args) = checkCall c lhss name args
 checkStatement c (CallForall name args) = checkCallForall c name args
 checkStatement c (If cond thenBlock elseBlock) = checkIf c cond thenBlock elseBlock
 checkStatement c (While cond invs b) = checkWhile c cond invs b
+checkStatement c (Goto ids) = checkGoto c ids
 checkStatement _ _ = return ()
 
 checkAssign :: Context -> [(Id , [[Expression]])] -> [Expression] -> Checked ()
@@ -345,6 +348,13 @@ checkWhile c cond invs body = do
     Expr e -> compareType c "loop condition" BoolType e
   mapM_ (compareType c "loop invariant" BoolType) (map snd invs)
   checkBlock c body
+
+checkGoto :: Context -> [Id] -> Checked ()  
+checkGoto c ids = if not (null unknownLabels)
+  then throwError ("Not in scope: label(s) " ++ separated "," unknownLabels)
+  else return ()
+  where
+    unknownLabels = ids \\ ctxLabels c 
     
 {- Declarations -}
 
@@ -478,7 +488,8 @@ checkProcedureBody c fv args rets specs mb = do
       Nothing -> return ()
       Just body -> do
         procBodyScope <- foldM (checkIdType localScope ctxLocals setLocals) procScope { ctxModifies = modifies specs } (map noWhere (fst body))
-        checkBlock procBodyScope (snd body)
+        procBodyScope' <- collectLabels procBodyScope (snd body)
+        checkBlock procBodyScope' (snd body)
   where invalidModifies = modifies specs \\ M.keys (ctxGlobals c)
 
 -- | Check that axiom is a valid boolean expression    
@@ -509,6 +520,24 @@ checkLefts c vars n = if length vars /= n
   where 
     immutableLhss = vars \\ M.keys (mutableVars c)
     invalidGlobals = (vars `intersect` M.keys (ctxGlobals c)) \\ ctxModifies c
+
+-- | collectLabels c block: check that all labels in block and nested blocks are unique and add then to the context
+collectLabels :: Context -> Block -> Checked Context
+collectLabels c block = foldM checkLStatement c block
+  where
+    checkLStatement c (ls, st) = do
+      c' <- foldM addLabel c ls
+      case st of
+        If _ thenBlock mElseBlock -> do 
+          c'' <- collectLabels c' thenBlock
+          case mElseBlock of
+            Nothing -> return c''
+            Just elseBlock -> collectLabels c'' elseBlock
+        While _ _ bodyBlock -> collectLabels c' bodyBlock
+        _ -> return c'
+    addLabel c l = if l `elem` ctxLabels c 
+      then throwError ("Multiple occurrences of label " ++ l ++ " in a procedure body")
+      else return c {ctxLabels = l : ctxLabels c}
 
 checkBlock :: Context -> Block -> Checked ()    
 checkBlock c block = mapM_ (checkStatement c) (map snd block) -- ToDo: keep track of labels    
