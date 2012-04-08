@@ -38,6 +38,7 @@ data Context = Context
     ctxLocals :: M.Map Id Type,               -- local variable types
     ctxModifies :: [Id],                      -- variables in the modifies clause of the enclosing procedure
     ctxLabels :: [Id],                        -- all labels of the enclosing procedure body
+    ctxEncLabels :: [Id],                     -- labels of all enclosing statements
     ctxTwoState :: Bool,                      -- is the context two-state? (procedure body or postcondition)
     ctxInLoop :: Bool                         -- is context inside a loop body?
   } deriving Show
@@ -54,6 +55,7 @@ emptyContext = Context {
     ctxLocals           = M.empty,
     ctxModifies         = [],
     ctxLabels           = [],
+    ctxEncLabels        = [],
     ctxTwoState         = False,
     ctxInLoop           = False
   }
@@ -291,6 +293,7 @@ checkStatement c (If cond thenBlock elseBlock) = checkIf c cond thenBlock elseBl
 checkStatement c (While cond invs b) = checkWhile c cond invs b
 checkStatement c (Goto ids) = checkGoto c ids
 checkStatement c (Break Nothing) = checkSimpleBreak c
+checkStatement c (Break (Just l)) = checkLabelBreak c l
 checkStatement _ _ = return ()
 
 checkAssign :: Context -> [(Id , [[Expression]])] -> [Expression] -> Checked ()
@@ -363,6 +366,37 @@ checkSimpleBreak :: Context -> Checked ()
 checkSimpleBreak c = if not (ctxInLoop c)
   then throwError ("Break statement outside a loop")
   else return ()
+  
+checkLabelBreak :: Context -> Id -> Checked ()
+checkLabelBreak c l = if not (l `elem` ctxEncLabels c)
+  then throwError ("Break label " ++ l ++ " does not label an enclosing statement")
+  else return ()
+  
+{- Blocks -}
+
+-- | collectLabels c block: check that all labels in block and nested blocks are unique and add then to the context
+collectLabels :: Context -> Block -> Checked Context
+collectLabels c block = foldM checkLStatement c block
+  where
+    checkLStatement c (ls, st) = do
+      c' <- foldM addLabel c ls
+      case st of
+        If _ thenBlock mElseBlock -> do 
+          c'' <- collectLabels c' thenBlock
+          case mElseBlock of
+            Nothing -> return c''
+            Just elseBlock -> collectLabels c'' elseBlock
+        While _ _ bodyBlock -> collectLabels c' bodyBlock
+        _ -> return c'
+    addLabel c l = if l `elem` ctxLabels c 
+      then throwError ("Multiple occurrences of label " ++ l ++ " in a procedure body")
+      else return c {ctxLabels = l : ctxLabels c}
+
+-- | check every statement in the block
+checkBlock :: Context -> Block -> Checked ()    
+checkBlock c block = mapM_ (checkLStatement c) block
+  where
+    checkLStatement c (ls, st) = checkStatement c { ctxEncLabels = ctxEncLabels c ++ ls} st
     
 {- Declarations -}
 
@@ -528,25 +562,4 @@ checkLefts c vars n = if length vars /= n
   where 
     immutableLhss = vars \\ M.keys (mutableVars c)
     invalidGlobals = (vars `intersect` M.keys (ctxGlobals c)) \\ ctxModifies c
-
--- | collectLabels c block: check that all labels in block and nested blocks are unique and add then to the context
-collectLabels :: Context -> Block -> Checked Context
-collectLabels c block = foldM checkLStatement c block
-  where
-    checkLStatement c (ls, st) = do
-      c' <- foldM addLabel c ls
-      case st of
-        If _ thenBlock mElseBlock -> do 
-          c'' <- collectLabels c' thenBlock
-          case mElseBlock of
-            Nothing -> return c''
-            Just elseBlock -> collectLabels c'' elseBlock
-        While _ _ bodyBlock -> collectLabels c' bodyBlock
-        _ -> return c'
-    addLabel c l = if l `elem` ctxLabels c 
-      then throwError ("Multiple occurrences of label " ++ l ++ " in a procedure body")
-      else return c {ctxLabels = l : ctxLabels c}
-
-checkBlock :: Context -> Block -> Checked ()    
-checkBlock c block = mapM_ (checkStatement c) (map snd block) -- ToDo: keep track of labels    
   

@@ -3,8 +3,6 @@
 	- bit vectors
 
 - Type Checker
-	- In procedures keep track:
-		- Labels of all enclosing statements (for break label)
 	- Implementations
 	- Improve error messages
 
