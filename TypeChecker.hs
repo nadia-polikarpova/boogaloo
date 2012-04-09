@@ -540,14 +540,14 @@ checkProcedure c fv args rets specs mb = do
   cArgs <- foldM (checkIdType localScope ctxIns setIns) c { ctxTypeVars = fv } (map noWhere args)
   mapM_ (checkWhere cArgs) args
   mapM_ (compareType cArgs "precondition" BoolType) (preconditions specs)
-  procScope <- foldM (checkIdType localScope ctxLocals setLocals) cArgs {ctxTwoState = True} (map noWhere rets)
-  mapM_ (checkWhere procScope) rets
-  mapM_ (compareType procScope "postcondition" BoolType) (postconditions specs)
+  cRets <- foldM (checkIdType localScope ctxLocals setLocals) cArgs (map noWhere rets)
+  mapM_ (checkWhere cRets) rets
+  mapM_ (compareType cRets {ctxTwoState = True} "postcondition" BoolType) (postconditions specs)
   if not (null invalidModifies)
     then throwError ("Identifier in a modifies clause does not denote a global variable: " ++ commaSep invalidModifies)
     else case mb of
       Nothing -> return ()
-      Just body -> checkBody procScope { ctxModifies = modifies specs } body
+      Just body -> checkBody cRets { ctxModifies = modifies specs, ctxTwoState = True } body
   where invalidModifies = modifies specs \\ M.keys (ctxGlobals c)
   
 -- | Check procedure body in context c  
