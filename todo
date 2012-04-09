@@ -17,3 +17,4 @@ Notes:
 Changed syntax:
 - Multiple function argument declarations with a single type
 - call * := Q(x, y);
+- type T, U;

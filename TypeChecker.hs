@@ -554,6 +554,7 @@ checkProcedure c fv args rets specs mb = do
 checkBody :: Context -> Body -> Checked ()
 checkBody c body = do
   bodyScope <- foldM (checkIdType localScope ctxLocals setLocals) c (map noWhere (fst body))
+  mapM_ (checkWhere bodyScope) (fst body)
   bodyScope' <- collectLabels bodyScope (snd body)
   checkBlock bodyScope' (snd body)
 
