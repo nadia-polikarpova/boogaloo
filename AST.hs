@@ -122,4 +122,12 @@ type Body = ([IdTypeWhere], Block)
 type ParentEdge = (Bool, Id)
 type ParentInfo = Maybe [ParentEdge]
 
+-- | Function signature: type variables, argument types, return type
+data FSig = FSig [Id] [Type] Type
+  deriving Show
+  
+-- | Procedure signature: type variables, argument types, return types
+data PSig = PSig [Id] [Type] [Type]
+  deriving Show
+
 noWhere itw = (itwId itw, itwType itw)

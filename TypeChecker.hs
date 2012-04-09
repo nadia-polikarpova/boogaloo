@@ -16,14 +16,6 @@ type Checked a = ErrorT String Identity a
 
 {- Context -}
 
--- | Function signature: type variables, argument types, return type
-data FSig = FSig [Id] [Type] Type
-  deriving Show
-  
--- | Procedure signature: type variables, argument types, return types
-data PSig = PSig [Id] [Type] [Type]
-  deriving Show
-
 -- | Typechecking context: 
 data Context = Context
   {
@@ -105,7 +97,7 @@ isFree x (Instance y args) = any (isFree x) args
 isFree x (MapType bv domains range) = x `notElem` bv && any (isFree x) (range:domains)
 isFree x _ = False
   
--- | unifier fv xs ys : most general unifier of xs and ys with free variables fv   
+-- | unifier fv xs ys : most general unifier of xs and ys with free type variables fv   
 unifier :: [Id] -> [Type] -> [Type] -> Maybe (M.Map Id Type)
 unifier _ [] [] = Just M.empty
 unifier fv (IntType:xs) (IntType:ys) = unifier fv xs ys
@@ -120,31 +112,38 @@ unifier fv (x:xs) ((Instance id []):ys) | id `elem` fv =
   else M.insert id x <$> unifier fv (update xs) (update ys)
     where update = map (substitution (M.singleton id x))
 unifier fv ((MapType bv1 domains1 range1):xs) ((MapType bv2 domains2 range2):ys) =
-  if length bv1 /= length bv2 || length domains1 /= length domains2 then Nothing
-  else case innerUnifier of 
+  case boundUnifier fv bv1 (range1:domains1) bv2 (range2:domains2) of
     Nothing -> Nothing
-    Just u -> if all isBV (M.elems (bound u)) && not (any hasBV (M.elems (free u)))
-      then M.union (free u) <$> unifier fv (update u xs) (update u ys) 
+    Just u -> M.union u <$> (unifier fv (update u xs) (update u ys))
+  where
+    update u = map (substitution u)
+unifier _ _ _ = Nothing
+
+-- | boundUnifier fv bv1 xs bv2 ys: most geenral unifier of xs and ys,
+-- | where bv1 are bound type varuables in xs and bv2 are bound type variables in ys,
+-- | and fv are free type variables of the enclosing context
+boundUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= length ys 
+  then Nothing
+  else case unifier (fv ++ bv1) xs (map replacedBV ys) of
+    Nothing -> Nothing
+    Just u -> if all isFreshBV (M.elems (bound u)) && not (any hasFreshBV (M.elems (free u)))
+      then Just (free u)
       else Nothing
     where
-      -- unifier for the components of map types m1 and m2, where bound variables of m1 are considered free, and those of m2 are considered constants and given fresh names 
-      innerUnifier = unifier (fv ++ bv1) (range1:domains1) (map replacedBV (range2:domains2))
       -- substitution of bound variables of m2 with fresh names
       replacedBV = substitution (M.fromList (zip bv2 (map idType freshBVNames)))
       -- fresh names for bound variables of m2: with non-identifier chanarcter prepended 
       freshBVNames = map (nonIdChar:) bv2
       -- does a type correspond to one of the fresh bound variables of m2?
-      isBV (Instance id []) = id `elem` freshBVNames
-      isBV _ = False
+      isFreshBV (Instance id []) = id `elem` freshBVNames
+      isFreshBV _ = False
       -- does type t contain any fresh bound variables of m2?
-      hasBV t = any (flip isFree t) freshBVNames
+      hasFreshBV t = any (flip isFree t) freshBVNames
       -- binding restricted to free variables
       free = deleteAll bv1
       -- binding restricted to bound variables
       bound = deleteAll (fv \\ bv1)
-      -- type list updated with all free variables updated according to binding u
-      update u = map (substitution (free u))
-unifier _ _ _ = Nothing
+      -- type list updated with all free variables updated according to binding u      
 
 -- | Equality of types
 instance Eq Type where
@@ -215,8 +214,8 @@ checkApplication c id args = case M.lookup id (ctxFunctions c) of
   Just (FSig fv argTypes retType) -> do
     actualTypes <- mapM (checkExpression c) args
     case unifier fv argTypes actualTypes of
-      Nothing -> throwError ("Could not match formal argument types " ++ separated ", " (map pretty argTypes) ++
-        " against actual argument types " ++ separated ", " (map pretty actualTypes) ++
+      Nothing -> throwError ("Could not match formal argument types " ++ commaSep (map pretty argTypes) ++
+        " against actual argument types " ++ commaSep (map pretty actualTypes) ++
         " in the call to " ++ id)
       Just u -> return (substitution u retType)
     
@@ -227,8 +226,8 @@ checkMapSelection c m args = do
     MapType fv domainTypes rangeType -> do
       actualTypes <- mapM (checkExpression c) args
       case unifier fv domainTypes actualTypes of
-        Nothing -> throwError ("Could not match map domain types " ++ separated ", " (map pretty domainTypes) ++
-          " against map selection types " ++ separated ", " (map pretty actualTypes) ++
+        Nothing -> throwError ("Could not match map domain types " ++ commaSep (map pretty domainTypes) ++
+          " against map selection types " ++ commaSep (map pretty actualTypes) ++
           " for the map " ++ pretty m)
         Just u -> return (substitution u rangeType)
     t -> throwError ("Map selection applied to a non-map " ++ pretty m ++ " of type " ++ pretty t)
@@ -270,7 +269,7 @@ checkQuantified c _ fv vars e = do
   c' <- foldM checkTypeVar c fv
   quantifiedScope <- foldM (checkIdType localScope ctxIns setIns) c' vars
   if not (null missingFV)
-    then throwError ("Type variable(s) must occur in the bound variables of the quantification: " ++ separated ", " missingFV) 
+    then throwError ("Type variable(s) must occur in the bound variables of the quantification: " ++ commaSep missingFV) 
     else do
       t <- checkExpression quantifiedScope e
       case t of
@@ -308,12 +307,12 @@ checkCall :: Context -> [Id] -> Id -> [Expression] -> Checked ()
 checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
   Nothing -> throwError ("Not in scope: procedure " ++ name)
   Just (PSig fv argTypes retTypes, mods) -> if not (null (mods \\ ctxModifies c)) 
-    then throwError ("Call modifies a global variable that is not in the enclosing procedure's modifies clause: " ++ separated ", " (mods \\ ctxModifies c))
+    then throwError ("Call modifies a global variable that is not in the enclosing procedure's modifies clause: " ++ commaSep (mods \\ ctxModifies c))
     else do
       actualArgTypes <- mapM (checkExpression c) args
       case unifier fv argTypes actualArgTypes of
-        Nothing -> throwError ("Could not match formal argument types " ++ separated ", " (map pretty argTypes) ++
-          " against actual argument types " ++ separated ", " (map pretty actualArgTypes) ++
+        Nothing -> throwError ("Could not match formal argument types " ++ commaSep (map pretty argTypes) ++
+          " against actual argument types " ++ commaSep (map pretty actualArgTypes) ++
           " in the call to " ++ name)
         Just u -> do
           checkLefts c lhss (length retTypes)
@@ -327,8 +326,8 @@ checkCallForall c name args = case M.lookup name (ctxProcedures c) of
     else do
       actualArgTypes <- mapM (checkExpression c) concreteArgs
       case unifier fv (concrete argTypes) actualArgTypes of
-        Nothing -> throwError ("Could not match formal argument types " ++ separated ", " (map pretty (concrete argTypes)) ++
-          " against actual argument types " ++ separated ", " (map pretty actualArgTypes) ++
+        Nothing -> throwError ("Could not match formal argument types " ++ commaSep (map pretty (concrete argTypes)) ++
+          " against actual argument types " ++ commaSep (map pretty actualArgTypes) ++
           " in the call to " ++ name)
         Just u -> return ()
   where
@@ -471,7 +470,7 @@ checkFunctionSignature c name fv args ret
     c' <- foldM checkTypeVar c fv
     foldM checkFArg c' (args ++ [ret])
     if not (null missingFV) 
-      then throwError ("Type variable(s) must occur in function arguments: " ++ separated ", " missingFV)
+      then throwError ("Type variable(s) must occur in function arguments: " ++ commaSep missingFV)
       else return c { ctxFunctions = M.insert name (FSig fv (map snd args) (snd ret)) (ctxFunctions c) }
     where 
       checkFArg c (Just id, t) = checkIdType ctxIns ctxIns setIns c (id, t)
@@ -486,7 +485,7 @@ checkProcSignature c name fv args rets specs
     c' <- foldM checkTypeVar c fv
     foldM checkPArg c' (args ++ rets)
     if not (null missingFV) 
-      then throwError ("Type variable(s) must occur in procedure arguments: " ++ separated ", " missingFV)
+      then throwError ("Type variable(s) must occur in procedure arguments: " ++ commaSep missingFV)
       else return c { ctxProcedures = M.insert name (PSig fv (map itwType args) (map itwType rets), modifies specs) (ctxProcedures c) }
     where 
       checkPArg c arg = checkIdType ctxIns ctxIns setIns c (noWhere arg)
@@ -497,18 +496,23 @@ checkProcSignature c name fv args rets specs
 checkBodies :: Context -> Decl -> Checked ()
 checkBodies c d = case d of
   VarDecl vars -> mapM_ (checkWhere c) vars
-  FunctionDecl name fv args ret (Just body) -> checkFunctionBody c fv args ret body
+  FunctionDecl name fv args ret (Just body) -> checkFunction c fv args ret body
   AxiomDecl e -> checkAxiom c e
-  ProcedureDecl name fv args rets specs mb -> checkProcedureBody c fv args rets specs mb
+  ProcedureDecl name fv args rets specs mb -> checkProcedure c fv args rets specs mb
+  ImplementationDecl name fv args rets bodies -> checkImplementation c name fv args rets bodies	
   otherwise -> return ()    
   
 -- | Check that "where" part is a valid boolean expression
 checkWhere :: Context -> IdTypeWhere -> Checked ()
 checkWhere c var = compareType c "where clause" BoolType (itwWhere var)
+
+-- | Check that axiom is a valid boolean expression    
+checkAxiom :: Context -> Expression -> Checked ()
+checkAxiom c e = compareType c {ctxGlobals = M.empty } "axiom" BoolType e
   
 -- | Check that function body is a valid expression of the same type as the function return type
-checkFunctionBody :: Context -> [Id] -> [FArg] -> FArg -> Expression -> Checked ()
-checkFunctionBody c fv args ret body = do 
+checkFunction :: Context -> [Id] -> [FArg] -> FArg -> Expression -> Checked ()
+checkFunction c fv args ret body = do 
   functionScope <- foldM addFArg c { ctxTypeVars = fv } args
   compareType functionScope { ctxGlobals = M.empty } "function body" (snd ret) body
   where 
@@ -516,8 +520,8 @@ checkFunctionBody c fv args ret body = do
     addFArg c  _ = return c
     
 -- | Check "where" parts of procedure arguments and statements in its body
-checkProcedureBody :: Context -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> [Spec] -> (Maybe Body) -> Checked ()
-checkProcedureBody c fv args rets specs mb = do 
+checkProcedure :: Context -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> [Spec] -> (Maybe Body) -> Checked ()
+checkProcedure c fv args rets specs mb = do 
   cArgs <- foldM (checkIdType localScope ctxIns setIns) c { ctxTypeVars = fv } (map noWhere args)
   mapM_ (checkWhere cArgs) args
   mapM_ (compareType cArgs "precondition" BoolType) (preconditions specs)
@@ -525,18 +529,31 @@ checkProcedureBody c fv args rets specs mb = do
   mapM_ (checkWhere procScope) rets
   mapM_ (compareType procScope "postcondition" BoolType) (postconditions specs)
   if not (null invalidModifies)
-    then throwError ("Identifier in a modifies clause does not denote a global variable: " ++ separated ", " invalidModifies)
+    then throwError ("Identifier in a modifies clause does not denote a global variable: " ++ commaSep invalidModifies)
     else case mb of
       Nothing -> return ()
-      Just body -> do
-        procBodyScope <- foldM (checkIdType localScope ctxLocals setLocals) procScope { ctxModifies = modifies specs } (map noWhere (fst body))
-        procBodyScope' <- collectLabels procBodyScope (snd body)
-        checkBlock procBodyScope' (snd body)
+      Just body -> checkBody procScope { ctxModifies = modifies specs } body
   where invalidModifies = modifies specs \\ M.keys (ctxGlobals c)
+  
+-- | Check procedure body in context c  
+checkBody :: Context -> Body -> Checked ()
+checkBody c body = do
+  bodyScope <- foldM (checkIdType localScope ctxLocals setLocals) c (map noWhere (fst body))
+  bodyScope' <- collectLabels bodyScope (snd body)
+  checkBlock bodyScope' (snd body)
 
--- | Check that axiom is a valid boolean expression    
-checkAxiom :: Context -> Expression -> Checked ()
-checkAxiom c e = compareType c {ctxGlobals = M.empty } "axiom" BoolType e
+-- | Check that implementation corresponds to a known procedure and matches its signature, then checkk all bodies
+checkImplementation :: Context -> Id -> [Id] -> [IdType] -> [IdType] -> [Body] -> Checked ()  
+checkImplementation c name fv args rets bodies = case M.lookup name (ctxProcedures c) of
+    Nothing -> throwError ("Not in scope: procedure " ++ name)
+    Just (PSig fv' argTypes' retTypes', mods) -> case boundUnifier [] fv' (argTypes' ++ retTypes') fv (map snd (args ++ rets)) of
+      Nothing -> throwError ("Could not match procedure signature " ++ pretty (PSig fv' argTypes' retTypes') ++
+        " against implementation signature " ++ pretty (PSig fv (map snd args) (map snd rets)) ++
+        " in the implementation of " ++ name)
+      Just _ -> do
+        cArgs <- foldM (checkIdType localScope ctxIns setIns) c { ctxTypeVars = fv } args
+        cRets <- foldM (checkIdType localScope ctxLocals setLocals) cArgs rets
+        mapM_ (checkBody cRets { ctxModifies = mods, ctxTwoState = True }) bodies
     
 {- Misc -}
 
@@ -555,9 +572,9 @@ checkLefts c vars n = if length vars /= n
   else if vars /= nub vars
     then throwError ("Variable occurs more than once among left-handes of a parallel assignment")
     else if not (null immutableLhss)
-      then throwError ("Assignment to immutable variable(s): " ++ separated ", " immutableLhss)
+      then throwError ("Assignment to immutable variable(s): " ++ commaSep immutableLhss)
       else if not (null invalidGlobals)
-        then throwError ("Assignment to a global variable that is not in the enclosing procedure's modifies clause: " ++ separated ", " invalidGlobals)
+        then throwError ("Assignment to a global variable that is not in the enclosing procedure's modifies clause: " ++ commaSep invalidGlobals)
         else return ()      
   where 
     immutableLhss = vars \\ M.keys (mutableVars c)
