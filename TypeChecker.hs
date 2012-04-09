@@ -594,5 +594,5 @@ checkLefts c vars n = if length vars /= n
         else return ()      
   where 
     immutableLhss = vars \\ M.keys (mutableVars c)
-    invalidGlobals = (vars `intersect` M.keys (ctxGlobals c)) \\ ctxModifies c
+    invalidGlobals = (vars \\ M.keys (ctxLocals c)) \\ ctxModifies c
   
