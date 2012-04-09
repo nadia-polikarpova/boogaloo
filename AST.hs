@@ -15,7 +15,6 @@ type Program = [Decl]
 data Type = BoolType | IntType | {-BitVectorType Int |-} 
 	MapType [Id] [Type] Type |
 	Instance Id [Type]
-	deriving Show
 
 -- | Type denoted by id	without arguments
 idType id = Instance id []
@@ -24,15 +23,15 @@ idType id = Instance id []
 
 -- | Unary operators
 data UnOp = Neg | Not
-	deriving (Eq, Show)
+	deriving Eq
 
 -- | Binary operators	
 data BinOp = Plus | Minus | Times | Div | Mod | And | Or | Implies | Equiv | Eq | Neq | Lc | Ls | Leq | Gt | Geq
-	deriving (Eq, Show)
+	deriving Eq
 
 -- | Quantifiers
 data QOp = Forall | Exists
-	deriving (Eq, Show)
+	deriving Eq
 	
 data Expression = FF | TT |
 	Numeral Integer | 								              -- Numeral value
@@ -44,10 +43,8 @@ data Expression = FF | TT |
 	UnaryExpression UnOp Expression |
 	BinaryExpression BinOp Expression Expression |
 	Quantified QOp [Id] [IdType] Expression			    -- Quantified quantifier type_vars bound_vars expression
-	deriving Show
 	
 data WildcardExpression = Wildcard | Expr Expression
-	deriving Show
 	
 {- Statements -}
 data Statement = Assert Expression |
@@ -62,7 +59,6 @@ data Statement = Assert Expression |
 	Return |
 	Goto [Id] |												                    -- Goto labels
 	Skip 													                        -- only used at the end of a block
-	deriving Show
 
 -- | Statement labeled by multiple labels
 type LStatement = ([Id], Statement)
@@ -77,7 +73,6 @@ singletonBlock s = [([], s)]
 data Spec = Requires Expression Bool |	-- Requires e free 
 	Modifies [Id] Bool | 				          -- Modifies var_names free
 	Ensures Expression Bool				        -- Ensures e free
-	deriving Show
   
 preconditions :: [Spec] -> [Expression]
 preconditions specs = catMaybes (map extractPre specs)
@@ -107,7 +102,6 @@ data Decl =
 	VarDecl [IdTypeWhere] |
 	ProcedureDecl Id [Id] [IdTypeWhere] [IdTypeWhere] [Spec] (Maybe Body) |	-- ProcedureDecl name type_args formals rets contract body 
 	ImplementationDecl Id [Id] [IdType] [IdType] [Body]						          -- ImplementationDecl name type_args formals rets body
-  deriving Show
   
 {- Misc -}
 
@@ -116,7 +110,7 @@ data IdTypeWhere = IdTypeWhere {
   itwId :: Id, 
   itwType :: Type, 
   itwWhere :: Expression 
-  } deriving Show
+  }
 type FArg = (Maybe Id, Type)
 type Body = ([IdTypeWhere], Block)
 type ParentEdge = (Bool, Id)
@@ -124,10 +118,8 @@ type ParentInfo = Maybe [ParentEdge]
 
 -- | Function signature: type variables, argument types, return type
 data FSig = FSig [Id] [Type] Type
-  deriving Show
   
 -- | Procedure signature: type variables, argument types, return types
 data PSig = PSig [Id] [Type] [Type]
-  deriving Show
 
 noWhere itw = (itwId itw, itwType itw)

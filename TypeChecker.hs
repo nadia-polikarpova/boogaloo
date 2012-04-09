@@ -3,7 +3,7 @@ module TypeChecker where
 
 import AST
 import Tokens
-import Printer
+import Message
 import Data.List
 import Data.Maybe
 import qualified Data.Map as M
@@ -214,8 +214,8 @@ checkApplication c id args = case M.lookup id (ctxFunctions c) of
   Just (FSig fv argTypes retType) -> do
     actualTypes <- mapM (checkExpression c) args
     case unifier fv argTypes actualTypes of
-      Nothing -> throwError ("Could not match formal argument types " ++ commaSep (map pretty argTypes) ++
-        " against actual argument types " ++ commaSep (map pretty actualTypes) ++
+      Nothing -> throwError ("Could not match formal argument types " ++ commaSep (map show argTypes) ++
+        " against actual argument types " ++ commaSep (map show actualTypes) ++
         " in the call to " ++ id)
       Just u -> return (substitution u retType)
     
@@ -226,11 +226,11 @@ checkMapSelection c m args = do
     MapType fv domainTypes rangeType -> do
       actualTypes <- mapM (checkExpression c) args
       case unifier fv domainTypes actualTypes of
-        Nothing -> throwError ("Could not match map domain types " ++ commaSep (map pretty domainTypes) ++
-          " against map selection types " ++ commaSep (map pretty actualTypes) ++
-          " for the map " ++ pretty m)
+        Nothing -> throwError ("Could not match map domain types " ++ commaSep (map show domainTypes) ++
+          " against map selection types " ++ commaSep (map show actualTypes) ++
+          " for the map " ++ show m)
         Just u -> return (substitution u rangeType)
-    t -> throwError ("Map selection applied to a non-map " ++ pretty m ++ " of type " ++ pretty t)
+    t -> throwError ("Map selection applied to a non-map " ++ show m ++ " of type " ++ show t)
   
 checkMapUpdate :: Context -> Expression -> [Expression] -> Expression -> Checked Type
 checkMapUpdate c m args val = do 
@@ -238,7 +238,7 @@ checkMapUpdate c m args val = do
   actualT <- checkExpression c val
   if t == actualT 
     then checkExpression c m 
-    else throwError ("Update value type " ++ pretty actualT ++ " different from map range type " ++ pretty t)
+    else throwError ("Update value type " ++ show actualT ++ " different from map range type " ++ show t)
     
 checkUnaryExpression :: Context -> UnOp -> Expression -> Checked Type
 checkUnaryExpression c op e
@@ -248,7 +248,7 @@ checkUnaryExpression c op e
     matchType t ret = do
       t' <- checkExpression c e
       if t' == t then return ret else throwError (errorMsg t' op)
-    errorMsg t op = "Invalid argument type " ++ pretty t ++ " to unary operator" ++ pretty op
+    errorMsg t op = "Invalid argument type " ++ show t ++ " to unary operator" ++ show op
   
 checkBinaryExpression :: Context -> BinOp -> Expression -> Expression -> Checked Type
 checkBinaryExpression c op e1 e2
@@ -262,7 +262,7 @@ checkBinaryExpression c op e1 e2
       t1 <- checkExpression c e1
       t2 <- checkExpression c e2
       if pred t1 t2 then return ret else throwError (errorMsg t1 t2 op)
-    errorMsg t1 t2 op = "Invalid argument types " ++ pretty t1 ++ " and " ++ pretty t2 ++ " to binary operator" ++ pretty op
+    errorMsg t1 t2 op = "Invalid argument types " ++ show t1 ++ " and " ++ show t2 ++ " to binary operator" ++ show op
     
 checkQuantified :: Context -> QOp -> [Id] -> [IdType] -> Expression -> Checked Type
 checkQuantified c _ fv vars e = do
@@ -274,7 +274,7 @@ checkQuantified c _ fv vars e = do
       t <- checkExpression quantifiedScope e
       case t of
         BoolType -> return BoolType
-        _ -> throwError ("Quantified expression type " ++ pretty t ++ " different from " ++ pretty BoolType)
+        _ -> throwError ("Quantified expression type " ++ show t ++ " different from " ++ show BoolType)
   where
     missingFV = filter (not . freeInVars) fv
     freeInVars v = any (isFree v) (map snd vars)
@@ -311,8 +311,8 @@ checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
     else do
       actualArgTypes <- mapM (checkExpression c) args
       case unifier fv argTypes actualArgTypes of
-        Nothing -> throwError ("Could not match formal argument types " ++ commaSep (map pretty argTypes) ++
-          " against actual argument types " ++ commaSep (map pretty actualArgTypes) ++
+        Nothing -> throwError ("Could not match formal argument types " ++ commaSep (map show argTypes) ++
+          " against actual argument types " ++ commaSep (map show actualArgTypes) ++
           " in the call to " ++ name)
         Just u -> do
           checkLefts c lhss (length retTypes)
@@ -326,8 +326,8 @@ checkCallForall c name args = case M.lookup name (ctxProcedures c) of
     else do
       actualArgTypes <- mapM (checkExpression c) concreteArgs
       case unifier fv (concrete argTypes) actualArgTypes of
-        Nothing -> throwError ("Could not match formal argument types " ++ commaSep (map pretty (concrete argTypes)) ++
-          " against actual argument types " ++ commaSep (map pretty actualArgTypes) ++
+        Nothing -> throwError ("Could not match formal argument types " ++ commaSep (map show (concrete argTypes)) ++
+          " against actual argument types " ++ commaSep (map show actualArgTypes) ++
           " in the call to " ++ name)
         Just u -> return ()
   where
@@ -547,8 +547,8 @@ checkImplementation :: Context -> Id -> [Id] -> [IdType] -> [IdType] -> [Body] -
 checkImplementation c name fv args rets bodies = case M.lookup name (ctxProcedures c) of
     Nothing -> throwError ("Not in scope: procedure " ++ name)
     Just (PSig fv' argTypes' retTypes', mods) -> case boundUnifier [] fv' (argTypes' ++ retTypes') fv (map snd (args ++ rets)) of
-      Nothing -> throwError ("Could not match procedure signature " ++ pretty (PSig fv' argTypes' retTypes') ++
-        " against implementation signature " ++ pretty (PSig fv (map snd args) (map snd rets)) ++
+      Nothing -> throwError ("Could not match procedure signature " ++ show (PSig fv' argTypes' retTypes') ++
+        " against implementation signature " ++ show (PSig fv (map snd args) (map snd rets)) ++
         " in the implementation of " ++ name)
       Just _ -> do
         cArgs <- foldM (checkIdType localScope ctxIns setIns) c { ctxTypeVars = fv } args
@@ -563,7 +563,7 @@ compareType c msg t e = do
   t' <- checkExpression c e
   if t == t' 
     then return ()
-    else throwError ("Type of " ++ msg ++ " (" ++ pretty t' ++ ") is different from " ++ pretty t)
+    else throwError ("Type of " ++ msg ++ " (" ++ show t' ++ ") is different from " ++ show t)
     
 -- | checkLefts c ids n: check that there are n ids, all ids are unique and denote mutable variables
 checkLefts :: Context -> [Id] -> Int -> Checked ()
