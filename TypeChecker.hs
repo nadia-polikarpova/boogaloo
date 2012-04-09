@@ -406,7 +406,7 @@ checkProgram p = do
   mapM_ (checkTypeSynonyms pass1) p                           -- check values of type synonyms
   mapM_ (checkCycles pass1) (M.keys (ctxTypeSynonyms pass1))  -- check that type synonyms do not form a cycle 
   pass4 <- foldM checkSignatures pass1 p                      -- check variable, constant, function and procedure signatures
-  mapM_ (checkBodies pass4) p                                 -- check axioms, function and procedure bodies
+  mapM_ (checkBodies pass4) p                                 -- check axioms, function and procedure bodies, constant parent info
   return pass4
 
 -- | Collect type names from type declarations
@@ -496,6 +496,7 @@ checkProcSignature c name fv args rets specs
 checkBodies :: Context -> Decl -> Checked ()
 checkBodies c d = case d of
   VarDecl vars -> mapM_ (checkWhere c) vars
+  ConstantDecl _ ids t (Just edges) _ -> checkParentInfo c ids t (map snd edges)
   FunctionDecl name fv args ret (Just body) -> checkFunction c fv args ret body
   AxiomDecl e -> checkAxiom c e
   ProcedureDecl name fv args rets specs mb -> checkProcedure c fv args rets specs mb
@@ -505,6 +506,20 @@ checkBodies c d = case d of
 -- | Check that "where" part is a valid boolean expression
 checkWhere :: Context -> IdTypeWhere -> Checked ()
 checkWhere c var = compareType c "where clause" BoolType (itwWhere var)
+
+-- | Check that identifiers in parents are distinct constants of a proper type and do not occur among ids
+checkParentInfo :: Context -> [Id] -> Type -> [Id] -> Checked ()
+checkParentInfo c ids t parents = if length parents /= length (nub parents)
+  then throwError ("Parent list contains duplicates: " ++ commaSep parents)
+  else mapM_ checkParent parents
+  where
+    checkParent p = case M.lookup p (ctxConstants c) of
+      Nothing -> throwError ("Not in scope: constant " ++ p)
+      Just t' -> if t /= t'
+        then throwError ("Parent type " ++ show t' ++ " is different from constant type " ++ show t)
+        else if p `elem` ids
+          then throwError ("Constant " ++ p ++ " is decalred to be its own parent")
+          else return ()
 
 -- | Check that axiom is a valid boolean expression    
 checkAxiom :: Context -> Expression -> Checked ()

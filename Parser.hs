@@ -296,11 +296,10 @@ constantDecl = do
   many attribute
   unique <- hasKeyword "unique"
   ids <- idsType
-  orderSpec <- optionMaybe (symbol "<:" >> commaSep parentEdge)
+  orderSpec <- optionMaybe (reserved "extends" >> commaSep parentEdge)
   complete <- hasKeyword "complete"
   semi
   return $ ConstantDecl unique (fst ids) (snd ids) orderSpec complete
-  
   
 functionDecl :: Parser Decl
 functionDecl = do
