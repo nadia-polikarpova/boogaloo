@@ -52,7 +52,7 @@ instance Show PSig where
       
 {- Expressions -}
 
-instance Show Expression where
+instance Show BareExpression where
   show FF = "false"
   show TT = "true"
   show (Numeral n) = show n 

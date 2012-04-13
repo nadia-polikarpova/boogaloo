@@ -2,6 +2,7 @@
 module TypeChecker where
 
 import AST
+import Position
 import Tokens
 import Message
 import Data.List
@@ -191,7 +192,7 @@ resolve _ t = t
 
 -- | requires all types in the context be valid and type synonyms be resolved
 checkExpression :: Context -> Expression -> Checked Type
-checkExpression c e = case e of
+checkExpression c (Pos pos e) = case e of
   TT -> return BoolType
   FF -> return BoolType
   Numeral n -> return IntType
@@ -282,18 +283,19 @@ checkQuantified c _ fv vars e = do
 {- Statements -}
 
 checkStatement :: Context -> Statement -> Checked ()
-checkStatement c (Assert e) = compareType c "assertion" BoolType e
-checkStatement c (Assume e) = compareType c "assumption" BoolType e
-checkStatement c (Havoc vars) = checkLefts c (nub vars) (length (nub vars))
-checkStatement c (Assign lhss rhss) = checkAssign c lhss rhss
-checkStatement c (Call lhss name args) = checkCall c lhss name args
-checkStatement c (CallForall name args) = checkCallForall c name args
-checkStatement c (If cond thenBlock elseBlock) = checkIf c cond thenBlock elseBlock
-checkStatement c (While cond invs b) = checkWhile c cond invs b
-checkStatement c (Goto ids) = checkGoto c ids
-checkStatement c (Break Nothing) = checkSimpleBreak c
-checkStatement c (Break (Just l)) = checkLabelBreak c l
-checkStatement _ _ = return ()
+checkStatement c (Pos pos s) = case s of
+  Assert e -> compareType c "assertion" BoolType e
+  Assume e -> compareType c "assumption" BoolType e
+  Havoc vars -> checkLefts c (nub vars) (length (nub vars))
+  Assign lhss rhss -> checkAssign c lhss rhss
+  Call lhss name args -> checkCall c lhss name args
+  CallForall name args -> checkCallForall c name args
+  If cond thenBlock elseBlock -> checkIf c cond thenBlock elseBlock
+  While cond invs b -> checkWhile c cond invs b
+  Goto ids -> checkGoto c ids
+  Break Nothing -> checkSimpleBreak c
+  Break (Just l) -> checkLabelBreak c l
+  _ -> return ()
 
 checkAssign :: Context -> [(Id , [[Expression]])] -> [Expression] -> Checked ()
 checkAssign c lhss rhss = do
@@ -301,7 +303,7 @@ checkAssign c lhss rhss = do
   rTypes <- mapM (checkExpression c) rhss
   zipWithM_ (compareType c "assignment left-hand side") rTypes (map selectExpr lhss) 
   where
-    selectExpr (id, selects) = foldl MapSelection (Var id) selects
+    selectExpr (id, selects) = foldl mapSelectExpr (varExpr id) selects
         
 checkCall :: Context -> [Id] -> Id -> [Expression] -> Checked ()
 checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
@@ -316,7 +318,7 @@ checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
           " in the call to " ++ name)
         Just u -> do
           checkLefts c lhss (length retTypes)
-          zipWithM_ (compareType c "call left-hand side") (map (substitution u) retTypes) (map Var lhss)
+          zipWithM_ (compareType c "call left-hand side") (map (substitution u) retTypes) (map varExpr lhss)
         
 checkCallForall :: Context -> Id -> [WildcardExpression] -> Checked ()
 checkCallForall c name args = case M.lookup name (ctxProcedures c) of
@@ -377,7 +379,7 @@ checkLabelBreak c l = if not (l `elem` ctxEncLabels c)
 collectLabels :: Context -> Block -> Checked Context
 collectLabels c block = foldM checkLStatement c block
   where
-    checkLStatement c (ls, st) = do
+    checkLStatement c (Pos pos1 (ls, (Pos pos2 st))) = do
       c' <- foldM addLabel c ls
       case st of
         If _ thenBlock mElseBlock -> do 
@@ -395,7 +397,7 @@ collectLabels c block = foldM checkLStatement c block
 checkBlock :: Context -> Block -> Checked ()    
 checkBlock c block = mapM_ (checkLStatement c) block
   where
-    checkLStatement c (ls, st) = checkStatement c { ctxEncLabels = ctxEncLabels c ++ ls} st
+    checkLStatement c (Pos pos (ls, st)) = checkStatement c { ctxEncLabels = ctxEncLabels c ++ ls} st
     
 {- Declarations -}
 
@@ -411,7 +413,7 @@ checkProgram p = do
 
 -- | Collect type names from type declarations
 collectTypes :: Context -> Decl -> Checked Context
-collectTypes c d = case d of
+collectTypes c (Pos pos d) = case d of
   TypeDecl finite name formals value -> checkTypeDecl c name formals value
   otherwise -> return c  
 
@@ -425,7 +427,7 @@ checkTypeDecl c name formals value
 
 -- | Check that type arguments of type synonyms are fresh and values are valid types
 checkTypeSynonyms :: Context -> Decl -> Checked ()
-checkTypeSynonyms c d = case d of
+checkTypeSynonyms c (Pos pos d) = case d of
   TypeDecl finite name formals (Just t) -> do
     c' <- foldM checkTypeVar c formals 
     checkType c' t
@@ -449,7 +451,7 @@ checkCycles c id = checkCyclesWith c id (value id)
 
 -- | Check variable, constant, function and procedures and add them to context
 checkSignatures :: Context -> Decl -> Checked Context
-checkSignatures c d = case d of
+checkSignatures c (Pos pos d) = case d of
   VarDecl vars -> foldM (checkIdType globalScope ctxGlobals setGlobals) c (map noWhere vars)
   ConstantDecl _ ids t _ _ -> foldM (checkIdType globalScope ctxConstants setConstants) c (zip ids (repeat t))
   FunctionDecl name fv args ret _ -> checkFunctionSignature c name fv args ret
@@ -494,7 +496,7 @@ checkProcSignature c name fv args rets specs
 
 -- | Check axioms, function and procedure bodies      
 checkBodies :: Context -> Decl -> Checked ()
-checkBodies c d = case d of
+checkBodies c (Pos pos d) = case d of
   VarDecl vars -> mapM_ (checkWhere c) vars
   ConstantDecl _ ids t (Just edges) _ -> checkParentInfo c ids t (map snd edges)
   FunctionDecl name fv args ret (Just body) -> checkFunction c fv args ret body

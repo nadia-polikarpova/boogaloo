@@ -3,6 +3,7 @@ module AST where
 
 import Data.Maybe
 import Data.List
+import Position
 
 {- Basic -}
 
@@ -32,8 +33,10 @@ data BinOp = Plus | Minus | Times | Div | Mod | And | Or | Implies | Equiv | Eq 
 -- | Quantifiers
 data QOp = Forall | Exists
 	deriving Eq
+  
+type Expression = Pos BareExpression
 	
-data Expression = FF | TT |
+data BareExpression = FF | TT |
 	Numeral Integer | 								              -- Numeral value
 	Var Id | 										                    -- Var name
 	Application Id [Expression] |					          -- Application function_name args
@@ -47,7 +50,9 @@ data Expression = FF | TT |
 data WildcardExpression = Wildcard | Expr Expression
 	
 {- Statements -}
-data Statement = Assert Expression |
+type Statement = Pos BareStatement
+
+data BareStatement = Assert Expression |
 	Assume Expression |
 	Havoc [Id] |											                    -- Havoc var_names
 	Assign [(Id , [[Expression]])] [Expression] |			    -- Assign var_map_selects rhss
@@ -61,12 +66,12 @@ data Statement = Assert Expression |
 	Skip 													                        -- only used at the end of a block
 
 -- | Statement labeled by multiple labels
-type LStatement = ([Id], Statement)
+type LStatement = Pos ([Id], Statement)
 
 type Block = [LStatement] 
 
 -- | Block consisting of a single non-labeled statement
-singletonBlock s = [([], s)]
+singletonBlock s = [attachPos (position s) ([], s)]
 
 {- Contracts -}
 
@@ -94,7 +99,9 @@ modifies specs = (nub . concat . catMaybes) (map extractMod specs)
 
 {- Declarations -}
 
-data Decl = 
+type Decl = Pos BareDecl
+
+data BareDecl = 
 	TypeDecl Bool Id [Id] (Maybe Type) |									                  -- TypeDecl finite name formals synonym_value
 	ConstantDecl Bool [Id] Type ParentInfo Bool |					                  -- ConstantDecl unique names type orderSpec complete
 	FunctionDecl Id [Id] [FArg] FArg (Maybe Expression) |	                  -- FunctionDecl name type_args formals ret body
@@ -123,3 +130,6 @@ data FSig = FSig [Id] [Type] Type
 data PSig = PSig [Id] [Type] [Type]
 
 noWhere itw = (itwId itw, itwType itw)
+
+mapSelectExpr target args = attachPos (position target) (MapSelection target args)
+varExpr = attachEmptyPos . Var

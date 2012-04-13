@@ -3,6 +3,7 @@ module Parser where
 
 import AST
 import Tokens
+import Position
 import Message hiding (separated, commaSep, parens, brackets, angles, typeArgs)
 import Data.List
 import Text.ParserCombinators.Parsec hiding (token)
@@ -107,14 +108,14 @@ type_ = choice [
 qop :: Parser QOp
 qop = (reserved "forall" >> return Forall) <|> (reserved "exists" >> return Exists)
   
-e9 :: Parser Expression
+e9 :: Parser BareExpression
 e9 = choice [
   reserved "false" >> return FF,
   reserved "true" >> return TT,
   Numeral <$> natural,
   varOrCall,
   old,
-  try (parens e0),
+  contents <$> try (parens e0),
   parens quantified
   ]
   where
@@ -136,17 +137,17 @@ e9 = choice [
 
 e8 :: Parser Expression
 e8 = do
-  e <- e9
+  e <- attachPosBefore e9
   mapOps <- many (brackets (mapOp))
   return $ foldr (.) id (reverse mapOps) e
   where
     mapOp = do
       args <- commaSep1 e0
-      option ((flip MapSelection) args) (do 
+      option (inheritPos ((flip MapSelection) args)) (do 
         reservedOp ":="
         e <- e0
-        return $ flip ((flip MapUpdate) args) e)  
-
+        return $ inheritPos (flip ((flip MapUpdate) args) e))
+    
 e0 :: Parser Expression  
 e0 = buildExpressionParser table e8 <?> "expression"
 
@@ -160,8 +161,11 @@ table = [[unOp Neg, unOp Not],
      [binOp Implies AssocRight],
      [binOp Equiv AssocRight]]
   where
-    binOp node assoc = Infix (reservedOp (token node binOpTokens) >> return (\e1 e2 -> BinaryExpression node e1 e2)) assoc
-    unOp node = Prefix (reservedOp (token node unOpTokens) >> return (\e -> UnaryExpression node e))
+    binOp node assoc = Infix (reservedOp (token node binOpTokens) >> return (\e1 e2 -> attachPos (position e1) (BinaryExpression node e1 e2))) assoc
+    unOp node = Prefix (do
+      pos <- getPosition
+      reservedOp (token node unOpTokens)
+      return (\e -> attachPos pos (UnaryExpression node e)))
     
 wildcardExpression :: Parser WildcardExpression
 wildcardExpression = (e0 >>= return . Expr) <|> (reservedOp "*" >> return Wildcard)
@@ -174,7 +178,7 @@ lhs = do
   selects <- many (brackets (commaSep1 e0))
   return (id, selects)
 
-assign :: Parser Statement
+assign :: Parser BareStatement
 assign = do
   lefts <- commaSep1 lhs
   reservedOp ":="
@@ -182,7 +186,7 @@ assign = do
   semi
   return $ Assign lefts rights
   
-call :: Parser Statement  
+call :: Parser BareStatement  
 call = do
   reserved "call"
   lefts <- option [] (try lhss)
@@ -196,7 +200,7 @@ call = do
       reservedOp ":="
       return ids
   
-callForall :: Parser Statement  
+callForall :: Parser BareStatement  
 callForall = do
   reserved "call"
   reserved "forall"
@@ -205,7 +209,7 @@ callForall = do
   semi
   return $ CallForall id args
   
-ifStatement :: Parser Statement
+ifStatement :: Parser BareStatement
 ifStatement = do
   reserved "if"
   cond <- parens wildcardExpression
@@ -214,10 +218,10 @@ ifStatement = do
   return $ If cond thenBlock elseBlock
   where
     elseIf = do
-      i <- ifStatement
+      i <- attachPosBefore ifStatement
       return $ singletonBlock i
   
-whileStatement :: Parser Statement
+whileStatement :: Parser BareStatement
 whileStatement = do
   reserved "while"
   cond <- parens wildcardExpression
@@ -233,7 +237,7 @@ whileStatement = do
       return (free, e)    
 
 statement :: Parser Statement
-statement = choice [
+statement = attachPosBefore (choice [
   do { reserved "assert"; e <- e0; semi; return $ Assert e },
   do { reserved "assume"; e <- e0; semi; return $ Assume e },
   do { reserved "havoc"; ids <- commaSep1 identifier; semi; return $ Havoc ids },
@@ -245,7 +249,7 @@ statement = choice [
   do { reserved "break"; id <- optionMaybe identifier; semi; return $ Break id },
   do { reserved "return"; semi; return Return },
   do { reserved "goto"; ids <- commaSep1 identifier; semi; return $ Goto ids }
-  ] <?> "statement"
+  ] <?> "statement")
   
 label :: Parser Id
 label = do
@@ -255,7 +259,7 @@ label = do
   <?> "label"
   
 lStatement :: Parser LStatement
-lStatement = do
+lStatement = attachPosBefore $ do
   lbs <- many (try Parser.label)
   s <- statement
   return (lbs, s)
@@ -263,17 +267,19 @@ lStatement = do
 statementList :: Parser Block
 statementList = do
   lstatements <- many (try lStatement)
+  pos1 <- getPosition
   lempty <- many (try Parser.label)
-  return $ if null lempty 
+  pos2 <- getPosition
+  return $ if null lempty
     then lstatements 
-    else lstatements ++ [(lempty, Skip)]
+    else lstatements ++ [attachPos pos1 (lempty, attachPos pos2 Skip)]
 
 block :: Parser Block
 block = braces statementList
     
 {- Declarations -}
 
-typeDecl :: Parser Decl
+typeDecl :: Parser BareDecl
 typeDecl = do
   reserved "type"
   many attribute
@@ -290,7 +296,7 @@ parentEdge = do
   id <- identifier
   return (unique, id)
 
-constantDecl :: Parser Decl
+constantDecl :: Parser BareDecl
 constantDecl = do 
   reserved "const"
   many attribute
@@ -301,7 +307,7 @@ constantDecl = do
   semi
   return $ ConstantDecl unique (fst ids) (snd ids) orderSpec complete
   
-functionDecl :: Parser Decl
+functionDecl :: Parser BareDecl
 functionDecl = do
   reserved "function"
   many attribute
@@ -318,7 +324,7 @@ functionDecl = do
       t <- type_
       return (name, t)
 
-axiomDecl :: Parser Decl
+axiomDecl :: Parser BareDecl
 axiomDecl = do
   reserved "axiom"
   many attribute
@@ -334,7 +340,7 @@ varList = do
   semi
   return $ ungroupWhere vars
   
-varDecl :: Parser Decl
+varDecl :: Parser BareDecl
 varDecl = VarDecl <$> varList
     
 body :: Parser Body
@@ -343,7 +349,7 @@ body = braces (do
   statements <- statementList
   return (concat locals, statements))
   
-procDecl :: Parser Decl
+procDecl :: Parser BareDecl
 procDecl = do
   reserved "procedure"
   many attribute
@@ -362,7 +368,7 @@ procDecl = do
       b <- body
       return (ProcedureDecl name tArgs (ungroupWhere args) (ungroupWhere rets) specs (Just b))
 
-implDecl :: Parser Decl
+implDecl :: Parser BareDecl
 implDecl = do
   reserved "implementation"
   many attribute
@@ -374,7 +380,7 @@ implDecl = do
   return $ ImplementationDecl name tArgs (ungroup args) (ungroup rets) bs
   
 decl :: Parser Decl
-decl = choice [
+decl = attachPosBefore (choice [
   typeDecl,
   constantDecl,
   functionDecl, 
@@ -382,7 +388,7 @@ decl = choice [
   varDecl, 
   procDecl, 
   implDecl
-  ] <?> "declaration"
+  ] <?> "declaration")
   
 program :: Parser Program
 program = do 
@@ -431,7 +437,8 @@ ungroup = concatMap (\x -> zip (fst x) (repeat (snd x)))
 idsTypeWhere :: Parser ([Id], Type, Expression)
 idsTypeWhere = do
   ids <- idsType
-  e <- option TT (reserved "where" >> e0)
+  pos <- getPosition
+  e <- option (attachPos pos TT) (reserved "where" >> e0)
   return ((fst ids), (snd ids), e)
 
 ungroupWhere :: [([Id], Type, Expression)] -> [IdTypeWhere]
@@ -450,3 +457,4 @@ attribute = void (braces (do
   identifier
   commaSep1 (void e0 <|> void stringLiteral)
   )) <?> "attribute"
+  
