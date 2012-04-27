@@ -287,8 +287,8 @@ checkStatement c (Pos pos s) = case s of
   Assert e -> compareType c "assertion" BoolType e
   Assume e -> compareType c "assumption" BoolType e
   Havoc vars -> checkLefts c (nub vars) (length (nub vars))
-  Assign lhss rhss -> checkAssign c lhss rhss
-  Call lhss name args -> checkCall c lhss name args
+  Assign lhss rhss -> checkAssign c lhss rhss pos
+  Call lhss name args -> checkCall c lhss name args pos
   CallForall name args -> checkCallForall c name args
   If cond thenBlock elseBlock -> checkIf c cond thenBlock elseBlock
   While cond invs b -> checkWhile c cond invs b
@@ -297,16 +297,16 @@ checkStatement c (Pos pos s) = case s of
   Break (Just l) -> checkLabelBreak c l
   _ -> return ()
 
-checkAssign :: Context -> [(Id , [[Expression]])] -> [Expression] -> Checked ()
-checkAssign c lhss rhss = do
+checkAssign :: Context -> [(Id , [[Expression]])] -> [Expression] -> SourcePos -> Checked ()
+checkAssign c lhss rhss pos = do
   checkLefts c (map fst lhss) (length rhss)
   rTypes <- mapM (checkExpression c) rhss
   zipWithM_ (compareType c "assignment left-hand side") rTypes (map selectExpr lhss) 
   where
-    selectExpr (id, selects) = foldl mapSelectExpr (varExpr id) selects
+    selectExpr (id, selects) = foldl mapSelectExpr (attachPos pos (Var id)) selects
         
-checkCall :: Context -> [Id] -> Id -> [Expression] -> Checked ()
-checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
+checkCall :: Context -> [Id] -> Id -> [Expression] -> SourcePos -> Checked ()
+checkCall c lhss name args pos = case M.lookup name (ctxProcedures c) of
   Nothing -> throwError ("Not in scope: procedure " ++ name)
   Just (PSig fv argTypes retTypes, mods) -> if not (null (mods \\ ctxModifies c)) 
     then throwError ("Call modifies a global variable that is not in the enclosing procedure's modifies clause: " ++ commaSep (mods \\ ctxModifies c))
@@ -318,7 +318,7 @@ checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
           " in the call to " ++ name)
         Just u -> do
           checkLefts c lhss (length retTypes)
-          zipWithM_ (compareType c "call left-hand side") (map (substitution u) retTypes) (map varExpr lhss)
+          zipWithM_ (compareType c "call left-hand side") (map (substitution u) retTypes) (map (attachPos pos . Var) lhss)
         
 checkCallForall :: Context -> Id -> [WildcardExpression] -> Checked ()
 checkCallForall c name args = case M.lookup name (ctxProcedures c) of

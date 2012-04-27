@@ -132,4 +132,3 @@ data PSig = PSig [Id] [Type] [Type]
 noWhere itw = (itwId itw, itwType itw)
 
 mapSelectExpr target args = attachPos (position target) (MapSelection target args)
-varExpr = attachEmptyPos . Var
