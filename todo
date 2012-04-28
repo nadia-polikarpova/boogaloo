@@ -3,8 +3,7 @@
 	- bit vectors
 
 - Type Checker
-	- use positions in error messages
-	- remove attachEmptyPos from varExpr (in general, check that positions are assigned correctly)
+	- make report several type errors at once
 
 - Pretty printer
 - Interpreter

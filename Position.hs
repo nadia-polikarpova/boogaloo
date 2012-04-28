@@ -10,6 +10,7 @@ module Position
     ,sourceColumn
     ,sourceName
 
+    ,noPos
     ,attachPos
     ,attachPosM
     ,attachEmptyPos
@@ -39,7 +40,9 @@ instance Functor Pos where
 attachPos :: SourcePos -> a -> Pos a
 attachPos = Pos
 
-attachEmptyPos = attachPos (initialPos "<no file name>")
+noPos = (initialPos "<no file name>")
+
+attachEmptyPos = attachPos noPos
 
 attachPosM :: Monad m => m SourcePos -> m a -> m (Pos a)
 attachPosM = liftM2 attachPos

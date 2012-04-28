@@ -15,11 +15,14 @@ import Control.Applicative
 -- | Result of type checking: either 'a' or an error with strings message
 type Checked a = ErrorT String Identity a
 
+typeError pos msg = throwError ("Type error in " ++ show pos ++ ":\n" ++ msg ++ "\n")
+
 {- Context -}
 
 -- | Typechecking context: 
 data Context = Context
   {
+    ctxPos :: SourcePos,
     ctxTypeConstructors :: M.Map Id Int,      -- type constructor arity
     ctxTypeSynonyms :: M.Map Id ([Id], Type), -- type synonym values
     ctxGlobals :: M.Map Id Type,              -- global variable types
@@ -37,6 +40,7 @@ data Context = Context
   } deriving Show
 
 emptyContext = Context {
+    ctxPos              = noPos,
     ctxTypeConstructors = M.empty,
     ctxTypeSynonyms     = M.empty,
     ctxGlobals          = M.empty,
@@ -153,8 +157,8 @@ instance Eq Type where
 -- | Check that a type variable is fresh and add it to context  
 checkTypeVar :: Context -> Id -> Checked Context
 checkTypeVar c v
-  | v `elem` typeNames c = throwError (v ++ " already used as a type constructor or synonym")
-  | v `elem` ctxTypeVars c = throwError ("Multiple decalartions of type variable " ++ v)
+  | v `elem` typeNames c = typeError (ctxPos c) (v ++ " already used as a type constructor or synonym")
+  | v `elem` ctxTypeVars c = typeError (ctxPos c) ("Multiple decalartions of type variable " ++ v)
   | otherwise = return c { ctxTypeVars = v : ctxTypeVars c }
 
 -- | checkType c t : check that t is a correct type in context c (i.e. that all type names exist and have correct number of arguments)
@@ -167,15 +171,15 @@ checkType c (Instance name args)
   | name `elem` ctxTypeVars c && null args = return ()
   | M.member name (ctxTypeConstructors c) = if n == length args 
     then mapM_ (checkType c) args
-    else throwError ("Wrong number of arguments " ++ show (length args) ++ " given to the type constructor " ++ name ++ " (expected " ++ show n ++ ")")
+    else typeError (ctxPos c) ("Wrong number of arguments " ++ show (length args) ++ " given to the type constructor " ++ name ++ " (expected " ++ show n ++ ")")
   | M.member name (ctxTypeSynonyms c) = if length formals == length args
     then mapM_ (checkType c) args
-    else throwError ("Wrong number of arguments " ++ show (length args) ++ " given to the type synonym " ++ name ++ " (expected " ++ show (length formals) ++ ")")
-  | otherwise = throwError ("Not in scope: type constructor or synonym " ++ name)
+    else typeError (ctxPos c) ("Wrong number of arguments " ++ show (length args) ++ " given to the type synonym " ++ name ++ " (expected " ++ show (length formals) ++ ")")
+  | otherwise = typeError (ctxPos c) ("Not in scope: type constructor or synonym " ++ name)
     where 
       n = (M.!) (ctxTypeConstructors c) name
       formals = fst ((M.!) (ctxTypeSynonyms c) name)
-checkType _ t = return ()
+checkType _ _ = return ()
 
 -- | resolve c t : type t with all type synonyms resolved according to binding in c      
 resolve :: Context -> Type -> Type
@@ -197,25 +201,27 @@ checkExpression c (Pos pos e) = case e of
   FF -> return BoolType
   Numeral n -> return IntType
   Var id -> case M.lookup id (allVars c) of
-    Nothing -> throwError ("Not in scope: variable or constant " ++ id)
+    Nothing -> typeError pos ("Not in scope: variable or constant " ++ id)
     Just t -> return t
-  Application id args -> checkApplication c id args
-  MapSelection m args -> checkMapSelection c m args
-  MapUpdate m args val -> checkMapUpdate c m args val
+  Application id args -> checkApplication cPos id args
+  MapSelection m args -> checkMapSelection cPos m args
+  MapUpdate m args val -> checkMapUpdate cPos m args val
   Old e1 -> if ctxTwoState c
     then checkExpression c e1
-    else throwError ("Old expression in a single state context")
-  UnaryExpression op e1 -> checkUnaryExpression c op e1
-  BinaryExpression op e1 e2 -> checkBinaryExpression c op e1 e2
-  Quantified qop fv vars e -> checkQuantified c qop fv vars e
+    else typeError pos ("Old expression in a single state context")
+  UnaryExpression op e1 -> checkUnaryExpression cPos op e1
+  BinaryExpression op e1 e2 -> checkBinaryExpression cPos op e1 e2
+  Quantified qop fv vars e -> checkQuantified cPos qop fv vars e
+  where
+    cPos = c { ctxPos = pos }
 
 checkApplication :: Context -> Id -> [Expression] -> Checked Type
 checkApplication c id args = case M.lookup id (ctxFunctions c) of
-  Nothing -> throwError ("Not in scope: function " ++ id)
+  Nothing -> typeError (ctxPos c) ("Not in scope: function " ++ id)
   Just (FSig fv argTypes retType) -> do
     actualTypes <- mapM (checkExpression c) args
     case unifier fv argTypes actualTypes of
-      Nothing -> throwError ("Could not match formal argument types " ++ commaSep (map show argTypes) ++
+      Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show argTypes) ++
         " against actual argument types " ++ commaSep (map show actualTypes) ++
         " in the call to " ++ id)
       Just u -> return (substitution u retType)
@@ -227,11 +233,11 @@ checkMapSelection c m args = do
     MapType fv domainTypes rangeType -> do
       actualTypes <- mapM (checkExpression c) args
       case unifier fv domainTypes actualTypes of
-        Nothing -> throwError ("Could not match map domain types " ++ commaSep (map show domainTypes) ++
+        Nothing -> typeError (ctxPos c) ("Could not match map domain types " ++ commaSep (map show domainTypes) ++
           " against map selection types " ++ commaSep (map show actualTypes) ++
           " for the map " ++ show m)
         Just u -> return (substitution u rangeType)
-    t -> throwError ("Map selection applied to a non-map " ++ show m ++ " of type " ++ show t)
+    t -> typeError (ctxPos c) ("Map selection applied to a non-map " ++ show m ++ " of type " ++ show t)
   
 checkMapUpdate :: Context -> Expression -> [Expression] -> Expression -> Checked Type
 checkMapUpdate c m args val = do 
@@ -239,7 +245,7 @@ checkMapUpdate c m args val = do
   actualT <- checkExpression c val
   if t == actualT 
     then checkExpression c m 
-    else throwError ("Update value type " ++ show actualT ++ " different from map range type " ++ show t)
+    else typeError (ctxPos c) ("Update value type " ++ show actualT ++ " different from map range type " ++ show t)
     
 checkUnaryExpression :: Context -> UnOp -> Expression -> Checked Type
 checkUnaryExpression c op e
@@ -248,7 +254,7 @@ checkUnaryExpression c op e
   where 
     matchType t ret = do
       t' <- checkExpression c e
-      if t' == t then return ret else throwError (errorMsg t' op)
+      if t' == t then return ret else typeError (ctxPos c) (errorMsg t' op)
     errorMsg t op = "Invalid argument type " ++ show t ++ " to unary operator" ++ show op
   
 checkBinaryExpression :: Context -> BinOp -> Expression -> Expression -> Checked Type
@@ -262,7 +268,7 @@ checkBinaryExpression c op e1 e2
     matchTypes pred ret = do
       t1 <- checkExpression c e1
       t2 <- checkExpression c e2
-      if pred t1 t2 then return ret else throwError (errorMsg t1 t2 op)
+      if pred t1 t2 then return ret else typeError (ctxPos c) (errorMsg t1 t2 op)
     errorMsg t1 t2 op = "Invalid argument types " ++ show t1 ++ " and " ++ show t2 ++ " to binary operator" ++ show op
     
 checkQuantified :: Context -> QOp -> [Id] -> [IdType] -> Expression -> Checked Type
@@ -270,12 +276,12 @@ checkQuantified c _ fv vars e = do
   c' <- foldM checkTypeVar c fv
   quantifiedScope <- foldM (checkIdType localScope ctxIns setIns) c' vars
   if not (null missingFV)
-    then throwError ("Type variable(s) must occur in the bound variables of the quantification: " ++ commaSep missingFV) 
+    then typeError (ctxPos c) ("Type variable(s) must occur in the bound variables of the quantification: " ++ commaSep missingFV) 
     else do
       t <- checkExpression quantifiedScope e
       case t of
         BoolType -> return BoolType
-        _ -> throwError ("Quantified expression type " ++ show t ++ " different from " ++ show BoolType)
+        _ -> typeError (ctxPos c) ("Quantified expression type " ++ show t ++ " different from " ++ show BoolType)
   where
     missingFV = filter (not . freeInVars) fv
     freeInVars v = any (isFree v) (map snd vars)
@@ -284,51 +290,53 @@ checkQuantified c _ fv vars e = do
 
 checkStatement :: Context -> Statement -> Checked ()
 checkStatement c (Pos pos s) = case s of
-  Assert e -> compareType c "assertion" BoolType e
-  Assume e -> compareType c "assumption" BoolType e
-  Havoc vars -> checkLefts c (nub vars) (length (nub vars))
-  Assign lhss rhss -> checkAssign c lhss rhss pos
-  Call lhss name args -> checkCall c lhss name args pos
-  CallForall name args -> checkCallForall c name args
-  If cond thenBlock elseBlock -> checkIf c cond thenBlock elseBlock
-  While cond invs b -> checkWhile c cond invs b
-  Goto ids -> checkGoto c ids
-  Break Nothing -> checkSimpleBreak c
-  Break (Just l) -> checkLabelBreak c l
+  Assert e -> compareType cPos "assertion" BoolType e
+  Assume e -> compareType cPos "assumption" BoolType e
+  Havoc vars -> checkLefts cPos (nub vars) (length (nub vars))
+  Assign lhss rhss -> checkAssign cPos lhss rhss
+  Call lhss name args -> checkCall cPos lhss name args
+  CallForall name args -> checkCallForall cPos name args
+  If cond thenBlock elseBlock -> checkIf cPos cond thenBlock elseBlock
+  While cond invs b -> checkWhile cPos cond invs b
+  Goto ids -> checkGoto cPos ids
+  Break Nothing -> checkSimpleBreak cPos
+  Break (Just l) -> checkLabelBreak cPos l
   _ -> return ()
+  where
+    cPos = c { ctxPos = pos }
 
-checkAssign :: Context -> [(Id , [[Expression]])] -> [Expression] -> SourcePos -> Checked ()
-checkAssign c lhss rhss pos = do
+checkAssign :: Context -> [(Id , [[Expression]])] -> [Expression] -> Checked ()
+checkAssign c lhss rhss = do
   checkLefts c (map fst lhss) (length rhss)
   rTypes <- mapM (checkExpression c) rhss
   zipWithM_ (compareType c "assignment left-hand side") rTypes (map selectExpr lhss) 
   where
-    selectExpr (id, selects) = foldl mapSelectExpr (attachPos pos (Var id)) selects
+    selectExpr (id, selects) = foldl mapSelectExpr (attachPos (ctxPos c) (Var id)) selects
         
-checkCall :: Context -> [Id] -> Id -> [Expression] -> SourcePos -> Checked ()
-checkCall c lhss name args pos = case M.lookup name (ctxProcedures c) of
-  Nothing -> throwError ("Not in scope: procedure " ++ name)
+checkCall :: Context -> [Id] -> Id -> [Expression] -> Checked ()
+checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
+  Nothing -> typeError (ctxPos c) ("Not in scope: procedure " ++ name)
   Just (PSig fv argTypes retTypes, mods) -> if not (null (mods \\ ctxModifies c)) 
-    then throwError ("Call modifies a global variable that is not in the enclosing procedure's modifies clause: " ++ commaSep (mods \\ ctxModifies c))
+    then typeError (ctxPos c) ("Call modifies a global variable that is not in the enclosing procedure's modifies clause: " ++ commaSep (mods \\ ctxModifies c))
     else do
       actualArgTypes <- mapM (checkExpression c) args
       case unifier fv argTypes actualArgTypes of
-        Nothing -> throwError ("Could not match formal argument types " ++ commaSep (map show argTypes) ++
+        Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show argTypes) ++
           " against actual argument types " ++ commaSep (map show actualArgTypes) ++
           " in the call to " ++ name)
         Just u -> do
           checkLefts c lhss (length retTypes)
-          zipWithM_ (compareType c "call left-hand side") (map (substitution u) retTypes) (map (attachPos pos . Var) lhss)
+          zipWithM_ (compareType c "call left-hand side") (map (substitution u) retTypes) (map (attachPos (ctxPos c) . Var) lhss)
         
 checkCallForall :: Context -> Id -> [WildcardExpression] -> Checked ()
 checkCallForall c name args = case M.lookup name (ctxProcedures c) of
-  Nothing -> throwError ("Not in scope: procedure " ++ name)
+  Nothing -> typeError (ctxPos c) ("Not in scope: procedure " ++ name)
   Just (PSig fv argTypes _, mods) -> if not (null mods) 
-    then throwError "Call forall to a procedure with a non-empty modifies clause"
+    then typeError (ctxPos c) "Call forall to a procedure with a non-empty modifies clause"
     else do
       actualArgTypes <- mapM (checkExpression c) concreteArgs
       case unifier fv (concrete argTypes) actualArgTypes of
-        Nothing -> throwError ("Could not match formal argument types " ++ commaSep (map show (concrete argTypes)) ++
+        Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show (concrete argTypes)) ++
           " against actual argument types " ++ commaSep (map show actualArgTypes) ++
           " in the call to " ++ name)
         Just u -> return ()
@@ -358,19 +366,19 @@ checkWhile c cond invs body = do
 
 checkGoto :: Context -> [Id] -> Checked ()  
 checkGoto c ids = if not (null unknownLabels)
-  then throwError ("Not in scope: label(s) " ++ separated "," unknownLabels)
+  then typeError (ctxPos c) ("Not in scope: label(s) " ++ separated "," unknownLabels)
   else return ()
   where
     unknownLabels = ids \\ ctxLabels c 
     
 checkSimpleBreak :: Context -> Checked ()
 checkSimpleBreak c = if not (ctxInLoop c)
-  then throwError ("Break statement outside a loop")
+  then typeError (ctxPos c) ("Break statement outside a loop")
   else return ()
   
 checkLabelBreak :: Context -> Id -> Checked ()
 checkLabelBreak c l = if not (l `elem` ctxEncLabels c)
-  then throwError ("Break label " ++ l ++ " does not label an enclosing statement")
+  then typeError (ctxPos c) ("Break label " ++ l ++ " does not label an enclosing statement")
   else return ()
   
 {- Blocks -}
@@ -379,8 +387,8 @@ checkLabelBreak c l = if not (l `elem` ctxEncLabels c)
 collectLabels :: Context -> Block -> Checked Context
 collectLabels c block = foldM checkLStatement c block
   where
-    checkLStatement c (Pos pos1 (ls, (Pos pos2 st))) = do
-      c' <- foldM addLabel c ls
+    checkLStatement c (Pos pos (ls, (Pos _ st))) = do
+      c' <- foldM (addLabel pos) c ls
       case st of
         If _ thenBlock mElseBlock -> do 
           c'' <- collectLabels c' thenBlock
@@ -389,15 +397,15 @@ collectLabels c block = foldM checkLStatement c block
             Just elseBlock -> collectLabels c'' elseBlock
         While _ _ bodyBlock -> collectLabels c' bodyBlock
         _ -> return c'
-    addLabel c l = if l `elem` ctxLabels c 
-      then throwError ("Multiple occurrences of label " ++ l ++ " in a procedure body")
+    addLabel pos c l = if l `elem` ctxLabels c 
+      then typeError pos ("Multiple occurrences of label " ++ l ++ " in a procedure body")
       else return c {ctxLabels = l : ctxLabels c}
 
 -- | check every statement in the block
 checkBlock :: Context -> Block -> Checked ()    
 checkBlock c block = mapM_ (checkLStatement c) block
   where
-    checkLStatement c (Pos pos (ls, st)) = checkStatement c { ctxEncLabels = ctxEncLabels c ++ ls} st
+    checkLStatement c (Pos _ (ls, st)) = checkStatement c { ctxEncLabels = ctxEncLabels c ++ ls} st
     
 {- Declarations -}
 
@@ -406,7 +414,7 @@ checkProgram :: Program -> Checked Context
 checkProgram p = do
   pass1 <- foldM collectTypes emptyContext p                  -- collect type names from type declarations
   mapM_ (checkTypeSynonyms pass1) p                           -- check values of type synonyms
-  mapM_ (checkCycles pass1) (M.keys (ctxTypeSynonyms pass1))  -- check that type synonyms do not form a cycle 
+  mapM_ (checkCycles pass1 p) (M.keys (ctxTypeSynonyms pass1))  -- check that type synonyms do not form a cycle 
   pass4 <- foldM checkSignatures pass1 p                      -- check variable, constant, function and procedure signatures
   mapM_ (checkBodies pass4) p                                 -- check axioms, function and procedure bodies, constant parent info
   return pass4
@@ -414,13 +422,13 @@ checkProgram p = do
 -- | Collect type names from type declarations
 collectTypes :: Context -> Decl -> Checked Context
 collectTypes c (Pos pos d) = case d of
-  TypeDecl finite name formals value -> checkTypeDecl c name formals value
+  TypeDecl finite name formals value -> checkTypeDecl c { ctxPos = pos } name formals value
   otherwise -> return c  
 
 -- | Check uniqueness of type constructors and synonyms, and them in the context  
 checkTypeDecl :: Context -> Id -> [Id] -> (Maybe Type) -> Checked Context 
 checkTypeDecl c name formals value
-  | name `elem` (typeNames c) = throwError ("Multiple declarations of type constructor or synonym " ++ name) 
+  | name `elem` (typeNames c) = typeError (ctxPos c) ("Multiple declarations of type constructor or synonym " ++ name) 
   | otherwise = case value of
     Nothing -> return c { ctxTypeConstructors = M.insert name (length formals) (ctxTypeConstructors c) }
     Just t -> return c { ctxTypeSynonyms = M.insert name (formals, t) (ctxTypeSynonyms c) }
@@ -429,50 +437,53 @@ checkTypeDecl c name formals value
 checkTypeSynonyms :: Context -> Decl -> Checked ()
 checkTypeSynonyms c (Pos pos d) = case d of
   TypeDecl finite name formals (Just t) -> do
-    c' <- foldM checkTypeVar c formals 
+    c' <- foldM checkTypeVar c { ctxPos = pos } formals 
     checkType c' t
   otherwise -> return ()
 
--- | Check if type synonym declarations have cyclic dependences; do not modify context  
-checkCycles :: Context -> Id -> Checked ()
-checkCycles c id = checkCyclesWith c id (value id)
+-- | Check if type synonym declarations have cyclic dependences (program is passed for the purpose of error reporting)
+checkCycles :: Context -> [Decl] -> Id -> Checked ()
+checkCycles c decls id = checkCyclesWith c id (value id)
   where
     checkCyclesWith c id t = case t of
       Instance name args -> do
         if M.member name (ctxTypeSynonyms c)
           then if id == name 
-            then throwError ("Cycle in the definition of type synonym " ++ id) 
+            then typeError firstPos ("Cycle in the definition of type synonym " ++ id) 
             else checkCyclesWith c id (value name)
           else return ()
         mapM_ (checkCyclesWith c id) args
       MapType _ domains range -> mapM_ (checkCyclesWith c id) (range:domains)
       _ -> return ()
     value name = snd ((M.!) (ctxTypeSynonyms c) name)
+    firstPos = head [pos | Pos pos (TypeDecl _ x _ _) <- decls, x == id]
 
 -- | Check variable, constant, function and procedures and add them to context
 checkSignatures :: Context -> Decl -> Checked Context
 checkSignatures c (Pos pos d) = case d of
-  VarDecl vars -> foldM (checkIdType globalScope ctxGlobals setGlobals) c (map noWhere vars)
-  ConstantDecl _ ids t _ _ -> foldM (checkIdType globalScope ctxConstants setConstants) c (zip ids (repeat t))
-  FunctionDecl name fv args ret _ -> checkFunctionSignature c name fv args ret
-  ProcedureDecl name fv args rets specs _ -> checkProcSignature c name fv args rets specs
+  VarDecl vars -> foldM (checkIdType globalScope ctxGlobals setGlobals) cPos (map noWhere vars)
+  ConstantDecl _ ids t _ _ -> foldM (checkIdType globalScope ctxConstants setConstants) cPos (zip ids (repeat t))
+  FunctionDecl name fv args ret _ -> checkFunctionSignature cPos name fv args ret
+  ProcedureDecl name fv args rets specs _ -> checkProcSignature cPos name fv args rets specs
   otherwise -> return c
+  where
+    cPos = c { ctxPos = pos }
 
 -- | checkIdType scope get set c idType: check that declaration idType is fresh in scope, and if so add it to (get c) using (set c) 
 checkIdType :: (Context -> M.Map Id Type) -> (Context -> M.Map Id Type) -> (Context -> M.Map Id Type -> Context) -> Context -> IdType -> Checked Context
 checkIdType scope get set c (i, t)   
-  | M.member i (scope c) = throwError ("Multiple declarations of variable or constant " ++ i)
+  | M.member i (scope c) = typeError (ctxPos c) ("Multiple declarations of variable or constant " ++ i)
   | otherwise = checkType c t >> return (c `set` M.insert i (resolve c t) (get c))
 
 -- | Check uniqueness of function name, types of formals and add function to context
 checkFunctionSignature :: Context -> Id -> [Id] -> [FArg] -> FArg -> Checked Context
 checkFunctionSignature c name fv args ret
-  | name `elem` funProcNames c = throwError ("Multiple declarations of function or procedure " ++ name)
+  | name `elem` funProcNames c = typeError (ctxPos c) ("Multiple declarations of function or procedure " ++ name)
   | otherwise = do
     c' <- foldM checkTypeVar c fv
     foldM checkFArg c' (args ++ [ret])
     if not (null missingFV) 
-      then throwError ("Type variable(s) must occur in function arguments: " ++ commaSep missingFV)
+      then typeError (ctxPos c) ("Type variable(s) must occur in function arguments: " ++ commaSep missingFV)
       else return c { ctxFunctions = M.insert name (FSig fv (map snd args) (snd ret)) (ctxFunctions c) }
     where 
       checkFArg c (Just id, t) = checkIdType ctxIns ctxIns setIns c (id, t)
@@ -482,12 +493,12 @@ checkFunctionSignature c name fv args ret
       
 checkProcSignature :: Context -> Id -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> [Spec] -> Checked Context
 checkProcSignature c name fv args rets specs
-  | name `elem` funProcNames c = throwError ("Multiple declarations of function or procedure " ++ name)
+  | name `elem` funProcNames c = typeError (ctxPos c) ("Multiple declarations of function or procedure " ++ name)
   | otherwise = do
     c' <- foldM checkTypeVar c fv
     foldM checkPArg c' (args ++ rets)
     if not (null missingFV) 
-      then throwError ("Type variable(s) must occur in procedure arguments: " ++ commaSep missingFV)
+      then typeError (ctxPos c) ("Type variable(s) must occur in procedure arguments: " ++ commaSep missingFV)
       else return c { ctxProcedures = M.insert name (PSig fv (map itwType args) (map itwType rets), modifies specs) (ctxProcedures c) }
     where 
       checkPArg c arg = checkIdType ctxIns ctxIns setIns c (noWhere arg)
@@ -497,13 +508,15 @@ checkProcSignature c name fv args rets specs
 -- | Check axioms, function and procedure bodies      
 checkBodies :: Context -> Decl -> Checked ()
 checkBodies c (Pos pos d) = case d of
-  VarDecl vars -> mapM_ (checkWhere c) vars
-  ConstantDecl _ ids t (Just edges) _ -> checkParentInfo c ids t (map snd edges)
-  FunctionDecl name fv args ret (Just body) -> checkFunction c fv args ret body
-  AxiomDecl e -> checkAxiom c e
-  ProcedureDecl name fv args rets specs mb -> checkProcedure c fv args rets specs mb
-  ImplementationDecl name fv args rets bodies -> checkImplementation c name fv args rets bodies	
-  otherwise -> return ()    
+  VarDecl vars -> mapM_ (checkWhere cPos) vars
+  ConstantDecl _ ids t (Just edges) _ -> checkParentInfo cPos ids t (map snd edges)
+  FunctionDecl name fv args ret (Just body) -> checkFunction cPos fv args ret body
+  AxiomDecl e -> checkAxiom cPos e
+  ProcedureDecl name fv args rets specs mb -> checkProcedure cPos fv args rets specs mb
+  ImplementationDecl name fv args rets bodies -> checkImplementation cPos name fv args rets bodies	
+  otherwise -> return ()
+  where
+    cPos = c { ctxPos = pos }  
   
 -- | Check that "where" part is a valid boolean expression
 checkWhere :: Context -> IdTypeWhere -> Checked ()
@@ -512,15 +525,15 @@ checkWhere c var = compareType c "where clause" BoolType (itwWhere var)
 -- | Check that identifiers in parents are distinct constants of a proper type and do not occur among ids
 checkParentInfo :: Context -> [Id] -> Type -> [Id] -> Checked ()
 checkParentInfo c ids t parents = if length parents /= length (nub parents)
-  then throwError ("Parent list contains duplicates: " ++ commaSep parents)
+  then typeError (ctxPos c) ("Parent list contains duplicates: " ++ commaSep parents)
   else mapM_ checkParent parents
   where
     checkParent p = case M.lookup p (ctxConstants c) of
-      Nothing -> throwError ("Not in scope: constant " ++ p)
+      Nothing -> typeError (ctxPos c) ("Not in scope: constant " ++ p)
       Just t' -> if t /= t'
-        then throwError ("Parent type " ++ show t' ++ " is different from constant type " ++ show t)
+        then typeError (ctxPos c) ("Parent type " ++ show t' ++ " is different from constant type " ++ show t)
         else if p `elem` ids
-          then throwError ("Constant " ++ p ++ " is decalred to be its own parent")
+          then typeError (ctxPos c) ("Constant " ++ p ++ " is decalred to be its own parent")
           else return ()
 
 -- | Check that axiom is a valid boolean expression    
@@ -546,7 +559,7 @@ checkProcedure c fv args rets specs mb = do
   mapM_ (checkWhere cRets) rets
   mapM_ (compareType cRets {ctxTwoState = True} "postcondition" BoolType) (postconditions specs)
   if not (null invalidModifies)
-    then throwError ("Identifier in a modifies clause does not denote a global variable: " ++ commaSep invalidModifies)
+    then typeError (ctxPos c) ("Identifier in a modifies clause does not denote a global variable: " ++ commaSep invalidModifies)
     else case mb of
       Nothing -> return ()
       Just body -> checkBody cRets { ctxModifies = modifies specs, ctxTwoState = True } body
@@ -563,9 +576,9 @@ checkBody c body = do
 -- | Check that implementation corresponds to a known procedure and matches its signature, then checkk all bodies
 checkImplementation :: Context -> Id -> [Id] -> [IdType] -> [IdType] -> [Body] -> Checked ()  
 checkImplementation c name fv args rets bodies = case M.lookup name (ctxProcedures c) of
-    Nothing -> throwError ("Not in scope: procedure " ++ name)
+    Nothing -> typeError (ctxPos c) ("Not in scope: procedure " ++ name)
     Just (PSig fv' argTypes' retTypes', mods) -> case boundUnifier [] fv' (argTypes' ++ retTypes') fv (map snd (args ++ rets)) of
-      Nothing -> throwError ("Could not match procedure signature " ++ show (PSig fv' argTypes' retTypes') ++
+      Nothing -> typeError (ctxPos c) ("Could not match procedure signature " ++ show (PSig fv' argTypes' retTypes') ++
         " against implementation signature " ++ show (PSig fv (map snd args) (map snd rets)) ++
         " in the implementation of " ++ name)
       Just _ -> do
@@ -581,18 +594,18 @@ compareType c msg t e = do
   t' <- checkExpression c e
   if t == t' 
     then return ()
-    else throwError ("Type of " ++ msg ++ " (" ++ show t' ++ ") is different from " ++ show t)
+    else typeError (ctxPos c) ("Type of " ++ msg ++ " (" ++ show t' ++ ") is different from " ++ show t)
     
 -- | checkLefts c ids n: check that there are n ids, all ids are unique and denote mutable variables
 checkLefts :: Context -> [Id] -> Int -> Checked ()
 checkLefts c vars n = if length vars /= n 
-  then throwError ("Expected " ++ show n ++ " left-hand sides and got " ++ show (length vars))
+  then typeError (ctxPos c) ("Expected " ++ show n ++ " left-hand sides and got " ++ show (length vars))
   else if vars /= nub vars
-    then throwError ("Variable occurs more than once among left-handes of a parallel assignment")
+    then typeError (ctxPos c) ("Variable occurs more than once among left-handes of a parallel assignment")
     else if not (null immutableLhss)
-      then throwError ("Assignment to immutable variable(s): " ++ commaSep immutableLhss)
+      then typeError (ctxPos c) ("Assignment to immutable variable(s): " ++ commaSep immutableLhss)
       else if not (null invalidGlobals)
-        then throwError ("Assignment to a global variable that is not in the enclosing procedure's modifies clause: " ++ commaSep invalidGlobals)
+        then typeError (ctxPos c) ("Assignment to a global variable that is not in the enclosing procedure's modifies clause: " ++ commaSep invalidGlobals)
         else return ()      
   where 
     immutableLhss = vars \\ M.keys (mutableVars c)

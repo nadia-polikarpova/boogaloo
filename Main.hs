@@ -25,6 +25,6 @@ main = do { result <- parseFromFile program "test.bpl";
     Left err -> print err
     Right ast -> 
       case (runIdentity (runErrorT (checkProgram ast))) of
-      Left err -> print (err)
+      Left err -> putStr err
       Right c -> print c    
 }      
