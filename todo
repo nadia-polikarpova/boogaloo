@@ -3,7 +3,7 @@
 	- bit vectors
 
 - Type Checker
-	- make report several type errors at once
+	- report several type errors at once
 
 - Pretty printer
 - Interpreter
@@ -15,6 +15,4 @@ Notes:
 - The syntax of WhereClause is missing in the boogie manual
 
 Changed syntax:
-- Multiple function argument declarations with a single type
 - call * := Q(x, y);
-- type T, U;

@@ -8,12 +8,11 @@ import Message
 import Data.List
 import Data.Maybe
 import qualified Data.Map as M
-import Control.Monad.Identity
 import Control.Monad.Error
 import Control.Applicative
 
 -- | Result of type checking: either 'a' or an error with strings message
-type Checked a = ErrorT String Identity a
+type Checked a = Either String a
 
 typeError pos msg = throwError ("Type error in " ++ show pos ++ ":\n" ++ msg ++ "\n")
 
@@ -422,12 +421,12 @@ checkProgram p = do
 -- | Collect type names from type declarations
 collectTypes :: Context -> Decl -> Checked Context
 collectTypes c (Pos pos d) = case d of
-  TypeDecl finite name formals value -> checkTypeDecl c { ctxPos = pos } name formals value
+  TypeDecl ts -> foldM checkTypeDecl c { ctxPos = pos } ts
   otherwise -> return c  
 
 -- | Check uniqueness of type constructors and synonyms, and them in the context  
-checkTypeDecl :: Context -> Id -> [Id] -> (Maybe Type) -> Checked Context 
-checkTypeDecl c name formals value
+checkTypeDecl :: Context -> NewType -> Checked Context 
+checkTypeDecl c (NewType name formals value)
   | name `elem` (typeNames c) = typeError (ctxPos c) ("Multiple declarations of type constructor or synonym " ++ name) 
   | otherwise = case value of
     Nothing -> return c { ctxTypeConstructors = M.insert name (length formals) (ctxTypeConstructors c) }
@@ -436,10 +435,13 @@ checkTypeDecl c name formals value
 -- | Check that type arguments of type synonyms are fresh and values are valid types
 checkTypeSynonyms :: Context -> Decl -> Checked ()
 checkTypeSynonyms c (Pos pos d) = case d of
-  TypeDecl finite name formals (Just t) -> do
-    c' <- foldM checkTypeVar c { ctxPos = pos } formals 
-    checkType c' t
+  TypeDecl ts -> mapM_ (checkNewType c { ctxPos = pos }) ts
   otherwise -> return ()
+  where
+    checkNewType c (NewType name formals (Just t)) = do
+      c' <- foldM checkTypeVar c formals 
+      checkType c' t
+    checkNewType _ _ = return ()
 
 -- | Check if type synonym declarations have cyclic dependences (program is passed for the purpose of error reporting)
 checkCycles :: Context -> [Decl] -> Id -> Checked ()
@@ -456,7 +458,7 @@ checkCycles c decls id = checkCyclesWith c id (value id)
       MapType _ domains range -> mapM_ (checkCyclesWith c id) (range:domains)
       _ -> return ()
     value name = snd ((M.!) (ctxTypeSynonyms c) name)
-    firstPos = head [pos | Pos pos (TypeDecl _ x _ _) <- decls, x == id]
+    firstPos = head [pos | Pos pos (TypeDecl ts) <- decls, id `elem` map tId ts]
 
 -- | Check variable, constant, function and procedures and add them to context
 checkSignatures :: Context -> Decl -> Checked Context

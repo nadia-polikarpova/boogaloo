@@ -20,11 +20,10 @@ import TypeChecker
       -- Left err -> print ("Type error: " ++ err)
       -- Right c -> print c
       
-main = do { result <- parseFromFile program "test.bpl"; 
+main = do 
+  result <- parseFromFile program "test.bpl" 
   case (result) of
     Left err -> print err
-    Right ast -> 
-      case (runIdentity (runErrorT (checkProgram ast))) of
+    Right ast -> case checkProgram ast of
       Left err -> putStr err
-      Right c -> print c    
-}      
+      Right c -> print c

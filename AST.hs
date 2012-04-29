@@ -102,7 +102,7 @@ modifies specs = (nub . concat . catMaybes) (map extractMod specs)
 type Decl = Pos BareDecl
 
 data BareDecl = 
-	TypeDecl Bool Id [Id] (Maybe Type) |									                  -- TypeDecl finite name formals synonym_value
+	TypeDecl [NewType] |
 	ConstantDecl Bool [Id] Type ParentInfo Bool |					                  -- ConstantDecl unique names type orderSpec complete
 	FunctionDecl Id [Id] [FArg] FArg (Maybe Expression) |	                  -- FunctionDecl name type_args formals ret body
 	AxiomDecl Expression |
@@ -112,15 +112,26 @@ data BareDecl =
   
 {- Misc -}
 
+data NewType = NewType {
+  tId :: Id,
+  tArgs :: [Id],
+  tValue :: Maybe Type
+  }
+
 type IdType = (Id, Type)
+
 data IdTypeWhere = IdTypeWhere { 
   itwId :: Id, 
   itwType :: Type, 
   itwWhere :: Expression 
   }
+  
 type FArg = (Maybe Id, Type)
+
 type Body = ([IdTypeWhere], Block)
+
 type ParentEdge = (Bool, Id)
+
 type ParentInfo = Maybe [ParentEdge]
 
 -- | Function signature: type variables, argument types, return type

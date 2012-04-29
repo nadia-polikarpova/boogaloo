@@ -5,7 +5,7 @@ import AST
 
 keywords :: [String]
 keywords = ["assert", "assume", "axiom", "bool", "break", "call", "complete", -- ToDO: bit vector keywords omitted
-    "const", "else", "ensures", "exists", "extends", "false", "finite", "forall", "free", "function",
+    "const", "else", "ensures", "exists", "extends", "false", "forall", "free", "function",
     "goto", "havoc", "if", "implementation", "int", "invariant", "modifies", "old",
     "procedure", "requires", "return", "returns", "true", "type", "unique", "var",
     "where", "while"]

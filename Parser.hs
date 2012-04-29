@@ -279,16 +279,20 @@ block = braces statementList
     
 {- Declarations -}
 
+newType :: Parser NewType
+newType = do
+  name <- identifier
+  args <- many identifier
+  value <- optionMaybe (reservedOp "=" >> type_ )
+  return $ NewType name args value
+
 typeDecl :: Parser BareDecl
 typeDecl = do
   reserved "type"
   many attribute
-  finite <- hasKeyword "finite"
-  name <- identifier
-  args <- many identifier
-  value <- optionMaybe (reservedOp "=" >> type_ )
+  ts <- commaSep newType
   semi
-  return $ TypeDecl finite name args value
+  return $ TypeDecl ts
 
 parentEdge :: Parser ParentEdge
 parentEdge = do
@@ -313,12 +317,14 @@ functionDecl = do
   many attribute
   name <- identifier
   tArgs <- typeArgs
-  args <- parens (commaSep fArg)
+  args <- parens ((try namedArgs) <|> unnamedArgs)
   reserved "returns"
   ret <- parens fArg
   body <- (semi >> return Nothing) <|> (Just <$> braces e0)
   return $ FunctionDecl name tArgs args ret body
   where
+    unnamedArgs = map (\t -> (Nothing, t))                  <$> commaSep type_
+    namedArgs =   map (\(id, t) -> (Just id, t)) . ungroup  <$> commaSep idsType
     fArg = do
       name <- optionMaybe (try (identifier <* reservedOp ":"))
       t <- type_
