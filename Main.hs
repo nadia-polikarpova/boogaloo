@@ -3,9 +3,10 @@ module Main where
 import Text.ParserCombinators.Parsec
 import AST
 import Parser
+import TypeChecker
+import PrettyPrinter
 import Control.Monad.Identity
 import Control.Monad.Error
-import TypeChecker
 
 -- main = do { result <- parseFromFile program "test.bpl"; 
   -- case (result) of
@@ -26,4 +27,4 @@ main = do
     Left err -> print err
     Right ast -> case checkProgram ast of
       Left err -> putStr err
-      Right c -> print c
+      Right p -> print (programDoc ast)

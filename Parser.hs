@@ -353,7 +353,7 @@ body :: Parser Body
 body = braces (do
   locals <- many varList
   statements <- statementList
-  return (concat locals, statements))
+  return (locals, statements))
   
 procDecl :: Parser BareDecl
 procDecl = do

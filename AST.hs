@@ -128,7 +128,7 @@ data IdTypeWhere = IdTypeWhere {
   
 type FArg = (Maybe Id, Type)
 
-type Body = ([IdTypeWhere], Block)
+type Body = ([[IdTypeWhere]], Block)
 
 type ParentEdge = (Bool, Id)
 

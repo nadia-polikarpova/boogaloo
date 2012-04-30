@@ -6,6 +6,8 @@
 	- report several type errors at once
 
 - Pretty printer
+	- Remove extra parens
+
 - Interpreter
 - Symbolic execution?
 
