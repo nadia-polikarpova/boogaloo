@@ -317,14 +317,14 @@ functionDecl = do
   many attribute
   name <- identifier
   tArgs <- typeArgs
-  args <- parens ((try namedArgs) <|> unnamedArgs)
+  args <- parens (option [] (try namedArgs <|> unnamedArgs))
   reserved "returns"
   ret <- parens fArg
   body <- (semi >> return Nothing) <|> (Just <$> braces e0)
   return $ FunctionDecl name tArgs args ret body
   where
-    unnamedArgs = map (\t -> (Nothing, t))                  <$> commaSep type_
-    namedArgs =   map (\(id, t) -> (Just id, t)) . ungroup  <$> commaSep idsType
+    unnamedArgs = map (\t -> (Nothing, t))                  <$> commaSep1 type_
+    namedArgs =   map (\(id, t) -> (Just id, t)) . ungroup  <$> commaSep1 idsType
     fArg = do
       name <- optionMaybe (try (identifier <* reservedOp ":"))
       t <- type_

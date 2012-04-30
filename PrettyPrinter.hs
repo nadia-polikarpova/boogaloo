@@ -26,7 +26,7 @@ renderWithTabs = fullRender (mode style) (lineLength style) (ribbonsPerLine styl
 typeDoc :: Type -> Doc
 typeDoc BoolType = text "bool"
 typeDoc IntType = text "int"
-typeDoc (MapType fv domains range) = typeArgsDoc fv <+> 
+typeDoc (MapType fv domains range) = typeArgsDoc fv <> 
   brackets (commaSep (map typeDoc domains)) <+>
   typeDoc range
 typeDoc (Instance id args) = text id <+> hsep (map typeDoc args)
@@ -58,16 +58,19 @@ exprDoc :: Expression -> Doc
 exprDoc e = exprDocAt (-1) e
 
 exprDocAt :: Int -> Expression -> Doc
-exprDocAt n (Pos _ e) = condParens (n' <= n) (case e of
-	Numeral n -> integer n
-	Var id -> text id
-	Application id args -> text id <> parens (commaSep (map exprDoc args))
-	MapSelection m args -> exprDocAt n' m <> brackets (commaSep (map exprDoc args))
-	MapUpdate m args val -> exprDocAt n' m <> brackets (commaSep (map exprDoc args) <+> text ":=" <+> exprDoc val)
-	Old e -> text "old" <+> parens (exprDoc e)
-	UnaryExpression unOp e -> text (show unOp) <+> exprDocAt n' e
-	BinaryExpression binOp e1 e2 -> exprDocAt n' e1 <+> text (show binOp) <+> exprDocAt n' e2
-	Quantified qOp fv vars e -> parens (text (show qOp) <+> typeArgsDoc fv <+> commaSep (map idTypeDoc vars) <+> text "::" <+> exprDoc e)
+exprDocAt n (Pos _ e) = condParens (n' <= n) (
+  case e of
+    FF -> text "false"
+    TT -> text "true"
+    Numeral n -> integer n
+    Var id -> text id
+    Application id args -> text id <> parens (commaSep (map exprDoc args))
+    MapSelection m args -> exprDocAt n' m <> brackets (commaSep (map exprDoc args))
+    MapUpdate m args val -> exprDocAt n' m <> brackets (commaSep (map exprDoc args) <+> text ":=" <+> exprDoc val)
+    Old e -> text "old" <+> parens (exprDoc e)
+    UnaryExpression unOp e -> text (show unOp) <> exprDocAt n' e
+    BinaryExpression binOp e1 e2 -> exprDocAt n' e1 <+> text (show binOp) <+> exprDocAt n' e2
+    Quantified qOp fv vars e -> parens (text (show qOp) <+> typeArgsDoc fv <+> commaSep (map idTypeDoc vars) <+> text "::" <+> exprDoc e)
   )
   where
     n' = power e
@@ -158,8 +161,8 @@ constantDoc unique names t orderSpec complete =
     
 functionDoc name fv args ret mb =
   text "function" <+>
-  text name <+>
-  typeArgsDoc fv <+>
+  text name <>
+  typeArgsDoc fv <>
   parens (commaSep (map fArgDoc args)) <+>
   text "returns" <+>
   parens (fArgDoc ret) <>
@@ -176,8 +179,8 @@ varDeclDoc vars =
       
 procedureDoc name fv args rets specs mb =
   text "procedure" <+>
-  text name <+>
-  typeArgsDoc fv <+>
+  text name <>
+  typeArgsDoc fv <>
   parens (commaSep (map idTypeWhereDoc args)) <+>
   text "returns" <+>
   parens (commaSep (map idTypeWhereDoc rets)) <>
@@ -199,9 +202,9 @@ procedureDoc name fv args rets specs mb =
       semi
     
 implementationDoc name fv args rets bodies =
-  text "implemantation" <+>
-  text name <+>
-  typeArgsDoc fv <+>
+  text "implementation" <+>
+  text name <>
+  typeArgsDoc fv <>
   parens (commaSep (map idTypeDoc args)) <+>
   text "returns" <+>
   parens (commaSep (map idTypeDoc rets)) $+$
