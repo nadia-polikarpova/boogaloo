@@ -33,17 +33,44 @@ typeDoc (Instance id args) = text id <+> hsep (map typeDoc args)
 
 {- Expressions -}
 
+-- | Binding power of an expression
+power :: BareExpression -> Int
+power TT = 9
+power FF = 9
+power (Numeral _) = 9
+power (Var _) = 9
+power (Application _ _) = 9
+power (Old _) = 9
+power (Quantified _ _ _ _) = 9
+power (MapSelection _ _) = 8
+power (MapUpdate _ _ _) = 8
+power (UnaryExpression _ _) = 7
+power (BinaryExpression op _ _) 
+  | op `elem` [Times, Div, Mod] = 6 
+  | op `elem` [Plus, Minus] = 5
+-- | op `elem` [Concat] = 4
+  | op `elem` [Eq, Neq, Ls, Leq, Gt, Geq, Lc] = 3
+  | op `elem` [And, Or] = 2
+  | op `elem` [Implies] = 1
+  | op `elem` [Equiv] = 0
+
 exprDoc :: Expression -> Doc
-exprDoc (Pos _ e) = case e of
+exprDoc e = exprDocAt (-1) e
+
+exprDocAt :: Int -> Expression -> Doc
+exprDocAt n (Pos _ e) = condParens (n' <= n) (case e of
 	Numeral n -> integer n
 	Var id -> text id
 	Application id args -> text id <> parens (commaSep (map exprDoc args))
-	MapSelection m args -> exprDoc m <> brackets (commaSep (map exprDoc args))
-	MapUpdate m args val -> exprDoc m <> brackets (commaSep (map exprDoc args) <+> text ":=" <+> exprDoc val)
-	Old e -> text "old" <+> exprDoc e
-	UnaryExpression unOp e -> text (show unOp) <+> parens (exprDoc e) -- ToDo: get rid of extra parens
-	BinaryExpression binOp e1 e2 -> parens (exprDoc e1) <+> text (show binOp) <+> parens (exprDoc e2)
+	MapSelection m args -> exprDocAt n' m <> brackets (commaSep (map exprDoc args))
+	MapUpdate m args val -> exprDocAt n' m <> brackets (commaSep (map exprDoc args) <+> text ":=" <+> exprDoc val)
+	Old e -> text "old" <+> parens (exprDoc e)
+	UnaryExpression unOp e -> text (show unOp) <+> exprDocAt n' e
+	BinaryExpression binOp e1 e2 -> exprDocAt n' e1 <+> text (show binOp) <+> exprDocAt n' e2
 	Quantified qOp fv vars e -> parens (text (show qOp) <+> typeArgsDoc fv <+> commaSep (map idTypeDoc vars) <+> text "::" <+> exprDoc e)
+  )
+  where
+    n' = power e
 
 {- Statements -}
 
@@ -199,6 +226,8 @@ option b doc = if b then doc else empty
 optionMaybe mVal toDoc = case mVal of
   Nothing -> empty
   Just val -> toDoc val
+  
+condParens b doc = if b then parens doc else doc
     
 typeArgsDoc fv = option (not (null fv)) (angles (commaSep (map text fv)))
 
