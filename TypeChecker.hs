@@ -11,11 +11,66 @@ import qualified Data.Map as M
 import Control.Monad.Error
 import Control.Applicative
 
+{- Errors -}
+
 -- | Result of type checking: either 'a' or an error with strings message
 type Checked a = Either String a
 
+-- | Throw a type error with a source position and a message
 typeError pos msg = throwError ("Type error in " ++ show pos ++ ":\n" ++ msg ++ "\n")
 
+-- | Error accumulator: used to store intermediate type checking results, when errors should be accumulated rather than reported immediately
+data ErrorAccum a = ErrorAccum [String] a
+
+instance Monad ErrorAccum where
+  return x                = ErrorAccum [] x
+  ErrorAccum errs x >>= f = case (f x) of
+    ErrorAccum es v -> ErrorAccum (errs ++ es) v
+
+-- | Transform a type checking result and default value into an error accumlator
+accum :: Checked a -> a -> ErrorAccum a
+accum cx y = case cx of
+  Left e -> ErrorAccum [e] y
+  Right x -> ErrorAccum [] x    
+  
+-- | Trnasform an error accumulator back into a rgeular type checking result  
+report :: ErrorAccum a -> Checked a
+report (ErrorAccum [] x) = Right x
+report (ErrorAccum es _) = Left (concat (intersperse "\n" es))  
+
+-- | Apply type checking f to all nodes in the initial context c,
+-- | accumulating errors from all nodes and reporting them at the end;
+-- | in case of success the modified context is passed on and in case of failure the context is unchanged
+foldAccum :: (a -> b -> Checked a) -> a -> [b] -> Checked a
+foldAccum f c nodes = report $ foldM (acc f) c nodes
+  where
+    acc f x y = accum (f x y) x
+    
+-- | Apply type checking f to all nodes,
+-- | accumulating errors from all nodes and reporting them at the end
+mapAccum :: (b -> Checked c) -> c -> [b] -> Checked [c]
+mapAccum f def nodes = report $ mapM (acc f) nodes  
+  where
+    acc f x  = accum (f x) def
+   
+-- | Apply type checking f to all nodes throring away the result,
+-- | accumulating errors from all nodes
+mapAccumA_ :: (a -> Checked ()) -> [a] -> ErrorAccum ()
+mapAccumA_ f nodes = mapM_ (acc f) nodes  
+  where
+    acc f x  = accum (f x) ()
+    
+-- | Same as mapAccumA_, but reporting the error at the end
+mapAccum_ :: (a -> Checked ()) -> [a] -> Checked ()
+mapAccum_ f nodes = report $ mapAccumA_ f nodes  
+
+-- | Apply type checking f to all xs and ys throring away the result,
+-- | accumulating errors from all nodes and reporting them at the end
+zipWithAccum_ :: (a -> b -> Checked ()) -> [a] -> [b] -> Checked ()
+zipWithAccum_ f xs ys = report $ zipWithM_ (acc f) xs ys  
+  where
+    acc f x y  = accum (f x y) ()
+  
 {- Context -}
 
 -- | Typechecking context: 
@@ -163,16 +218,15 @@ checkTypeVar c v
 -- | checkType c t : check that t is a correct type in context c (i.e. that all type names exist and have correct number of arguments)
 checkType :: Context -> Type -> Checked ()
 checkType c (MapType fv domains range) = do
-  c' <- foldM checkTypeVar c fv
-  mapM (checkType c') domains
-  checkType c' range
+  c' <- foldAccum checkTypeVar c fv
+  mapAccum_ (checkType c') (domains ++ [range])
 checkType c (Instance name args)
   | name `elem` ctxTypeVars c && null args = return ()
   | M.member name (ctxTypeConstructors c) = if n == length args 
-    then mapM_ (checkType c) args
+    then mapAccum_ (checkType c) args
     else typeError (ctxPos c) ("Wrong number of arguments " ++ show (length args) ++ " given to the type constructor " ++ name ++ " (expected " ++ show n ++ ")")
   | M.member name (ctxTypeSynonyms c) = if length formals == length args
-    then mapM_ (checkType c) args
+    then mapAccum_ (checkType c) args
     else typeError (ctxPos c) ("Wrong number of arguments " ++ show (length args) ++ " given to the type synonym " ++ name ++ " (expected " ++ show (length formals) ++ ")")
   | otherwise = typeError (ctxPos c) ("Not in scope: type constructor or synonym " ++ name)
     where 
@@ -218,7 +272,7 @@ checkApplication :: Context -> Id -> [Expression] -> Checked Type
 checkApplication c id args = case M.lookup id (ctxFunctions c) of
   Nothing -> typeError (ctxPos c) ("Not in scope: function " ++ id)
   Just (FSig fv argTypes retType) -> do
-    actualTypes <- mapM (checkExpression c) args
+    actualTypes <- mapAccum (checkExpression c) noType args
     case unifier fv argTypes actualTypes of
       Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show argTypes) ++
         " against actual argument types " ++ commaSep (map show actualTypes) ++
@@ -230,7 +284,7 @@ checkMapSelection c m args = do
   mType <- checkExpression c m
   case mType of
     MapType fv domainTypes rangeType -> do
-      actualTypes <- mapM (checkExpression c) args
+      actualTypes <- mapAccum (checkExpression c) noType args
       case unifier fv domainTypes actualTypes of
         Nothing -> typeError (ctxPos c) ("Could not match map domain types " ++ commaSep (map show domainTypes) ++
           " against map selection types " ++ commaSep (map show actualTypes) ++
@@ -272,8 +326,8 @@ checkBinaryExpression c op e1 e2
     
 checkQuantified :: Context -> QOp -> [Id] -> [IdType] -> Expression -> Checked Type
 checkQuantified c _ fv vars e = do
-  c' <- foldM checkTypeVar c fv
-  quantifiedScope <- foldM (checkIdType localScope ctxIns setIns) c' vars
+  c' <- foldAccum checkTypeVar c fv
+  quantifiedScope <- foldAccum (checkIdType localScope ctxIns setIns) c' vars
   if not (null missingFV)
     then typeError (ctxPos c) ("Type variable(s) must occur in the bound variables of the quantification: " ++ commaSep missingFV) 
     else do
@@ -307,8 +361,8 @@ checkStatement c (Pos pos s) = case s of
 checkAssign :: Context -> [(Id , [[Expression]])] -> [Expression] -> Checked ()
 checkAssign c lhss rhss = do
   checkLefts c (map fst lhss) (length rhss)
-  rTypes <- mapM (checkExpression c) rhss
-  zipWithM_ (compareType c "assignment left-hand side") rTypes (map selectExpr lhss) 
+  rTypes <- mapAccum (checkExpression c) noType rhss
+  zipWithAccum_ (compareType c "assignment left-hand side") rTypes (map selectExpr lhss) 
   where
     selectExpr (id, selects) = foldl mapSelectExpr (attachPos (ctxPos c) (Var id)) selects
         
@@ -318,14 +372,14 @@ checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
   Just (PSig fv argTypes retTypes, mods) -> if not (null (mods \\ ctxModifies c)) 
     then typeError (ctxPos c) ("Call modifies a global variable that is not in the enclosing procedure's modifies clause: " ++ commaSep (mods \\ ctxModifies c))
     else do
-      actualArgTypes <- mapM (checkExpression c) args
+      actualArgTypes <- mapAccum (checkExpression c) noType args
       case unifier fv argTypes actualArgTypes of
         Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show argTypes) ++
           " against actual argument types " ++ commaSep (map show actualArgTypes) ++
           " in the call to " ++ name)
         Just u -> do
           checkLefts c lhss (length retTypes)
-          zipWithM_ (compareType c "call left-hand side") (map (substitution u) retTypes) (map (attachPos (ctxPos c) . Var) lhss)
+          zipWithAccum_ (compareType c "call left-hand side") (map (substitution u) retTypes) (map (attachPos (ctxPos c) . Var) lhss)
         
 checkCallForall :: Context -> Id -> [WildcardExpression] -> Checked ()
 checkCallForall c name args = case M.lookup name (ctxProcedures c) of
@@ -333,7 +387,7 @@ checkCallForall c name args = case M.lookup name (ctxProcedures c) of
   Just (PSig fv argTypes _, mods) -> if not (null mods) 
     then typeError (ctxPos c) "Call forall to a procedure with a non-empty modifies clause"
     else do
-      actualArgTypes <- mapM (checkExpression c) concreteArgs
+      actualArgTypes <- mapAccum (checkExpression c) noType concreteArgs
       case unifier fv (concrete argTypes) actualArgTypes of
         Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show (concrete argTypes)) ++
           " against actual argument types " ++ commaSep (map show actualArgTypes) ++
@@ -346,22 +400,22 @@ checkCallForall c name args = case M.lookup name (ctxProcedures c) of
     isConcrete (Expr _) = True
     
 checkIf :: Context -> WildcardExpression -> Block -> (Maybe Block) -> Checked ()
-checkIf c cond thenBlock elseBlock = do
+checkIf c cond thenBlock elseBlock = report $ do
   case cond of
     Wildcard -> return ()
-    Expr e -> compareType c "branching condition" BoolType e
-  checkBlock c thenBlock
+    Expr e -> accum (compareType c "branching condition" BoolType e) ()
+  accum (checkBlock c thenBlock) ()
   case elseBlock of
     Nothing -> return ()
-    Just b -> checkBlock c b
+    Just b -> accum (checkBlock c b) ()
     
 checkWhile :: Context -> WildcardExpression -> [(Bool, Expression)] -> Block -> Checked ()
-checkWhile c cond invs body = do
+checkWhile c cond invs body = report $ do
   case cond of  
     Wildcard -> return ()
-    Expr e -> compareType c "loop condition" BoolType e
-  mapM_ (compareType c "loop invariant" BoolType) (map snd invs)
-  checkBlock c {ctxInLoop = True} body
+    Expr e -> accum (compareType c "loop condition" BoolType e) ()
+  mapAccumA_ (compareType c "loop invariant" BoolType) (map snd invs)
+  accum (checkBlock c {ctxInLoop = True} body) ()
 
 checkGoto :: Context -> [Id] -> Checked ()  
 checkGoto c ids = if not (null unknownLabels)
@@ -384,7 +438,7 @@ checkLabelBreak c l = if not (l `elem` ctxEncLabels c)
 
 -- | collectLabels c block: check that all labels in block and nested blocks are unique and add then to the context
 collectLabels :: Context -> Block -> Checked Context
-collectLabels c block = foldM checkLStatement c block
+collectLabels c block = foldAccum checkLStatement c block
   where
     checkLStatement c (Pos pos (ls, (Pos _ st))) = do
       c' <- foldM (addLabel pos) c ls
@@ -402,7 +456,7 @@ collectLabels c block = foldM checkLStatement c block
 
 -- | check every statement in the block
 checkBlock :: Context -> Block -> Checked ()    
-checkBlock c block = mapM_ (checkLStatement c) block
+checkBlock c block = mapAccum_ (checkLStatement c) block
   where
     checkLStatement c (Pos _ (ls, st)) = checkStatement c { ctxEncLabels = ctxEncLabels c ++ ls} st
     
@@ -411,11 +465,11 @@ checkBlock c block = mapM_ (checkLStatement c) block
 -- | Check program in five passes
 checkProgram :: Program -> Checked Context
 checkProgram p = do
-  pass1 <- foldM collectTypes emptyContext p                  -- collect type names from type declarations
-  mapM_ (checkTypeSynonyms pass1) p                           -- check values of type synonyms
-  mapM_ (checkCycles pass1 p) (M.keys (ctxTypeSynonyms pass1))  -- check that type synonyms do not form a cycle 
-  pass4 <- foldM checkSignatures pass1 p                      -- check variable, constant, function and procedure signatures
-  mapM_ (checkBodies pass4) p                                 -- check axioms, function and procedure bodies, constant parent info
+  pass1   <- foldAccum collectTypes emptyContext p                            -- collect type names from type declarations
+  _pass2  <- mapAccum_ (checkTypeSynonyms pass1) p                            -- check values of type synonyms
+  _pass3  <- mapAccum_ (checkCycles pass1 p) (M.keys (ctxTypeSynonyms pass1)) -- check that type synonyms do not form a cycle 
+  pass4   <- foldAccum checkSignatures pass1 p                                -- check variable, constant, function and procedure signatures
+  _pass5  <- mapAccum_ (checkBodies pass4) p                                  -- check axioms, function and procedure bodies, constant parent info
   return pass4
 
 -- | Collect type names from type declarations
@@ -435,11 +489,11 @@ checkTypeDecl c (NewType name formals value)
 -- | Check that type arguments of type synonyms are fresh and values are valid types
 checkTypeSynonyms :: Context -> Decl -> Checked ()
 checkTypeSynonyms c (Pos pos d) = case d of
-  TypeDecl ts -> mapM_ (checkNewType c { ctxPos = pos }) ts
+  TypeDecl ts -> mapAccum_ (checkNewType c { ctxPos = pos }) ts
   otherwise -> return ()
   where
     checkNewType c (NewType name formals (Just t)) = do
-      c' <- foldM checkTypeVar c formals 
+      c' <- foldAccum checkTypeVar c formals 
       checkType c' t
     checkNewType _ _ = return ()
 
@@ -454,8 +508,8 @@ checkCycles c decls id = checkCyclesWith c id (value id)
             then typeError firstPos ("Cycle in the definition of type synonym " ++ id) 
             else checkCyclesWith c id (value name)
           else return ()
-        mapM_ (checkCyclesWith c id) args
-      MapType _ domains range -> mapM_ (checkCyclesWith c id) (range:domains)
+        mapAccum_ (checkCyclesWith c id) args
+      MapType _ domains range -> mapAccum_ (checkCyclesWith c id) (range:domains)
       _ -> return ()
     value name = snd ((M.!) (ctxTypeSynonyms c) name)
     firstPos = head [pos | Pos pos (TypeDecl ts) <- decls, id `elem` map tId ts]
@@ -463,8 +517,8 @@ checkCycles c decls id = checkCyclesWith c id (value id)
 -- | Check variable, constant, function and procedures and add them to context
 checkSignatures :: Context -> Decl -> Checked Context
 checkSignatures c (Pos pos d) = case d of
-  VarDecl vars -> foldM (checkIdType globalScope ctxGlobals setGlobals) cPos (map noWhere vars)
-  ConstantDecl _ ids t _ _ -> foldM (checkIdType globalScope ctxConstants setConstants) cPos (zip ids (repeat t))
+  VarDecl vars -> foldAccum (checkIdType globalScope ctxGlobals setGlobals) cPos (map noWhere vars)
+  ConstantDecl _ ids t _ _ -> foldAccum (checkIdType globalScope ctxConstants setConstants) cPos (zip ids (repeat t))
   FunctionDecl name fv args ret _ -> checkFunctionSignature cPos name fv args ret
   ProcedureDecl name fv args rets specs _ -> checkProcSignature cPos name fv args rets specs
   otherwise -> return c
@@ -482,8 +536,8 @@ checkFunctionSignature :: Context -> Id -> [Id] -> [FArg] -> FArg -> Checked Con
 checkFunctionSignature c name fv args ret
   | name `elem` funProcNames c = typeError (ctxPos c) ("Multiple declarations of function or procedure " ++ name)
   | otherwise = do
-    c' <- foldM checkTypeVar c fv
-    foldM checkFArg c' (args ++ [ret])
+    c' <- foldAccum checkTypeVar c fv
+    foldAccum checkFArg c' (args ++ [ret])
     if not (null missingFV) 
       then typeError (ctxPos c) ("Type variable(s) must occur in function arguments: " ++ commaSep missingFV)
       else return c { ctxFunctions = M.insert name (FSig fv (map snd args) (snd ret)) (ctxFunctions c) }
@@ -497,8 +551,8 @@ checkProcSignature :: Context -> Id -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] ->
 checkProcSignature c name fv args rets specs
   | name `elem` funProcNames c = typeError (ctxPos c) ("Multiple declarations of function or procedure " ++ name)
   | otherwise = do
-    c' <- foldM checkTypeVar c fv
-    foldM checkPArg c' (args ++ rets)
+    c' <- foldAccum checkTypeVar c fv
+    foldAccum checkPArg c' (args ++ rets)
     if not (null missingFV) 
       then typeError (ctxPos c) ("Type variable(s) must occur in procedure arguments: " ++ commaSep missingFV)
       else return c { ctxProcedures = M.insert name (PSig fv (map itwType args) (map itwType rets), modifies specs) (ctxProcedures c) }
@@ -510,7 +564,7 @@ checkProcSignature c name fv args rets specs
 -- | Check axioms, function and procedure bodies      
 checkBodies :: Context -> Decl -> Checked ()
 checkBodies c (Pos pos d) = case d of
-  VarDecl vars -> mapM_ (checkWhere cPos) vars
+  VarDecl vars -> mapAccum_ (checkWhere cPos) vars
   ConstantDecl _ ids t (Just edges) _ -> checkParentInfo cPos ids t (map snd edges)
   FunctionDecl name fv args ret (Just body) -> checkFunction cPos fv args ret body
   AxiomDecl e -> checkAxiom cPos e
@@ -528,7 +582,7 @@ checkWhere c var = compareType c "where clause" BoolType (itwWhere var)
 checkParentInfo :: Context -> [Id] -> Type -> [Id] -> Checked ()
 checkParentInfo c ids t parents = if length parents /= length (nub parents)
   then typeError (ctxPos c) ("Parent list contains duplicates: " ++ commaSep parents)
-  else mapM_ checkParent parents
+  else mapAccum_ checkParent parents
   where
     checkParent p = case M.lookup p (ctxConstants c) of
       Nothing -> typeError (ctxPos c) ("Not in scope: constant " ++ p)
@@ -545,7 +599,7 @@ checkAxiom c e = compareType c {ctxGlobals = M.empty } "axiom" BoolType e
 -- | Check that function body is a valid expression of the same type as the function return type
 checkFunction :: Context -> [Id] -> [FArg] -> FArg -> Expression -> Checked ()
 checkFunction c fv args ret body = do 
-  functionScope <- foldM addFArg c { ctxTypeVars = fv } args
+  functionScope <- foldAccum addFArg c { ctxTypeVars = fv } args
   compareType functionScope { ctxGlobals = M.empty } "function body" (snd ret) body
   where 
     addFArg c (Just id, t) = checkIdType ctxIns ctxIns setIns c (id, t)
@@ -554,12 +608,12 @@ checkFunction c fv args ret body = do
 -- | Check "where" parts of procedure arguments and statements in its body
 checkProcedure :: Context -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> [Spec] -> (Maybe Body) -> Checked ()
 checkProcedure c fv args rets specs mb = do 
-  cArgs <- foldM (checkIdType localScope ctxIns setIns) c { ctxTypeVars = fv } (map noWhere args)
-  mapM_ (checkWhere cArgs) args
-  mapM_ (compareType cArgs "precondition" BoolType) (preconditions specs)
-  cRets <- foldM (checkIdType localScope ctxLocals setLocals) cArgs (map noWhere rets)
-  mapM_ (checkWhere cRets) rets
-  mapM_ (compareType cRets {ctxTwoState = True} "postcondition" BoolType) (postconditions specs)
+  cArgs <- foldAccum (checkIdType localScope ctxIns setIns) c { ctxTypeVars = fv } (map noWhere args)
+  mapAccum_ (checkWhere cArgs) args
+  mapAccum_ (compareType cArgs "precondition" BoolType) (preconditions specs)
+  cRets <- foldAccum (checkIdType localScope ctxLocals setLocals) cArgs (map noWhere rets)
+  mapAccum_ (checkWhere cRets) rets
+  mapAccum_ (compareType cRets {ctxTwoState = True} "postcondition" BoolType) (postconditions specs)
   if not (null invalidModifies)
     then typeError (ctxPos c) ("Identifier in a modifies clause does not denote a global variable: " ++ commaSep invalidModifies)
     else case mb of
@@ -570,8 +624,8 @@ checkProcedure c fv args rets specs mb = do
 -- | Check procedure body in context c  
 checkBody :: Context -> Body -> Checked ()
 checkBody c body = do
-  bodyScope <- foldM (checkIdType localScope ctxLocals setLocals) c (map noWhere (concat (fst body)))
-  mapM_ (checkWhere bodyScope) (concat (fst body))
+  bodyScope <- foldAccum (checkIdType localScope ctxLocals setLocals) c (map noWhere (concat (fst body)))
+  mapAccum_ (checkWhere bodyScope) (concat (fst body))
   bodyScope' <- collectLabels bodyScope (snd body)
   checkBlock bodyScope' (snd body)
 
@@ -584,9 +638,9 @@ checkImplementation c name fv args rets bodies = case M.lookup name (ctxProcedur
         " against implementation signature " ++ show (PSig fv (map snd args) (map snd rets)) ++
         " in the implementation of " ++ name)
       Just _ -> do
-        cArgs <- foldM (checkIdType localScope ctxIns setIns) c { ctxTypeVars = fv } args
-        cRets <- foldM (checkIdType localScope ctxLocals setLocals) cArgs rets
-        mapM_ (checkBody cRets { ctxModifies = mods, ctxTwoState = True }) bodies
+        cArgs <- foldAccum (checkIdType localScope ctxIns setIns) c { ctxTypeVars = fv } args
+        cRets <- foldAccum (checkIdType localScope ctxLocals setLocals) cArgs rets
+        mapAccum_ (checkBody cRets { ctxModifies = mods, ctxTwoState = True }) bodies
     
 {- Misc -}
 

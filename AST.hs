@@ -20,6 +20,9 @@ data Type = BoolType | IntType | {-BitVectorType Int |-}
 -- | Type denoted by id	without arguments
 idType id = Instance id []
 
+-- | Dummy type used during type checking to denote error
+noType = idType "NoType"
+
 {- Expressions -}
 
 -- | Unary operators

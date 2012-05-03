@@ -1,9 +1,7 @@
-- Parser
-	- new syntax
-	- bit vectors
-
-- Type Checker
-	- report several type errors at once
+- Overall
+	- Move the top-level function in each module to the top
+	- New syntax
+	- Bit vectors
 
 - Interpreter
 - Symbolic execution?
