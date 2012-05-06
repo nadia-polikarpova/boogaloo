@@ -12,6 +12,15 @@ import Text.ParserCombinators.Parsec.Expr
 import Control.Monad
 import Control.Applicative ((<$>), (<*>), (<*), (*>))
 
+{- Interface -}
+
+program :: Parser Program
+program = do 
+  whiteSpace
+  p <- many decl
+  eof
+  return p
+
 {- Lexical analysis -}
 
 opNames :: [String]
@@ -396,13 +405,6 @@ decl = attachPosBefore (choice [
   implDecl
   ] <?> "declaration")
   
-program :: Parser Program
-program = do 
-  whiteSpace
-  p <- many decl
-  eof
-  return p
-
 {- Contracts -}
 
 spec :: Parser Spec

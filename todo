@@ -1,7 +1,7 @@
 - Overall
-	- Move the top-level function in each module to the top
 	- New syntax
 	- Bit vectors
+	- Do not throw away attributes and triggers
 
 - Interpreter
 - Symbolic execution?

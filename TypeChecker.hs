@@ -11,6 +11,18 @@ import qualified Data.Map as M
 import Control.Monad.Error
 import Control.Applicative
 
+{- Interface -}
+
+-- | Check program p and return the type information in a context
+checkProgram :: Program -> Checked Context
+checkProgram p = do
+  pass1   <- foldAccum collectTypes emptyContext p                            -- collect type names from type declarations
+  _pass2  <- mapAccum_ (checkTypeSynonyms pass1) p                            -- check values of type synonyms
+  _pass3  <- mapAccum_ (checkCycles pass1 p) (M.keys (ctxTypeSynonyms pass1)) -- check that type synonyms do not form a cycle 
+  pass4   <- foldAccum checkSignatures pass1 p                                -- check variable, constant, function and procedure signatures
+  _pass5  <- mapAccum_ (checkBodies pass4) p                                  -- check axioms, function and procedure bodies, constant parent info
+  return pass4
+
 {- Errors -}
 
 -- | Result of type checking: either 'a' or an error with strings message
@@ -461,16 +473,6 @@ checkBlock c block = mapAccum_ (checkLStatement c) block
     checkLStatement c (Pos _ (ls, st)) = checkStatement c { ctxEncLabels = ctxEncLabels c ++ ls} st
     
 {- Declarations -}
-
--- | Check program in five passes
-checkProgram :: Program -> Checked Context
-checkProgram p = do
-  pass1   <- foldAccum collectTypes emptyContext p                            -- collect type names from type declarations
-  _pass2  <- mapAccum_ (checkTypeSynonyms pass1) p                            -- check values of type synonyms
-  _pass3  <- mapAccum_ (checkCycles pass1 p) (M.keys (ctxTypeSynonyms pass1)) -- check that type synonyms do not form a cycle 
-  pass4   <- foldAccum checkSignatures pass1 p                                -- check variable, constant, function and procedure signatures
-  _pass5  <- mapAccum_ (checkBodies pass4) p                                  -- check axioms, function and procedure bodies, constant parent info
-  return pass4
 
 -- | Collect type names from type declarations
 collectTypes :: Context -> Decl -> Checked Context
