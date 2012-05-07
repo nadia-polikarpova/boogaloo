@@ -7,6 +7,7 @@ import Tokens
 import Message
 import Data.List
 import Data.Maybe
+import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Error
 import Control.Applicative
@@ -89,20 +90,20 @@ zipWithAccum_ f xs ys = report $ zipWithM_ (acc f) xs ys
 data Context = Context
   {
     ctxPos :: SourcePos,
-    ctxTypeConstructors :: M.Map Id Int,      -- type constructor arity
-    ctxTypeSynonyms :: M.Map Id ([Id], Type), -- type synonym values
-    ctxGlobals :: M.Map Id Type,              -- global variable types
-    ctxConstants :: M.Map Id Type,            -- constant types
-    ctxFunctions :: M.Map Id FSig,            -- function signatures
-    ctxProcedures :: M.Map Id (PSig, [Id]),   -- procedure signatures and modifies-lists
-    ctxTypeVars :: [Id],                      -- free type variables
-    ctxIns :: M.Map Id Type,                  -- input parameter types
-    ctxLocals :: M.Map Id Type,               -- local variable types
-    ctxModifies :: [Id],                      -- variables in the modifies clause of the enclosing procedure
-    ctxLabels :: [Id],                        -- all labels of the enclosing procedure body
-    ctxEncLabels :: [Id],                     -- labels of all enclosing statements
-    ctxTwoState :: Bool,                      -- is the context two-state? (procedure body or postcondition)
-    ctxInLoop :: Bool                         -- is context inside a loop body?
+    ctxTypeConstructors :: Map Id Int,      -- type constructor arity
+    ctxTypeSynonyms :: Map Id ([Id], Type), -- type synonym values
+    ctxGlobals :: Map Id Type,              -- global variable types
+    ctxConstants :: Map Id Type,            -- constant types
+    ctxFunctions :: Map Id FSig,            -- function signatures
+    ctxProcedures :: Map Id (PSig, [Id]),   -- procedure signatures and modifies-lists
+    ctxTypeVars :: [Id],                    -- free type variables
+    ctxIns :: Map Id Type,                  -- input parameter types
+    ctxLocals :: Map Id Type,               -- local variable types
+    ctxModifies :: [Id],                    -- variables in the modifies clause of the enclosing procedure
+    ctxLabels :: [Id],                      -- all labels of the enclosing procedure body
+    ctxEncLabels :: [Id],                   -- labels of all enclosing statements
+    ctxTwoState :: Bool,                    -- is the context two-state? (procedure body or postcondition)
+    ctxInLoop :: Bool                       -- is context inside a loop body?
   } deriving Show
 
 emptyContext = Context {
@@ -143,14 +144,14 @@ allVars c = M.union (localScope c) (globalScope c)
 funProcNames c = M.keys (ctxFunctions c) ++ M.keys (ctxProcedures c)
 
 -- | deleteAll keys m : map m with keys removed from its domain
-deleteAll :: Ord k => [k] -> M.Map k a -> M.Map k a
+deleteAll :: Ord k => [k] -> Map k a -> Map k a
 deleteAll keys m = foldr M.delete m keys
 
 {- Types -}
 
 -- | substitution binding t : type t with all free type variables instantiated according to binding.
 -- All variables in the domain of bindings are considered free if not explicitly bound. 
-substitution :: M.Map Id Type -> Type -> Type
+substitution :: Map Id Type -> Type -> Type
 substitution _ BoolType = BoolType
 substitution _ IntType = IntType
 substitution binding (Instance id []) = case M.lookup id binding of
@@ -169,7 +170,7 @@ isFree x (MapType bv domains range) = x `notElem` bv && any (isFree x) (range:do
 isFree x _ = False
   
 -- | unifier fv xs ys : most general unifier of xs and ys with free type variables fv   
-unifier :: [Id] -> [Type] -> [Type] -> Maybe (M.Map Id Type)
+unifier :: [Id] -> [Type] -> [Type] -> Maybe (Map Id Type)
 unifier _ [] [] = Just M.empty
 unifier fv (IntType:xs) (IntType:ys) = unifier fv xs ys
 unifier fv (BoolType:xs) (BoolType:ys) = unifier fv xs ys
@@ -191,7 +192,7 @@ unifier fv ((MapType bv1 domains1 range1):xs) ((MapType bv2 domains2 range2):ys)
 unifier _ _ _ = Nothing
 
 -- | boundUnifier fv bv1 xs bv2 ys: most geenral unifier of xs and ys,
--- | where bv1 are bound type varuables in xs and bv2 are bound type variables in ys,
+-- | where bv1 are bound type variables in xs and bv2 are bound type variables in ys,
 -- | and fv are free type variables of the enclosing context
 boundUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= length ys 
   then Nothing
@@ -219,7 +220,7 @@ boundUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= leng
 -- | Equality of types
 instance Eq Type where
   t1 == t2 = isJust (unifier [] [t1] [t2])
-
+  
 -- | Check that a type variable is fresh and add it to context  
 checkTypeVar :: Context -> Id -> Checked Context
 checkTypeVar c v
@@ -242,8 +243,8 @@ checkType c (Instance name args)
     else typeError (ctxPos c) ("Wrong number of arguments " ++ show (length args) ++ " given to the type synonym " ++ name ++ " (expected " ++ show (length formals) ++ ")")
   | otherwise = typeError (ctxPos c) ("Not in scope: type constructor or synonym " ++ name)
     where 
-      n = (M.!) (ctxTypeConstructors c) name
-      formals = fst ((M.!) (ctxTypeSynonyms c) name)
+      n = ctxTypeConstructors c ! name
+      formals = fst (ctxTypeSynonyms c ! name)
 checkType _ _ = return ()
 
 -- | resolve c t : type t with all type synonyms resolved according to binding in c      
@@ -272,7 +273,7 @@ checkExpression c (Pos pos e) = case e of
   MapSelection m args -> checkMapSelection cPos m args
   MapUpdate m args val -> checkMapUpdate cPos m args val
   Old e1 -> if ctxTwoState c
-    then checkExpression c e1
+    then checkExpression c { ctxLocals = M.empty } e1
     else typeError pos ("Old expression in a single state context")
   UnaryExpression op e1 -> checkUnaryExpression cPos op e1
   BinaryExpression op e1 e2 -> checkBinaryExpression cPos op e1 e2
@@ -513,7 +514,7 @@ checkCycles c decls id = checkCyclesWith c id (value id)
         mapAccum_ (checkCyclesWith c id) args
       MapType _ domains range -> mapAccum_ (checkCyclesWith c id) (range:domains)
       _ -> return ()
-    value name = snd ((M.!) (ctxTypeSynonyms c) name)
+    value name = snd (ctxTypeSynonyms c ! name)
     firstPos = head [pos | Pos pos (TypeDecl ts) <- decls, id `elem` map tId ts]
 
 -- | Check variable, constant, function and procedures and add them to context
@@ -528,7 +529,7 @@ checkSignatures c (Pos pos d) = case d of
     cPos = c { ctxPos = pos }
 
 -- | checkIdType scope get set c idType: check that declaration idType is fresh in scope, and if so add it to (get c) using (set c) 
-checkIdType :: (Context -> M.Map Id Type) -> (Context -> M.Map Id Type) -> (Context -> M.Map Id Type -> Context) -> Context -> IdType -> Checked Context
+checkIdType :: (Context -> Map Id Type) -> (Context -> Map Id Type) -> (Context -> Map Id Type -> Context) -> Context -> IdType -> Checked Context
 checkIdType scope get set c (i, t)   
   | M.member i (scope c) = typeError (ctxPos c) ("Multiple declarations of variable or constant " ++ i)
   | otherwise = checkType c t >> return (c `set` M.insert i (resolve c t) (get c))

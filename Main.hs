@@ -5,21 +5,19 @@ import AST
 import Parser
 import TypeChecker
 import PrettyPrinter
+import Interpreter
+import qualified Data.Map as M
 import Control.Monad.Identity
 import Control.Monad.Error
 
--- main = do { result <- parseFromFile program "test.bpl"; 
-  -- case (result) of
-    -- Left err -> print err
-    -- Right p -> print p
-  -- }
-  
--- main = case (parse program "" "var x, y: int; const z: Wicket;") of
-    -- Left err -> print ("Parsing error: " ++ show err)
-    -- Right ast -> 
-      -- case (runIdentity (runErrorT (checkProgram ast))) of
-      -- Left err -> print ("Type error: " ++ err)
-      -- Right c -> print c
+interpret = case (parse e0 "" "false ==> x > x / 0") of
+    Left err -> print ("Parsing error: " ++ show err)
+    Right exp -> 
+      case Interpreter.expression env exp of
+      Left err -> print ("Evaluation failed: " ++ err)
+      Right res -> print res
+  where
+    env = emptyEnv { envVars = M.fromList [("x", IntValue 5)] }
       
 main = do 
   result <- parseFromFile program "test.bpl" 
