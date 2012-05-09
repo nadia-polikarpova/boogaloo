@@ -139,9 +139,15 @@ type ParentInfo = Maybe [ParentEdge]
 
 -- | Function signature: type variables, argument types, return type
 data FSig = FSig [Id] [Type] Type
+
+-- | Function definition: in-parameter names and expression
+data FDef = FDef [Id] Expression
   
 -- | Procedure signature: type variables, argument types, return types
 data PSig = PSig [Id] [Type] [Type]
+
+-- | Procedure definition: in-parameter names, out-parameter names and body 
+data PDef = PDef [Id] [Id] Body
 
 noWhere itw = (itwId itw, itwType itw)
 

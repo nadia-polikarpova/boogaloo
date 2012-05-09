@@ -19,16 +19,20 @@ data Value = IntValue Integer |   -- Integer value
 
 data Environment = Environment
   {
-    envVars :: Map Id Value,                  -- Variable names to values
-    envOld :: Map Id Value,                   -- Variable names to old values (in two-state contexts)
-    envFunctions :: Map Id ([Id], Expression) -- Function names to (formal arguments, body)
-  }
+    envVars :: Map Id Value,              -- Variable names to values
+    envOld :: Map Id Value,               -- Variable names to old values (in two-state contexts)
+    envConstants :: Map Id (Expression),  -- Constant names to expressions
+    envFunctions :: Map Id FDef,          -- Function names to definitions
+    envProcedures :: Map Id [PDef]        -- Procedure names to definitions
+  } deriving Show
   
 emptyEnv = Environment
   {
     envVars = M.empty,
     envOld = M.empty,
-    envFunctions = M.empty
+    envConstants = M.empty,
+    envFunctions = M.empty,
+    envProcedures = M.empty
   }
 
 {- Errors -}
@@ -85,7 +89,7 @@ expression' _   (Numeral n)                 = return $ IntValue n
 expression' env (Var id)                    = return $ (envVars env) ! id
 expression' env (Application id args)       = case M.lookup id (envFunctions env) of
                                                 Nothing -> throwError ("Function " ++ id ++ " does not have a body")
-                                                Just (formals, body) -> do
+                                                Just (FDef formals body) -> do
                                                   argsV <- mapM (expression env) args
                                                   expression env { envVars = fScope formals argsV } body
   where
@@ -107,3 +111,41 @@ expression' env (Old e)                     = expression env { envVars = envOld 
 expression' env (UnaryExpression op e)      = unOp op <$> expression env e
 expression' env (BinaryExpression op e1 e2) = binOp op (expression env e1) (expression env e2)                                                
 expression' env (Quantified op args vars e) = throwError ("Quantified expressions not supported yet")
+
+{- Declarations -}
+
+dummyArg = ""
+
+collectDefinitions :: Environment -> Program -> Environment
+collectDefinitions env p = foldl processDecl env (map contents p)
+  where
+    processDecl env (FunctionDecl name _ args _ (Just body)) = processFunctionBody env name args body
+    processDecl env (ProcedureDecl name _ args rets _ (Just body)) = processProcedureBodies env name (map noWhere args) (map noWhere rets) [body]
+    processDecl env (ImplementationDecl name _ args rets bodies) = processProcedureBodies env name args rets bodies
+    processDecl env (AxiomDecl expr) = processAxiom env expr
+    processDecl env _ = env
+      
+processFunctionBody env name args body = env 
+  { 
+    envFunctions = M.insert name (FDef (map (formalName . fst) args) body) (envFunctions env) 
+  }     
+  where
+    formalName Nothing = dummyArg 
+    formalName (Just n) = n
+
+processProcedureBodies env name args rets bodies = env
+  {
+    envProcedures = M.insert name (oldDefs ++ map (PDef (map fst args) (map fst rets)) bodies) (envProcedures env)
+  }
+  where
+    oldDefs = case M.lookup name (envProcedures env) of
+      Nothing -> []
+      Just defs -> defs
+      
+processAxiom env expr = case contents expr of
+  -- c == expr: remember expr as a definition for c
+  BinaryExpression Eq (Pos _ (Var c)) rhs -> env { envConstants = M.insert c rhs (envConstants env) }
+  -- ToDo: add axioms that (partially) define functions
+  _ -> env
+    
+    

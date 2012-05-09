@@ -4,11 +4,10 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- Extract function bodies
-	- Extract procedure bodies
-	- Extract constant values
 	- Statements
+	- Checking contracts
 	- Quantified expressions
+	- Extract function definitions from axioms
 	- User-defined types
 	- Extends ordering
 	- What to do with non-determinism? (function without bodies, undefined variable vs. havoc)

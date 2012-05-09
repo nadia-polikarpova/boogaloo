@@ -25,7 +25,7 @@ main = do
     Left err -> print err
     Right ast -> case checkProgram ast of
       Left err -> putStr err
-      Right p -> print (programDoc ast)
+      Right p -> print (collectDefinitions emptyEnv ast)
       
 test = do
   result <- parseFromFile program "test.bpl" 
