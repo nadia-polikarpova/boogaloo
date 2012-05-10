@@ -13,7 +13,7 @@ module Position
     ,noPos
     ,attachPos
     ,attachPosM
-    ,attachEmptyPos
+    ,gen
     ,attachPosBefore
     ,inheritPos    
 
@@ -42,7 +42,7 @@ attachPos = Pos
 
 noPos = (initialPos "<no file name>")
 
-attachEmptyPos = attachPos noPos
+gen = attachPos noPos
 
 attachPosM :: Monad m => m SourcePos -> m a -> m (Pos a)
 attachPosM = liftM2 attachPos

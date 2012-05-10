@@ -116,7 +116,6 @@ statementDoc (Pos _ s) = case s of
 blockDoc block = vsep (map lStatementDoc block)
   where
     lStatementDoc (Pos _ (lbs, s)) = hsep (map labelDoc lbs) <+> statementDoc s
-    labelDoc l = text l <> text ":"
     
 bracedBlockDoc block = 
   lbrace $+$
@@ -127,6 +126,13 @@ bodyDoc (vars, block) =
   lbrace $+$
   nestDef (vsep (map varDeclDoc vars) $+$ blockDoc block) $+$
   rbrace
+  
+transformedBlockDoc block = vsep (map basicBlockDoc block)
+  where
+    basicBlockDoc (l, stmts) = labelDoc l $+$ 
+      nestDef (vsep (map statementDoc stmts))
+
+labelDoc l = text l <> text ":"     
 
 {- Declarations -}
 

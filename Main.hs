@@ -2,10 +2,12 @@ module Main where
 
 import Text.ParserCombinators.Parsec
 import AST
+import Position
 import Parser
 import TypeChecker
 import PrettyPrinter
 import Interpreter
+import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Identity
 import Control.Monad.Error
@@ -25,7 +27,10 @@ main = do
     Left err -> print err
     Right ast -> case checkProgram ast of
       Left err -> putStr err
-      Right p -> print (collectDefinitions emptyEnv ast)
+      Right p -> print (transformedBlockDoc (toBB (procedure ast)))
+  where
+    procedure ast = head (envProcedures (collectDefinitions emptyEnv ast) ! "search")
+    toBB (PDef _ _ body) = toBasicBlocks (snd body)
       
 test = do
   result <- parseFromFile program "test.bpl" 

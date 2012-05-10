@@ -69,12 +69,16 @@ data BareStatement = Assert Expression |
 	Skip 													                        -- only used at the end of a block
 
 -- | Statement labeled by multiple labels
-type LStatement = Pos ([Id], Statement)
+type LStatement = Pos BareLStatement
+
+type BareLStatement = ([Id], Statement)
 
 type Block = [LStatement] 
 
 -- | Block consisting of a single non-labeled statement
 singletonBlock s = [attachPos (position s) ([], s)]
+
+type BasicBlock = (Id, [Statement])
 
 {- Contracts -}
 
