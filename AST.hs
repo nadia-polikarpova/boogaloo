@@ -1,9 +1,10 @@
 {- AST for Boogie 2 -}
 module AST where
 
+import Position
 import Data.Maybe
 import Data.List
-import Position
+import Data.Map (Map)
 
 {- Basic -}
 
@@ -78,7 +79,11 @@ type Block = [LStatement]
 -- | Block consisting of a single non-labeled statement
 singletonBlock s = [attachPos (position s) ([], s)]
 
+type Body = ([[IdTypeWhere]], Block)
+
 type BasicBlock = (Id, [Statement])
+
+type BasicBody = ([IdTypeWhere], Map Id [Statement])
 
 {- Contracts -}
 
@@ -135,23 +140,36 @@ data IdTypeWhere = IdTypeWhere {
   
 type FArg = (Maybe Id, Type)
 
-type Body = ([[IdTypeWhere]], Block)
-
 type ParentEdge = (Bool, Id)
 
 type ParentInfo = Maybe [ParentEdge]
 
 -- | Function signature: type variables, argument types, return type
-data FSig = FSig [Id] [Type] Type
+data FSig = FSig {
+    fsigTypeVars :: [Id],
+    fsigArgTypes :: [Type],
+    fsigRetType :: Type
+  }
 
 -- | Function definition: in-parameter names and expression
-data FDef = FDef [Id] Expression
+data FDef = FDef {
+    fdefIns :: [Id],
+    fdefBody:: Expression
+  }
   
 -- | Procedure signature: type variables, argument types, return types
-data PSig = PSig [Id] [Type] [Type]
+data PSig = PSig {
+    psigTypeVars :: [Id],
+    psigArgTypes :: [Type], 
+    psigRetTypes :: [Type]
+  }
 
--- | Procedure definition: in-parameter names, out-parameter names and body 
-data PDef = PDef [Id] [Id] Body
+-- | Procedure definition: in-parameter names, out-parameter names and body represented with basic blocks 
+data PDef = PDef { 
+    pdefIns :: [Id],
+    pdefOuts :: [Id], 
+    pdefBody :: BasicBody
+  }
 
 noWhere itw = (itwId itw, itwType itw)
 

@@ -13,11 +13,11 @@ import qualified Data.Map as M
 import Control.Monad.Identity
 import Control.Monad.Error
 
-interpret = case (parse e0 "" "false ==> x > x / 0") of
+interpret = case (parse e0 "" "true ==> x > x / 0") of
     Left err -> print ("Parsing error: " ++ show err)
     Right exp -> 
-      case Interpreter.expression env exp of
-      Left err -> print ("Evaluation failed: " ++ err)
+      case Interpreter.eval env exp of
+      Left err -> print err
       Right res -> print res
   where
     env = emptyEnv { envVars = M.fromList [("x", IntValue 5)] }
@@ -28,10 +28,9 @@ main = do
     Left err -> print err
     Right ast -> case checkProgram ast of
       Left err -> putStr err
-      Right p -> print (transformedBlockDoc (toBB (procedure ast)))
+      Right p -> print (transformedBlockDoc (M.toList (snd (pdefBody (procedure ast)))))
   where
     procedure ast = head (envProcedures (collectDefinitions emptyEnv ast) ! "search")
-    toBB (PDef _ _ body) = toBasicBlocks (snd body)
       
 test = do
   result <- parseFromFile program "test.bpl" 

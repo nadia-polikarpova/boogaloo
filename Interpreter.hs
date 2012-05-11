@@ -4,6 +4,7 @@ module Interpreter where
 import AST
 import Position
 import TypeChecker
+import BasicBlocks
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Error
@@ -37,8 +38,27 @@ emptyEnv = Environment
 
 {- Errors -}
 
--- | Execution result: either 'a' or an error with strings message
-type Result a = Either String a
+data ExecutionError = AssertViolation String | 
+  AssumeViolation String |
+  DivisionByZero |
+  UndefinedValue String |
+  UnsuportedConstruct String |
+  OtherError String
+
+instance Error ExecutionError where
+  noMsg    = OtherError "Unknown error"
+  strMsg s = OtherError s
+
+instance Show ExecutionError where
+  show (AssertViolation s) = "Assertion violation: " ++ s
+  show (AssumeViolation s) = "Assumption violation: " ++ s
+  show (DivisionByZero) = "Division by zero"
+  show (UndefinedValue s) = "Value of " ++ s ++ " is not defined uniquely"
+  show (UnsuportedConstruct s) = "Execution of " ++ s ++ " is not supported yet"
+  show (OtherError s) = "Unknown error type: " ++ s
+
+-- | Execution result: either 'a' or an error
+type Result a = Either ExecutionError a
 
 {- Expressions -}
 
@@ -60,10 +80,10 @@ binOp op (Right v1) (Right v2) = binOpStrict op v1 v2
     binOpStrict Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
     binOpStrict Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
     binOpStrict Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                    then throwError "Division by zero"
+                                                    then throwError DivisionByZero
                                                     else return $ IntValue (n1 `div` n2)
     binOpStrict Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                    then throwError "Division by zero"
+                                                    then throwError DivisionByZero
                                                     else return (IntValue (n1 `mod` n2))
     binOpStrict Leq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 <= n2)
     binOpStrict Ls      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 < n2)
@@ -75,42 +95,46 @@ binOp op (Right v1) (Right v2) = binOpStrict op v1 v2
     binOpStrict Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
     binOpStrict Eq      v1 v2                         = return $ BoolValue (v1 == v2)
     binOpStrict Neq     v1 v2                         = return $ BoolValue (v1 /= v2)
-    binOpStrict Lc      v1 v2                         = throwError "Extends order is not supported yet"
+    binOpStrict Lc      v1 v2                         = throwError (UnsuportedConstruct "orders")
 binOp _ (Left e) _ = Left e
 binOp _ _ (Left e) = Left e
   
--- | Value of an expression in an environment
-expression :: Environment -> Expression -> Result Value
-expression env e = expression' env (contents e) 
+-- | Evaluate an expression in an environment
+eval :: Environment -> Expression -> Result Value
+eval env e = eval' env (contents e) 
 
-expression' _   TT                          = return $ BoolValue True
-expression' _   FF                          = return $ BoolValue False
-expression' _   (Numeral n)                 = return $ IntValue n
-expression' env (Var id)                    = return $ (envVars env) ! id
-expression' env (Application id args)       = case M.lookup id (envFunctions env) of
-                                                Nothing -> throwError ("Function " ++ id ++ " does not have a body")
-                                                Just (FDef formals body) -> do
-                                                  argsV <- mapM (expression env) args
-                                                  expression env { envVars = fScope formals argsV } body
+eval' _   TT                          = return $ BoolValue True
+eval' _   FF                          = return $ BoolValue False
+eval' _   (Numeral n)                 = return $ IntValue n
+eval' env (Var id)                    = case M.lookup id (envVars env) of
+                                          Just val -> return val
+                                          Nothing -> case M.lookup id (envConstants env) of
+                                            Just expr -> eval env expr
+                                            Nothing -> throwError (UndefinedValue ("variable or constant " ++ id))
+eval' env (Application id args)       = case M.lookup id (envFunctions env) of
+                                          Nothing -> throwError (UndefinedValue ("function " ++ id))
+                                          Just (FDef formals body) -> do
+                                            argsV <- mapM (eval env) args
+                                            eval env { envVars = fScope formals argsV } body
   where
     fScope formals actuals = foldr (\(k, v) m -> M.insert k v m) (envVars env) (zip formals actuals)
-expression' env (MapSelection m args)       = do 
-                                                mV <- expression env m
-                                                argsV <- mapM (expression env) args
-                                                case mV of 
-                                                  MapValue map -> case M.lookup argsV map of
-                                                    Nothing -> throwError ("Value " ++ show (MapSelection m args) ++ " is undefined")
-                                                    Just v -> return v
-expression' env  (MapUpdate m args new)     = do
-                                                mV <- expression env m
-                                                argsV <- mapM (expression env) args
-                                                newV <- expression env new
-                                                case mV of 
-                                                  MapValue map -> return $ MapValue (M.insert argsV newV map)
-expression' env (Old e)                     = expression env { envVars = envOld env } e
-expression' env (UnaryExpression op e)      = unOp op <$> expression env e
-expression' env (BinaryExpression op e1 e2) = binOp op (expression env e1) (expression env e2)                                                
-expression' env (Quantified op args vars e) = throwError ("Quantified expressions not supported yet")
+eval' env (MapSelection m args)       = do 
+                                          mV <- eval env m
+                                          argsV <- mapM (eval env) args
+                                          case mV of 
+                                            MapValue map -> case M.lookup argsV map of
+                                              Nothing -> throwError (UndefinedValue ("map selection " ++ show (MapSelection m args)))
+                                              Just v -> return v
+eval' env  (MapUpdate m args new)     = do
+                                          mV <- eval env m
+                                          argsV <- mapM (eval env) args
+                                          newV <- eval env new
+                                          case mV of 
+                                            MapValue map -> return $ MapValue (M.insert argsV newV map)
+eval' env (Old e)                     = eval env { envVars = envOld env } e
+eval' env (UnaryExpression op e)      = unOp op <$> eval env e
+eval' env (BinaryExpression op e1 e2) = binOp op (eval env e1) (eval env e2)                                                
+eval' env (Quantified op args vars e) = throwError (UnsuportedConstruct "quantified expressions")
 
 {- Statements -}
 
@@ -137,9 +161,12 @@ processFunctionBody env name args body = env
 
 processProcedureBodies env name args rets bodies = env
   {
-    envProcedures = M.insert name (oldDefs ++ map (PDef (map fst args) (map fst rets)) bodies) (envProcedures env)
+    envProcedures = M.insert name (oldDefs ++ map (PDef argNames retNames . flatten) bodies) (envProcedures env)
   }
   where
+    argNames = map fst args
+    retNames = map fst rets
+    flatten (locals, statements) = (concat locals, M.fromList (toBasicBlocks statements))
     oldDefs = case M.lookup name (envProcedures env) of
       Nothing -> []
       Just defs -> defs
