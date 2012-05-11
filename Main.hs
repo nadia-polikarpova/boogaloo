@@ -6,6 +6,7 @@ import Position
 import Parser
 import TypeChecker
 import PrettyPrinter
+import BasicBlocks
 import Interpreter
 import Data.Map (Map, (!))
 import qualified Data.Map as M
