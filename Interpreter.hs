@@ -42,7 +42,7 @@ data ExecutionError = AssertViolation String |
   AssumeViolation String |
   DivisionByZero |
   UndefinedValue String |
-  UnsuportedConstruct String |
+  UnsupportedConstruct String |
   OtherError String
 
 instance Error ExecutionError where
@@ -54,7 +54,7 @@ instance Show ExecutionError where
   show (AssumeViolation s) = "Assumption violation: " ++ s
   show (DivisionByZero) = "Division by zero"
   show (UndefinedValue s) = "Value of " ++ s ++ " is not defined uniquely"
-  show (UnsuportedConstruct s) = "Execution of " ++ s ++ " is not supported yet"
+  show (UnsupportedConstruct s) = "Execution of " ++ s ++ " is not supported yet"
   show (OtherError s) = "Unknown error type: " ++ s
 
 -- | Execution result: either 'a' or an error
@@ -95,7 +95,7 @@ binOp op (Right v1) (Right v2) = binOpStrict op v1 v2
     binOpStrict Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
     binOpStrict Eq      v1 v2                         = return $ BoolValue (v1 == v2)
     binOpStrict Neq     v1 v2                         = return $ BoolValue (v1 /= v2)
-    binOpStrict Lc      v1 v2                         = throwError (UnsuportedConstruct "orders")
+    binOpStrict Lc      v1 v2                         = throwError (UnsupportedConstruct "orders")
 binOp _ (Left e) _ = Left e
 binOp _ _ (Left e) = Left e
   
@@ -134,9 +134,36 @@ eval' env  (MapUpdate m args new)     = do
 eval' env (Old e)                     = eval env { envVars = envOld env } e
 eval' env (UnaryExpression op e)      = unOp op <$> eval env e
 eval' env (BinaryExpression op e1 e2) = binOp op (eval env e1) (eval env e2)                                                
-eval' env (Quantified op args vars e) = throwError (UnsuportedConstruct "quantified expressions")
+eval' env (Quantified op args vars e) = throwError (UnsupportedConstruct "quantified expressions")
 
 {- Statements -}
+
+-- | Execute a simple statement in an environment
+exec :: Environment -> Statement -> Result Environment
+exec env stmt = exec' env (contents stmt)
+
+exec' env (Assert e) = do
+  b <- eval env e
+  case b of 
+    BoolValue True -> return env
+    BoolValue False -> throwError (AssertViolation (show e))
+exec' env (Assume e) = do
+  b <- eval env e
+  case b of 
+    BoolValue True -> return env
+    BoolValue False -> throwError (AssumeViolation (show e))
+exec' env (Havoc ids) = throwError (UnsupportedConstruct "havocs")
+exec' env (Assign lhss rhss) = do
+  rVals <- mapM (eval env) rhss'
+  foldM assign1 env (zip lhss' rVals)
+  where
+    lhss' = map fst (zipWith normalize lhss rhss)
+    rhss' = map snd (zipWith normalize lhss rhss)
+    normalize (id, []) rhs = (id, rhs)
+    normalize (id, argss) rhs = (id, mapUpdate (gen $ Var id) argss rhs)
+    mapUpdate e [args] rhs = gen $ MapUpdate e args rhs
+    mapUpdate e (args1 : argss) rhs = gen $ MapUpdate e args1 (mapUpdate (gen $ MapSelection e args1) argss rhs)
+    assign1 env (id, val) = return env { envVars = M.insert id val (envVars env) }  
 
 {- Declarations -}
 
