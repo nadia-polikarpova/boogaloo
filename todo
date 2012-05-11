@@ -4,7 +4,6 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- Unique labels
 	- Statements
 	- Checking contracts
 	- Quantified expressions
