@@ -4,7 +4,6 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- Statements
 	- Checking contracts
 	- Quantified expressions
 	- Extract function definitions from axioms

@@ -1,5 +1,5 @@
 {- Basic block transformation for imperative Boogie code -}
-module BasicBlocks (toBasicBlocks) where
+module BasicBlocks (toBasicBlocks, startLabel) where
 
 import AST
 import Position
@@ -15,7 +15,7 @@ toBasicBlocks :: Block -> [BasicBlock]
 toBasicBlocks body = let 
   tbs = evalState (concat <$> (mapM (transform M.empty) (map contents body))) 0
   -- By the properties of transform, bs' is a sequence of basic blocks
-  tbs' = attach "start" (tbs ++ [([], gen Return)])  
+  tbs' = attach startLabel (tbs ++ [([], gen Return)])  
   -- The first statement in tbs' cannot have empty label
   convert bbs ([l], Pos _ Skip) = (l, []) : bbs
   convert bbs ([l], s) = (l, [s]) : bbs
@@ -23,6 +23,9 @@ toBasicBlocks body = let
   in
     -- First flatten control flow with transform, and then convert to basic blocks
     reverse (foldl convert [] tbs')
+
+-- | Label of the first block in a procedure
+startLabel = "start"    
 
 -- | Attach a label to the first statement (with an empty label) in a non-empty list of labeled statements    
 attach :: Id -> [BareLStatement] -> [BareLStatement]
