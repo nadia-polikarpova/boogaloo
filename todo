@@ -4,12 +4,15 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
+	- Initialize with default values? (otherwise, no way to initialize a map)
+	- User reader monad
 	- Checking contracts
+	- Better error reporting (add locations, call stacks, use pretty print instead of message?)
 	- Quantified expressions
 	- Extract function definitions from axioms
 	- User-defined types
 	- Extends ordering
-	- What to do with non-determinism? (function without bodies, undefined variable vs. havoc)
+	- What to do with non-determinism? (default values, random values, back-tracking, constraint solving)
 
 - Symbolic execution?
 

@@ -27,7 +27,7 @@ data Value = IntValue Integer |   -- Integer value
   MapValue (Map [Value] Value) |  -- Value of a map type
   CustomValue Integer |           -- Value of a user-defined type (values with the same code are considered equal)
   Top                             -- Undefined value
-	deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show)
 
 data Environment = Environment
   {

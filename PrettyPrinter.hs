@@ -138,13 +138,13 @@ labelDoc l = text l <> text ":"
 
 declDoc :: Decl -> Doc
 declDoc (Pos pos d) = case d of
-	TypeDecl ts -> typeDeclDoc ts
-	ConstantDecl unique names t orderSpec complete -> constantDoc unique names t orderSpec complete
-	FunctionDecl name fv args ret mb -> functionDoc name fv args ret mb
-	AxiomDecl e -> text "axiom" <+> exprDoc e <> semi
-	VarDecl vars -> varDeclDoc vars
-	ProcedureDecl name fv args rets specs mb -> procedureDoc name fv args rets specs mb
-	ImplementationDecl name fv args rets bodies -> implementationDoc name fv args rets bodies
+  TypeDecl ts -> typeDeclDoc ts
+  ConstantDecl unique names t orderSpec complete -> constantDoc unique names t orderSpec complete
+  FunctionDecl name fv args ret mb -> functionDoc name fv args ret mb
+  AxiomDecl e -> text "axiom" <+> exprDoc e <> semi
+  VarDecl vars -> varDeclDoc vars
+  ProcedureDecl name fv args rets specs mb -> procedureDoc name fv args rets specs mb
+  ImplementationDecl name fv args rets bodies -> implementationDoc name fv args rets bodies
   
 typeDeclDoc ts = 
   text "type" <+> 

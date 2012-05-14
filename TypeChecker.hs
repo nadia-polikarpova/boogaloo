@@ -572,7 +572,7 @@ checkBodies c (Pos pos d) = case d of
   FunctionDecl name fv args ret (Just body) -> checkFunction cPos fv args ret body
   AxiomDecl e -> checkAxiom cPos e
   ProcedureDecl name fv args rets specs mb -> checkProcedure cPos fv args rets specs mb
-  ImplementationDecl name fv args rets bodies -> checkImplementation cPos name fv args rets bodies	
+  ImplementationDecl name fv args rets bodies -> checkImplementation cPos name fv args rets bodies
   otherwise -> return ()
   where
     cPos = c { ctxPos = pos }  
