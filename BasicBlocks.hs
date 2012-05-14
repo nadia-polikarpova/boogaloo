@@ -9,20 +9,22 @@ import Control.Monad.State
 import Control.Applicative
 
 -- | Transform procedure body into a sequence of basic blocks.
--- | A basic block starts with a label and contains no just, if or while statements,
+-- | A basic block starts with a label and contains no jump, if or while statements,
 -- | except for the last statement, which can be a goto or return
 toBasicBlocks :: Block -> [BasicBlock]
 toBasicBlocks body = let 
   tbs = evalState (concat <$> (mapM (transform M.empty) (map contents body))) 0
   -- By the properties of transform, bs' is a sequence of basic blocks
-  tbs' = attach startLabel (tbs ++ [([], gen Return)])  
-  -- The first statement in tbs' cannot have empty label
-  convert bbs ([l], Pos _ Skip) = (l, []) : bbs
-  convert bbs ([l], s) = (l, [s]) : bbs
-  convert ((l, ss) : bbs) ([], s) = (l, ss ++ [s]) :  bbs  
+  tbs' = attach startLabel (tbs ++ [justStatement Return])  
+  -- Append a labeled statement to a sequence of basic blocks
+  -- (the first labeled statement cannot have empty label)
+  append :: [BasicBlock] -> BareLStatement -> [BasicBlock]
+  append bbs ([l], Pos _ Skip) = (l, []) : bbs
+  append bbs ([l], s) = (l, [s]) : bbs
+  append ((l, ss) : bbs) ([], s) = (l, ss ++ [s]) :  bbs  
   in
     -- First flatten control flow with transform, and then convert to basic blocks
-    reverse (foldl convert [] tbs')
+    reverse (foldl append [] tbs')
 
 -- | Label of the first block in a procedure
 startLabel = "start"    
@@ -44,9 +46,8 @@ innermost = "innermost"
 genFreshLabel :: String -> Int -> (String, Int)
 genFreshLabel kind i = (show i ++ "_" ++ kind, i + 1)
 
--- | transform m lids st: transform st into a sequence of basic blocks
+-- | transform m statement: transform statement into a sequence of basic blocks;
 -- | m is a map from statement labels to labels of their exit points (used for break)
--- | lids is a list of unique identifiers used to generate fresh labels (should be infinite and not contain duplicates)
 transform :: Map Id Id -> BareLStatement -> State Int [BareLStatement]  
 transform m (l:lbs, Pos p Skip) = do
   t <- transform m (lbs, Pos p Skip)

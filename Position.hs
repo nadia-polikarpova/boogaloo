@@ -1,5 +1,4 @@
 {- Utility for attaching source code positions to AST nodes -}
-
 module Position 
     (Pos (..)
     ,Line

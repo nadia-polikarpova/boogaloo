@@ -1,3 +1,4 @@
+{- Pretty printer for Boogie 2 -}
 module PrettyPrinter where
 
 import AST
@@ -57,6 +58,7 @@ power (BinaryExpression op _ _)
 exprDoc :: Expression -> Doc
 exprDoc e = exprDocAt (-1) e
 
+-- | exprDocAt expr: print expr in a context with binding power n
 exprDocAt :: Int -> Expression -> Doc
 exprDocAt n (Pos _ e) = condParens (n' <= n) (
   case e of

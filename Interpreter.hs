@@ -219,7 +219,7 @@ execBlock env blocks label = let
       Return -> return env'
       Goto lbs -> tryOneOf env' blocks lbs
 
--- | tryOneOf env blocks labels: try executing program starting with blocks labeled with each of labels,
+-- | tryOneOf env blocks labels: try executing blocks starting with each of labels,
 -- | until we find one that does not result in an assumption violation
 tryOneOf :: Environment -> Map Id [Statement] -> [Id] -> Result Environment        
 tryOneOf env blocks [l] = execBlock env blocks l
