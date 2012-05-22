@@ -4,6 +4,8 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
+	- Pass global context to interpreter
+	- Use reader monad in type checker?
 	- Initialize with default values? (otherwise, no way to initialize a map)
 	- User reader monad
 	- Checking contracts
@@ -12,9 +14,23 @@
 	- Extract function definitions from axioms
 	- User-defined types
 	- Extends ordering
-	- What to do with non-determinism? (default values, random values, back-tracking, constraint solving)
+	
+================================================	
+Approaches to initialization and non-determinism
+================================================
 
-- Symbolic execution?
+Initialization value: UNDEF, default, random, range, constraint solving
+
+Initialization time:
+	- Havoc on declaration (bad if havoc is expensive or can lead to a failure)
+	-> Return init value on first access (better, but expression evaluation has to modify state)
+
+Checking strategy (for axioms, where, assume):
+	- UNDEF causes error on access
+	-> default/random with no checking
+	- default/random with checking and failing
+	- range/rabdom with backtraching
+	- constraint solving
 
 Notes:
 - Where clauses of in-parameters: according to the manual can mention out-parameters, but actually can't

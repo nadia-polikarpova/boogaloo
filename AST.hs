@@ -124,6 +124,36 @@ data BareDecl =
   ProcedureDecl Id [Id] [IdTypeWhere] [IdTypeWhere] [Spec] (Maybe Body) |  -- ProcedureDecl name type_args formals rets contract body 
   ImplementationDecl Id [Id] [IdType] [IdType] [Body]                      -- ImplementationDecl name type_args formals rets body
   
+{- Functions and procedures -}
+
+-- | Function signature
+data FSig = FSig {
+    fsigTypeVars :: [Id],   -- Type variables
+    fsigArgTypes :: [Type], -- Argument types
+    fsigRetType :: Type     -- Return type
+  }
+  
+-- | Function definition
+data FDef = FDef {
+    fdefArgs :: [Id],       -- Argument names (in the same order as fsigArgTypes in the corresponding signature)
+    fdefBody :: Expression  -- Body 
+  }
+  
+-- | Procedure signature
+data PSig = PSig {
+    psigTypeVars :: [Id],     -- Type variables
+    psigArgTypes :: [Type],   -- In-parameter types
+    psigRetTypes :: [Type],   -- Out-parameter types
+    psigModifies :: [Id]      -- Globals variable names in the modifies clause
+  }
+  
+-- | Procedure definition
+data PDef = PDef { 
+    pdefIns :: [Id],        -- In-parameter names (in the same order as psigArgsTypes in the corresponding signature)
+    pdefOuts :: [Id],       -- Out-parameter names (in the same order as psigRetTypes in the corresponding signature) 
+    pdefBody :: BasicBody   -- Body
+  }  
+  
 {- Misc -}
 
 data NewType = NewType {
@@ -144,34 +174,10 @@ noWhere itw = (itwId itw, itwType itw)
   
 type FArg = (Maybe Id, Type)
 
+-- | Argument name used for unnamed function arguments
+-- | (does not matter, because it is never referred to from function's body)  
+dummyFArg = ""
+
 type ParentEdge = (Bool, Id)
 
 type ParentInfo = Maybe [ParentEdge]
-
--- | Function signature: type variables, argument types, return type
-data FSig = FSig {
-    fsigTypeVars :: [Id],
-    fsigArgTypes :: [Type],
-    fsigRetType :: Type
-  }
-
--- | Function definition: in-parameter names and expression
-data FDef = FDef {
-    fdefIns :: [Id],
-    fdefBody:: Expression
-  }
-  
--- | Procedure signature: type variables, argument types, return types
-data PSig = PSig {
-    psigTypeVars :: [Id],
-    psigArgTypes :: [Type], 
-    psigRetTypes :: [Type]
-  }
-
--- | Procedure definition: in-parameter names, out-parameter names and body represented with basic blocks 
-data PDef = PDef { 
-    pdefIns :: [Id],
-    pdefOuts :: [Id], 
-    pdefBody :: BasicBody
-  }
-  

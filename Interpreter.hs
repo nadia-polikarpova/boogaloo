@@ -241,8 +241,6 @@ execProcedure env name actuals = let
 
 {- Preprocessing -}
 
-dummyArg = ""
-
 -- | Collect constant, function and procedure definitions, as well as global variable declarations from p
 collectDefinitions :: Environment -> Program -> Environment
 collectDefinitions env p = foldl processDecl env (map contents p)
@@ -259,7 +257,7 @@ processFunctionBody env name args body = env
     envFunctions = M.insert name (FDef (map (formalName . fst) args) body) (envFunctions env) 
   }     
   where
-    formalName Nothing = dummyArg 
+    formalName Nothing = dummyFArg 
     formalName (Just n) = n
 
 processProcedureBodies env name args rets bodies = env
