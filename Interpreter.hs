@@ -3,7 +3,8 @@ module Interpreter where
 
 import AST
 import Position
-import TypeChecker
+import Message
+import qualified TypeChecker as TC
 import BasicBlocks
 import Data.Map (Map, (!))
 import qualified Data.Map as M
@@ -12,22 +13,33 @@ import Control.Applicative
 
 {- Interface -}
 
--- | Execute program p with entry point main and return the values of global variables;
+-- | Execute program p with type context tc (produced by the type checker) and entry point main, 
+-- | and return the values of global variables;
 -- | main must have no arguments
-executeProgram :: Program -> Id -> Result (Map Id Value)
-executeProgram p main = let initEnv = collectDefinitions emptyEnv p
-  in do
-    (env', _) <- execProcedure initEnv main []
-    return $ envGlobals env'
+executeProgram :: Program -> TypeContext -> Id -> Result (Map Id Value)
+executeProgram p tc main = let initEnv = collectDefinitions emptyEnv { envTypeContext = tc } p
+  in case M.lookup main (envProcedures initEnv) of
+    Nothing -> throwError (NoEntryPoint main)
+    Just (def : defs) -> do
+      (env', _) <- execProcedure initEnv main def []
+      return $ envGlobals env'
 
 {- State -}
 
 data Value = IntValue Integer |   -- Integer value
   BoolValue Bool |                -- Boolean value
   MapValue (Map [Value] Value) |  -- Value of a map type
-  CustomValue Integer |           -- Value of a user-defined type (values with the same code are considered equal)
-  Top                             -- Undefined value
+  CustomValue Integer             -- Value of a user-defined type (values with the same code are considered equal)
   deriving (Eq, Ord, Show)
+  
+-- | Default value of a type (used to initialize variables)  
+defaultValue :: Type -> Value
+defaultValue BoolType         = BoolValue False  
+defaultValue IntType          = IntValue 0
+defaultValue (MapType _ _ _)  = MapValue M.empty
+defaultValue (Instance _ _)   = CustomValue 0
+  
+type TypeContext = TC.Context
 
 data Environment = Environment
   {
@@ -36,9 +48,10 @@ data Environment = Environment
     envOld :: Map Id Value,               -- Global variable names to old values (in two-state contexts)
     envConstants :: Map Id (Expression),  -- Constant names to expressions
     envFunctions :: Map Id FDef,          -- Function names to definitions
-    envProcedures :: Map Id [PDef]        -- Procedure names to definitions
+    envProcedures :: Map Id [PDef],       -- Procedure names to definitions
+    envTypeContext :: TypeContext
   } deriving Show
-  
+   
 emptyEnv = Environment
   {
     envLocals = M.empty,
@@ -46,47 +59,44 @@ emptyEnv = Environment
     envOld = M.empty,
     envConstants = M.empty,
     envFunctions = M.empty,
-    envProcedures = M.empty
+    envProcedures = M.empty,
+    envTypeContext = TC.emptyContext
   }
-
+  
 -- | Value of id in environment env;
--- | id has to be a name of a variable or constant.
+-- | id has to be a name of a variable or constant in the type context of env, but does not have to be in the domain of env
 value :: Environment -> Id -> Result Value
-value env id = case M.lookup id (envLocals env) of
-  Just val -> elimTop val
-  Nothing -> case M.lookup id (envGlobals env) of
-    Just val -> elimTop val
-    Nothing -> case M.lookup id (envConstants env) of
-      Just e -> eval env e
-      Nothing -> throwError (UndefinedValue ("constant " ++ id))
+value env id = case M.lookup id (TC.localScope (envTypeContext env)) of
+  Just t -> return $ lookupIn (envLocals env) t
+  Nothing -> case M.lookup id (TC.ctxGlobals (envTypeContext env)) of
+    Just t -> return $ lookupIn (envGlobals env) t
+    Nothing -> case M.lookup id (TC.ctxConstants (envTypeContext env)) of
+      Just t -> case M.lookup id (envConstants env) of
+        Just e -> eval env e
+        Nothing -> return $ defaultValue t
   where
-    elimTop Top = throwError (UndefinedValue ("variable " ++ id))
-    elimTop val = return val
+    lookupIn vars t = case M.lookup id vars of
+      Just val -> val
+      Nothing -> defaultValue t
     
 -- | Assign value val to variable id in environment env;
--- | id has to be already in the domain of env
-assign :: Environment -> (Id, Value) -> Environment    
-assign env (id, val) = case M.lookup id (envLocals env) of
-  Just _ -> env { envLocals = M.insert id val (envLocals env) }
-  Nothing -> env { envGlobals = M.insert id val (envGlobals env) }
-  
-declareGlobal :: Environment -> Id -> Environment
-declareGlobal env id = env { envGlobals = M.insert id Top (envGlobals env) }  
+-- | id has to be defined in the type context of env, but does not have to be in the domain of env
+assign :: Environment -> Id -> Value -> Environment    
+assign env id val = if M.member id (TC.localScope (envTypeContext env))
+  then env { envLocals = M.insert id val (envLocals env) }
+  else env { envGlobals = M.insert id val (envGlobals env) }
 
-declareLocal :: Environment -> Id -> Environment
-declareLocal env id = defineLocal env (id, Top)
-
-defineLocal :: Environment -> (Id, Value) -> Environment
-defineLocal env (id, val) = env { envLocals = M.insert id val (envLocals env) }  
-
+-- | Assign vals to ids  
+assignAll :: Environment -> [Id] -> [Value] -> Environment
+assignAll env ids vals = foldl (\e (i, v) -> assign e i v) env (zip ids vals)
   
 {- Errors -}
 
 data ExecutionError = AssertViolation String | 
   AssumeViolation String |
   DivisionByZero |
-  UndefinedValue String |
   UnsupportedConstruct String |
+  NoEntryPoint String |
   OtherError String
 
 instance Error ExecutionError where
@@ -97,8 +107,8 @@ instance Show ExecutionError where
   show (AssertViolation s) = "Assertion violation: " ++ s
   show (AssumeViolation s) = "Assumption violation: " ++ s
   show (DivisionByZero) = "Division by zero"
-  show (UndefinedValue s) = "Value of " ++ s ++ " is not defined uniquely"
   show (UnsupportedConstruct s) = "Execution of " ++ s ++ " is not supported yet"
+  show (NoEntryPoint name) = "Cannot find program entry point: " ++ name
   show (OtherError s) = "Unknown error type: " ++ s
 
 -- | Execution result: either 'a' or an error
@@ -152,17 +162,22 @@ eval' _   FF                          = return $ BoolValue False
 eval' _   (Numeral n)                 = return $ IntValue n
 eval' env (Var id)                    = value env id
 eval' env (Application id args)       = case M.lookup id (envFunctions env) of
-                                          Nothing -> throwError (UndefinedValue ("function " ++ id))
+                                          Nothing -> return $ defaultValue returnType
                                           Just (FDef formals body) -> do
                                             argsV <- mapM (eval env) args
-                                            eval (foldl defineLocal env (zip formals argsV)) body
+                                            eval (localEnv formals argsV) body
+  where
+    returnType = fromRight $ TC.checkExpression (envTypeContext env) (gen $ Application id args)
+    localEnv formals actuals = assignAll env { envTypeContext = TC.enterFunction (envTypeContext env) id formals } formals actuals
 eval' env (MapSelection m args)       = do 
                                           mV <- eval env m
                                           argsV <- mapM (eval env) args
                                           case mV of 
                                             MapValue map -> case M.lookup argsV map of
-                                              Nothing -> throwError (UndefinedValue ("map selection " ++ show (MapSelection m args)))
+                                              Nothing -> return $ defaultValue rangeType
                                               Just v -> return v
+  where
+    rangeType = fromRight $ TC.checkExpression (envTypeContext env) (gen $ MapSelection m args)
 eval' env  (MapUpdate m args new)     = do
                                           mV <- eval env m
                                           argsV <- mapM (eval env) args
@@ -190,10 +205,12 @@ exec' env (Assume e) = do
   case b of 
     BoolValue True -> return env
     BoolValue False -> throwError (AssumeViolation (show e))
-exec' env (Havoc ids) = throwError (UnsupportedConstruct "havocs")
+exec' env (Havoc ids) = return $ assignAll env ids (map defaultValue types)
+  where
+    types = map (fromRight . TC.checkExpression (envTypeContext env) . gen . Var) ids
 exec' env (Assign lhss rhss) = do
   rVals <- mapM (eval env) rhss'
-  return $ foldl assign env (zip lhss' rVals)
+  return $ assignAll env lhss' rVals
   where
     lhss' = map fst (zipWith normalize lhss rhss)
     rhss' = map snd (zipWith normalize lhss rhss)
@@ -201,11 +218,15 @@ exec' env (Assign lhss rhss) = do
     normalize (id, argss) rhs = (id, mapUpdate (gen $ Var id) argss rhs)
     mapUpdate e [args] rhs = gen $ MapUpdate e args rhs
     mapUpdate e (args1 : argss) rhs = gen $ MapUpdate e args1 (mapUpdate (gen $ MapSelection e args1) argss rhs)
-exec' env (Call lhss name args) = do
-  argsV <- mapM (eval env) args
-  (env', retsV) <- execProcedure env name argsV
-  return $ foldl assign env' (zip lhss retsV)
-exec' env (CallForall name args) = return env -- ToDo: assert pre, assume post?
+exec' env (Call lhss name args) = case M.lookup name (envProcedures env) of
+  Nothing -> return $ assignAll env lhss (map defaultValue returnTypes)
+  Just (def : defs) -> do
+    argsV <- mapM (eval env) args
+    (env', retsV) <- execProcedure env name def argsV
+    return $ assignAll env' lhss retsV
+  where
+    returnTypes = map (fromRight . TC.checkExpression (envTypeContext env) . gen . Var) lhss
+exec' env (CallForall name args) = return env -- ToDo: assume pre ==> post?
   
 -- | Execute program consisting of blocks starting from the block labeled label in an environment env
 execBlock :: Environment -> Map Id [Statement] -> Id -> Result Environment
@@ -228,16 +249,17 @@ tryOneOf env blocks (l:lbs) = case execBlock env blocks l of
   Left (AssumeViolation _) -> tryOneOf env blocks lbs
   Left e -> throwError e
 
--- | Execute procedure name in an environment env with actual arguments actuals 
-execProcedure :: Environment -> Id -> [Value] -> Result (Environment, [Value])
-execProcedure env name actuals = let 
-  procedure = head ((envProcedures env) ! name)
-  inEnv = foldl defineLocal env (zip (pdefIns procedure) actuals)
-  localEnv = foldl declareLocal inEnv (pdefOuts procedure ++ map itwId (fst (pdefBody procedure)))
+-- | Execute definition def of procedure name in an environment env with actual arguments actuals 
+execProcedure :: Environment -> Id -> PDef -> [Value] -> Result (Environment, [Value])
+execProcedure env name def actuals = let 
+  ins = pdefIns def
+  outs = pdefOuts def
+  locals = map noWhere (fst (pdefBody def))
+  localEnv = assignAll env { envTypeContext = TC.enterProcedure (envTypeContext env) name ins outs locals } ins actuals
   in do
-    env' <- execBlock localEnv (snd (pdefBody procedure)) startLabel
-    retsV <- mapM (value env') (pdefOuts procedure)
-    return (env' { envLocals = envLocals env }, retsV)
+    env' <- execBlock localEnv (snd (pdefBody def)) startLabel
+    retsV <- mapM (value env') outs
+    return (env' { envTypeContext = envTypeContext env, envLocals = envLocals env }, retsV)
 
 {- Preprocessing -}
 
@@ -245,7 +267,6 @@ execProcedure env name actuals = let
 collectDefinitions :: Environment -> Program -> Environment
 collectDefinitions env p = foldl processDecl env (map contents p)
   where
-    processDecl env (VarDecl vars) = foldl declareGlobal env (map itwId vars)
     processDecl env (FunctionDecl name _ args _ (Just body)) = processFunctionBody env name args body
     processDecl env (ProcedureDecl name _ args rets _ (Just body)) = processProcedureBodies env name (map noWhere args) (map noWhere rets) [body]
     processDecl env (ImplementationDecl name _ args rets bodies) = processProcedureBodies env name args rets bodies
@@ -277,5 +298,10 @@ processAxiom env expr = case contents expr of
   BinaryExpression Eq (Pos _ (Var c)) rhs -> env { envConstants = M.insert c rhs (envConstants env) }
   -- ToDo: add axioms that (partially) define functions
   _ -> env
+  
+{- Misc -}
+
+fromRight :: Either a b -> b
+fromRight (Right x) = x
     
     

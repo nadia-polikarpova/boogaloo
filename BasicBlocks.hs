@@ -14,7 +14,7 @@ import Control.Applicative
 toBasicBlocks :: Block -> [BasicBlock]
 toBasicBlocks body = let 
   tbs = evalState (concat <$> (mapM (transform M.empty) (map contents body))) 0
-  -- By the properties of transform, bs' is a sequence of basic blocks
+  -- By the properties of transform, tbs' is a sequence of basic blocks
   tbs' = attach startLabel (tbs ++ [justStatement Return])  
   -- Append a labeled statement to a sequence of basic blocks
   -- (the first labeled statement cannot have empty label)

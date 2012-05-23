@@ -108,6 +108,7 @@ data Context = Context
     ctxPos :: SourcePos                     -- position in the source code
   } deriving Show
 
+
 emptyContext = Context {
     ctxTypeConstructors = M.empty,
     ctxTypeSynonyms     = M.empty,
@@ -149,6 +150,35 @@ funProcNames c = M.keys (ctxFunctions c) ++ M.keys (ctxProcedures c)
 deleteAll :: Ord k => [k] -> Map k a -> Map k a
 deleteAll keys m = foldr M.delete m keys
 
+-- | Local context of function name with formal arguments args
+-- | (function signature has to be stored in ctxFunctions)
+enterFunction :: Context -> Id -> [Id] -> Context 
+enterFunction c name args = c 
+  {
+    ctxTypeVars = fsigTypeVars sig,
+    ctxIns = M.fromList (zip args (fsigArgTypes sig)),
+    ctxLocals = M.empty,
+    ctxModifies = [],
+    ctxTwoState = False,
+    ctxInLoop = False
+  }
+  where sig = ctxFunctions c ! name
+
+-- | Local context of procedure name with in-parameters args, out-parameters rets and local variables locals
+-- | (procedure signature has to be stored in ctxProcedures)  
+enterProcedure :: Context -> Id -> [Id] -> [Id] -> [IdType] -> Context 
+enterProcedure c name args rets locals = c 
+  {
+    -- ToDo: instantiate type variables?
+    ctxTypeVars = psigTypeVars sig,
+    ctxIns = M.fromList (zip args (psigArgTypes sig)),
+    ctxLocals = M.union (M.fromList locals) (M.fromList (zip rets (psigRetTypes sig))),
+    ctxModifies = psigModifies sig,
+    ctxTwoState = True,
+    ctxInLoop = False
+  }
+  where sig = ctxProcedures c ! name
+  
 {- Types -}
 
 -- | substitution binding t : type t with all free type variables instantiated according to binding.
@@ -387,14 +417,21 @@ checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
   Just sig -> if not (null (psigModifies sig \\ ctxModifies c)) 
     then typeError (ctxPos c) ("Call modifies a global variable that is not in the enclosing procedure's modifies clause: " ++ commaSep (psigModifies sig \\ ctxModifies c))
     else do
-      actualArgTypes <- mapAccum (checkExpression c) noType args
-      case unifier (psigTypeVars sig) (psigArgTypes sig) actualArgTypes of
-        Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show (psigArgTypes sig)) ++
-          " against actual argument types " ++ commaSep (map show actualArgTypes) ++
-          " in the call to " ++ name)
-        Just u -> do
-          checkLefts c lhss (length (psigRetTypes sig))
-          zipWithAccum_ (compareType c "call left-hand side") (map (substitution u) (psigRetTypes sig)) (map (attachPos (ctxPos c) . Var) lhss)
+      retTypes <- procedureReturnTypes c name args
+      checkLefts c lhss (length (psigRetTypes sig))
+      zipWithAccum_ (compareType c "call left-hand side") retTypes (map (attachPos (ctxPos c) . Var) lhss)
+
+-- | Return types of procedure name, when called with actual arguments args in context c
+procedureReturnTypes :: Context -> Id -> [Expression] -> Checked [Type]
+procedureReturnTypes c name args = do
+  actualArgTypes <- mapAccum (checkExpression c) noType args
+  case unifier (psigTypeVars sig) (psigArgTypes sig) actualArgTypes of
+    Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show (psigArgTypes sig)) ++
+      " against actual argument types " ++ commaSep (map show actualArgTypes) ++
+      " in the call to " ++ name)
+    Just u -> return $ map (substitution u) (psigRetTypes sig)  
+  where
+    sig = ctxProcedures c ! name 
         
 checkCallForall :: Context -> Id -> [WildcardExpression] -> Checked ()
 checkCallForall c name args = case M.lookup name (ctxProcedures c) of

@@ -4,16 +4,16 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- Pass global context to interpreter
-	- Use reader monad in type checker?
-	- Initialize with default values? (otherwise, no way to initialize a map)
-	- User reader monad
+	- Use reader monad in type checker and interpreter?
+	- Let value lookup and expressions update the environment
 	- Checking contracts
+	- Check axioms and where clauses when choosing a value
 	- Better error reporting (add locations, call stacks, use pretty print instead of message?)
 	- Quantified expressions
 	- Extract function definitions from axioms
 	- User-defined types
 	- Extends ordering
+	- Backtracking (logicT monad?)
 	
 ================================================	
 Approaches to initialization and non-determinism
