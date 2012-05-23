@@ -150,40 +150,50 @@ funProcNames c = M.keys (ctxFunctions c) ++ M.keys (ctxProcedures c)
 deleteAll :: Ord k => [k] -> Map k a -> Map k a
 deleteAll keys m = foldr M.delete m keys
 
--- | Local context of function name with formal arguments args
+-- | Local context of function name with formal arguments formals and actual arguments actuals
 -- | (function signature has to be stored in ctxFunctions)
-enterFunction :: Context -> Id -> [Id] -> Context 
-enterFunction c name args = c 
+enterFunction :: Context -> Id -> [Id] -> [Expression] -> Context 
+enterFunction c name formals actuals = c 
   {
-    ctxTypeVars = fsigTypeVars sig,
-    ctxIns = M.fromList (zip args (fsigArgTypes sig)),
+    ctxTypeVars = [],
+    ctxIns = M.fromList (zip formals argTypes),
     ctxLocals = M.empty,
     ctxModifies = [],
     ctxTwoState = False,
     ctxInLoop = False
   }
-  where sig = ctxFunctions c ! name
+  where 
+    sig = ctxFunctions c ! name
+    inst = substitution (fromRight $ fInstance c sig actuals)
+    argTypes = map inst (fsigArgTypes sig)
 
--- | Local context of procedure name with in-parameters args, out-parameters rets and local variables locals
+-- | Local context of procedure name with in-parameters formals, actual arguments actuals, out-parameters rets and local variables locals
 -- | (procedure signature has to be stored in ctxProcedures)  
-enterProcedure :: Context -> Id -> [Id] -> [Id] -> [IdType] -> Context 
-enterProcedure c name args rets locals = c 
+enterProcedure :: Context -> Id -> [Id] -> [Expression] -> [Id] -> [IdType] -> Context 
+enterProcedure c name formals actuals rets locals = c 
   {
-    -- ToDo: instantiate type variables?
-    ctxTypeVars = psigTypeVars sig,
-    ctxIns = M.fromList (zip args (psigArgTypes sig)),
-    ctxLocals = M.union (M.fromList locals) (M.fromList (zip rets (psigRetTypes sig))),
+    ctxTypeVars = [],
+    ctxIns = M.fromList $ zip formals argTypes,
+    ctxLocals = M.union (M.fromList $ zip (map fst locals) localTypes) (M.fromList $ zip rets retTypes),
     ctxModifies = psigModifies sig,
     ctxTwoState = True,
     ctxInLoop = False
   }
-  where sig = ctxProcedures c ! name
+  where 
+    sig = ctxProcedures c ! name
+    inst = substitution (fromRight $ pInstance c sig actuals)
+    argTypes = map inst (psigArgTypes sig)
+    retTypes = map inst (psigRetTypes sig)
+    localTypes = map (inst . snd) locals
   
 {- Types -}
 
+-- | Mapping from type variables to types
+type Binding = Map Id Type
+
 -- | substitution binding t : type t with all free type variables instantiated according to binding.
 -- All variables in the domain of bindings are considered free if not explicitly bound. 
-substitution :: Map Id Type -> Type -> Type
+substitution :: Binding -> Type -> Type
 substitution _ BoolType = BoolType
 substitution _ IntType = IntType
 substitution binding (Instance id []) = case M.lookup id binding of
@@ -202,7 +212,7 @@ isFree x (MapType bv domains range) = x `notElem` bv && any (isFree x) (range:do
 isFree x _ = False
   
 -- | unifier fv xs ys : most general unifier of xs and ys with free type variables fv   
-unifier :: [Id] -> [Type] -> [Type] -> Maybe (Map Id Type)
+unifier :: [Id] -> [Type] -> [Type] -> Maybe Binding
 unifier _ [] [] = Just M.empty
 unifier fv (IntType:xs) (IntType:ys) = unifier fv xs ys
 unifier fv (BoolType:xs) (BoolType:ys) = unifier fv xs ys
@@ -288,7 +298,27 @@ resolve c (Instance name args)
   | otherwise = case M.lookup name (ctxTypeSynonyms c) of
     Nothing -> Instance name (map (resolve c) args)
     Just (formals, t) -> resolve c (substitution (M.fromList (zip formals args)) t)
-resolve _ t = t   
+resolve _ t = t
+
+-- | Instantiation of type variables in a function signature sig given the actual arguments actuals in a context c 
+fInstance :: Context -> FSig -> [Expression] -> Checked Binding
+fInstance c sig actuals = do
+  actualTypes <- mapAccum (checkExpression c) noType actuals
+  case unifier (fsigTypeVars sig) (fsigArgTypes sig) actualTypes of
+    Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show (fsigArgTypes sig)) ++
+      " against actual argument types " ++ commaSep (map show actualTypes) ++
+      " in the call to " ++ fsigName sig)
+    Just u -> return u
+      
+-- | Instantiation of type variables in a procedure signature sig given the actual arguments actuals in a context c 
+pInstance :: Context -> PSig -> [Expression] -> Checked Binding
+pInstance c sig actuals = do
+  actualTypes <- mapAccum (checkExpression c) noType actuals
+  case unifier (psigTypeVars sig) (psigArgTypes sig) actualTypes of
+    Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show (psigArgTypes sig)) ++
+      " against actual argument types " ++ commaSep (map show actualTypes) ++
+      " in the call to " ++ psigName sig)
+    Just u -> return u
   
 {- Expressions -}
 
@@ -317,12 +347,8 @@ checkApplication :: Context -> Id -> [Expression] -> Checked Type
 checkApplication c id args = case M.lookup id (ctxFunctions c) of
   Nothing -> typeError (ctxPos c) ("Not in scope: function " ++ id)
   Just sig -> do
-    actualTypes <- mapAccum (checkExpression c) noType args
-    case unifier (fsigTypeVars sig) (fsigArgTypes sig) actualTypes of
-      Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show (fsigArgTypes sig)) ++
-        " against actual argument types " ++ commaSep (map show actualTypes) ++
-        " in the call to " ++ id)
-      Just u -> return (substitution u (fsigRetType sig))
+    u <- fInstance c sig args
+    return $ substitution u (fsigRetType sig)
     
 checkMapSelection :: Context -> Expression -> [Expression] -> Checked Type
 checkMapSelection c m args = do
@@ -417,34 +443,16 @@ checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
   Just sig -> if not (null (psigModifies sig \\ ctxModifies c)) 
     then typeError (ctxPos c) ("Call modifies a global variable that is not in the enclosing procedure's modifies clause: " ++ commaSep (psigModifies sig \\ ctxModifies c))
     else do
-      retTypes <- procedureReturnTypes c name args
+      u <- pInstance c sig args 
       checkLefts c lhss (length (psigRetTypes sig))
-      zipWithAccum_ (compareType c "call left-hand side") retTypes (map (attachPos (ctxPos c) . Var) lhss)
-
--- | Return types of procedure name, when called with actual arguments args in context c
-procedureReturnTypes :: Context -> Id -> [Expression] -> Checked [Type]
-procedureReturnTypes c name args = do
-  actualArgTypes <- mapAccum (checkExpression c) noType args
-  case unifier (psigTypeVars sig) (psigArgTypes sig) actualArgTypes of
-    Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show (psigArgTypes sig)) ++
-      " against actual argument types " ++ commaSep (map show actualArgTypes) ++
-      " in the call to " ++ name)
-    Just u -> return $ map (substitution u) (psigRetTypes sig)  
-  where
-    sig = ctxProcedures c ! name 
+      zipWithAccum_ (compareType c "call left-hand side") (map (substitution u) (psigRetTypes sig)) (map (attachPos (ctxPos c) . Var) lhss)
         
 checkCallForall :: Context -> Id -> [WildcardExpression] -> Checked ()
 checkCallForall c name args = case M.lookup name (ctxProcedures c) of
   Nothing -> typeError (ctxPos c) ("Not in scope: procedure " ++ name)
   Just sig -> if not (null (psigModifies sig)) 
     then typeError (ctxPos c) "Call forall to a procedure with a non-empty modifies clause"
-    else do
-      actualArgTypes <- mapAccum (checkExpression c) noType concreteArgs
-      case unifier (psigTypeVars sig) (concrete (psigArgTypes sig)) actualArgTypes of
-        Nothing -> typeError (ctxPos c) ("Could not match formal argument types " ++ commaSep (map show (concrete (psigArgTypes sig))) ++
-          " against actual argument types " ++ commaSep (map show actualArgTypes) ++
-          " in the call to " ++ name)
-        Just u -> return ()
+    else pInstance c sig { psigArgTypes = concrete (psigArgTypes sig) } concreteArgs >> return ()
   where
     concreteArgs = [e | (Expr e) <- args]
     concrete at = [at !! i | i <- [0..length args - 1], isConcrete (args !! i)]
@@ -582,7 +590,7 @@ checkFunctionSignature c name tv args ret
     foldAccum checkFArg c' (args ++ [ret])
     if not (null missingTV) 
       then typeError (ctxPos c) ("Type variable(s) must occur in function arguments: " ++ commaSep missingTV)
-      else return $ addFSig c name (FSig tv argTypes retType) 
+      else return $ addFSig c name (FSig name tv argTypes retType) 
     where 
       checkFArg c (Just id, t) = checkIdType ctxIns ctxIns setIns c (id, t)
       checkFArg c (Nothing, t) = checkType c t >> return c
@@ -600,7 +608,7 @@ checkProcSignature c name tv args rets specs
     foldAccum checkPArg c' (args ++ rets)
     if not (null missingTV) 
       then typeError (ctxPos c) ("Type variable(s) must occur in procedure arguments: " ++ commaSep missingTV)
-      else return $ addPSig c name (PSig tv argTypes retTypes (modifies specs))
+      else return $ addPSig c name (PSig name tv argTypes retTypes (modifies specs))
     where 
       checkPArg c arg = checkIdType ctxIns ctxIns setIns c (noWhere arg)
       missingTV = filter (not . freeInArgs) tv
@@ -683,7 +691,7 @@ checkImplementation c name tv args rets bodies = case M.lookup name (ctxProcedur
     Nothing -> typeError (ctxPos c) ("Not in scope: procedure " ++ name)
     Just sig -> case boundUnifier [] (psigTypeVars sig) (psigArgTypes sig ++ psigRetTypes sig) tv (argTypes ++ retTypes) of
       Nothing -> typeError (ctxPos c) ("Could not match procedure signature " ++ show sig ++
-        " against implementation signature " ++ show (PSig tv argTypes retTypes []) ++
+        " against implementation signature " ++ show (PSig name tv argTypes retTypes []) ++
         " in the implementation of " ++ name)
       Just _ -> do
         cArgs <- foldAccum (checkIdType localScope ctxIns setIns) c { ctxTypeVars = tv } args

@@ -168,7 +168,7 @@ eval' env (Application id args)       = case M.lookup id (envFunctions env) of
                                             eval (localEnv formals argsV) body
   where
     returnType = fromRight $ TC.checkExpression (envTypeContext env) (gen $ Application id args)
-    localEnv formals actuals = assignAll env { envTypeContext = TC.enterFunction (envTypeContext env) id formals } formals actuals
+    localEnv formals actuals = assignAll env { envTypeContext = TC.enterFunction (envTypeContext env) id formals args } formals actuals
 eval' env (MapSelection m args)       = do 
                                           mV <- eval env m
                                           argsV <- mapM (eval env) args
@@ -221,8 +221,7 @@ exec' env (Assign lhss rhss) = do
 exec' env (Call lhss name args) = case M.lookup name (envProcedures env) of
   Nothing -> return $ assignAll env lhss (map defaultValue returnTypes)
   Just (def : defs) -> do
-    argsV <- mapM (eval env) args
-    (env', retsV) <- execProcedure env name def argsV
+    (env', retsV) <- execProcedure env name def args
     return $ assignAll env' lhss retsV
   where
     returnTypes = map (fromRight . TC.checkExpression (envTypeContext env) . gen . Var) lhss
@@ -250,16 +249,17 @@ tryOneOf env blocks (l:lbs) = case execBlock env blocks l of
   Left e -> throwError e
 
 -- | Execute definition def of procedure name in an environment env with actual arguments actuals 
-execProcedure :: Environment -> Id -> PDef -> [Value] -> Result (Environment, [Value])
-execProcedure env name def actuals = let 
+execProcedure :: Environment -> Id -> PDef -> [Expression] -> Result (Environment, [Value])
+execProcedure env name def args = let 
   ins = pdefIns def
   outs = pdefOuts def
   locals = map noWhere (fst (pdefBody def))
-  localEnv = assignAll env { envTypeContext = TC.enterProcedure (envTypeContext env) name ins outs locals } ins actuals
+  localEnv argsV = assignAll env { envTypeContext = TC.enterProcedure (envTypeContext env) name ins args outs locals } ins argsV
   in do
-    env' <- execBlock localEnv (snd (pdefBody def)) startLabel
+    argsV <- mapM (eval env) args
+    env' <- execBlock (localEnv argsV) (snd (pdefBody def)) startLabel
     retsV <- mapM (value env') outs
-    return (env' { envTypeContext = envTypeContext env, envLocals = envLocals env }, retsV)
+    return (env' { envTypeContext = envTypeContext env, envLocals = envLocals env }, retsV)    
 
 {- Preprocessing -}
 
@@ -298,10 +298,5 @@ processAxiom env expr = case contents expr of
   BinaryExpression Eq (Pos _ (Var c)) rhs -> env { envConstants = M.insert c rhs (envConstants env) }
   -- ToDo: add axioms that (partially) define functions
   _ -> env
-  
-{- Misc -}
-
-fromRight :: Either a b -> b
-fromRight (Right x) = x
     
     

@@ -128,6 +128,7 @@ data BareDecl =
 
 -- | Function signature
 data FSig = FSig {
+    fsigName :: Id,         -- Function name
     fsigTypeVars :: [Id],   -- Type variables
     fsigArgTypes :: [Type], -- Argument types
     fsigRetType :: Type     -- Return type
@@ -141,6 +142,7 @@ data FDef = FDef {
   
 -- | Procedure signature
 data PSig = PSig {
+    psigName :: Id,           -- Procedure name
     psigTypeVars :: [Id],     -- Type variables
     psigArgTypes :: [Type],   -- In-parameter types
     psigRetTypes :: [Type],   -- Out-parameter types
@@ -155,6 +157,9 @@ data PDef = PDef {
   }  
   
 {- Misc -}
+
+fromRight :: Either a b -> b
+fromRight (Right x) = x
 
 data NewType = NewType {
   tId :: Id,
