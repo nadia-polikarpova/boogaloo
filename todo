@@ -4,34 +4,20 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- Use reader monad in type checker and interpreter?
-	- Let value lookup and expressions update the environment
+	- Save old variables when entering the procedure
 	- Checking contracts
 	- Check axioms and where clauses when choosing a value
 	- Better error reporting (add locations, call stacks, use pretty print instead of message?)
+	- Better interface (show instance for Value, allow different entry points?)
 	- Quantified expressions
+	- Create package and some doc
+-> Release 0.1	
 	- Extract function definitions from axioms
 	- User-defined types
 	- Extends ordering
 	- Backtracking (logicT monad?)
+	- Constraint solving
 	
-================================================	
-Approaches to initialization and non-determinism
-================================================
-
-Initialization value: UNDEF, default, random, range, constraint solving
-
-Initialization time:
-	- Havoc on declaration (bad if havoc is expensive or can lead to a failure)
-	-> Return init value on first access (better, but expression evaluation has to modify state)
-
-Checking strategy (for axioms, where, assume):
-	- UNDEF causes error on access
-	-> default/random with no checking
-	- default/random with checking and failing
-	- range/rabdom with backtraching
-	- constraint solving
-
 Notes:
 - Where clauses of in-parameters: according to the manual can mention out-parameters, but actually can't
 - Breaks with labels. a: b: while(...) {break a;} is not allowed in the implementation (as is l: break l;), but seems to be allowed by the manual.

@@ -152,8 +152,8 @@ deleteAll keys m = foldr M.delete m keys
 
 -- | Local context of function name with formal arguments formals and actual arguments actuals
 -- | (function signature has to be stored in ctxFunctions)
-enterFunction :: Context -> Id -> [Id] -> [Expression] -> Context 
-enterFunction c name formals actuals = c 
+enterFunction :: Id -> [Id] -> [Expression] -> Context -> Context 
+enterFunction name formals actuals c = c 
   {
     ctxTypeVars = [],
     ctxIns = M.fromList (zip formals argTypes),
@@ -169,8 +169,8 @@ enterFunction c name formals actuals = c
 
 -- | Local context of procedure name with in-parameters formals, actual arguments actuals, out-parameters rets and local variables locals
 -- | (procedure signature has to be stored in ctxProcedures)  
-enterProcedure :: Context -> Id -> [Id] -> [Expression] -> [Id] -> [IdType] -> Context 
-enterProcedure c name formals actuals rets locals = c 
+enterProcedure :: Id -> [Id] -> [Expression] -> [Id] -> [IdType] -> Context -> Context 
+enterProcedure name formals actuals rets locals c = c 
   {
     ctxTypeVars = [],
     ctxIns = M.fromList $ zip formals argTypes,

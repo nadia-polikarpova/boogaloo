@@ -10,20 +10,27 @@ import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Error
 import Control.Applicative
+import Control.Monad.State
 
 {- Interface -}
 
 -- | Execute program p with type context tc (produced by the type checker) and entry point main, 
 -- | and return the values of global variables;
 -- | main must have no arguments
-executeProgram :: Program -> TypeContext -> Id -> Result (Map Id Value)
-executeProgram p tc main = let initEnv = collectDefinitions emptyEnv { envTypeContext = tc } p
-  in case M.lookup main (envProcedures initEnv) of
-    Nothing -> throwError (NoEntryPoint main)
-    Just (def : defs) -> do
-      (env', _) <- execProcedure initEnv main def []
-      return $ envGlobals env'
-
+executeProgram :: Program -> TypeContext -> Id -> Either ExecutionError (Map Id Value)
+executeProgram p tc main = envGlobals <$> finalEnvironment
+  where
+    initEnvironment = collectDefinitions emptyEnv { envTypeContext = tc } p
+    finalEnvironment = case runState (runErrorT programState) initEnvironment of
+      (Left err, _) -> Left err
+      (_, env)      -> Right env            
+    programState = do
+      procedures <- gets envProcedures
+      case M.lookup main procedures of
+        Nothing -> throwError (NoEntryPoint main)
+        Just (def : defs) -> do
+          execProcedure main def [] >> return ()
+      
 {- State -}
 
 data Value = IntValue Integer |   -- Integer value
@@ -62,33 +69,66 @@ emptyEnv = Environment
     envProcedures = M.empty,
     envTypeContext = TC.emptyContext
   }
-  
--- | Value of id in environment env;
--- | id has to be a name of a variable or constant in the type context of env, but does not have to be in the domain of env
-value :: Environment -> Id -> Result Value
-value env id = case M.lookup id (TC.localScope (envTypeContext env)) of
-  Just t -> return $ lookupIn (envLocals env) t
-  Nothing -> case M.lookup id (TC.ctxGlobals (envTypeContext env)) of
-    Just t -> return $ lookupIn (envGlobals env) t
-    Nothing -> case M.lookup id (TC.ctxConstants (envTypeContext env)) of
-      Just t -> case M.lookup id (envConstants env) of
-        Just e -> eval env e
-        Nothing -> return $ defaultValue t
-  where
-    lookupIn vars t = case M.lookup id vars of
-      Just val -> val
-      Nothing -> defaultValue t
-    
--- | Assign value val to variable id in environment env;
--- | id has to be defined in the type context of env, but does not have to be in the domain of env
-assign :: Environment -> Id -> Value -> Environment    
-assign env id val = if M.member id (TC.localScope (envTypeContext env))
-  then env { envLocals = M.insert id val (envLocals env) }
-  else env { envGlobals = M.insert id val (envGlobals env) }
 
--- | Assign vals to ids  
-assignAll :: Environment -> [Id] -> [Value] -> Environment
-assignAll env ids vals = foldl (\e (i, v) -> assign e i v) env (zip ids vals)
+-- | set the value of global variable id to val
+setGlobal id val env = env { envGlobals = M.insert id val (envGlobals env) }    
+  
+-- | Set the value of local variable id to val
+setLocal id val env = env { envLocals = M.insert id val (envLocals env) }
+
+-- | Computations with Environment as state, which can result in either a or ExecutionError  
+type Execution a = ErrorT ExecutionError (State Environment) a  
+
+-- | Get value of variable or constant id.
+-- | id has to be declared in the current type context. 
+-- | In case id does not yet have a value in the current environment, a default value is returned and cached in the environment.
+getV :: Id -> Execution Value
+getV id = do
+  tc <- gets envTypeContext
+  case M.lookup id (TC.localScope tc) of
+    Just t -> lookup envLocals setLocal t
+    Nothing -> case M.lookup id (TC.ctxGlobals tc) of
+      Just t -> lookup envGlobals setGlobal t
+      Nothing -> case M.lookup id (TC.ctxConstants tc) of
+        Just t -> do
+          constants <- gets envConstants
+          case M.lookup id constants of
+            Just e -> eval e
+            Nothing -> return $ defaultValue t -- ToDo: cache constant value?
+  where
+    lookup getter setter t = do
+      vars <- gets getter
+      case M.lookup id vars of
+        Just val -> return val
+        Nothing -> do
+          modify $ setter id (defaultValue t)
+          return $ defaultValue t
+        
+-- | Set value of variable id to val.
+-- | id has to be declared in the current type context.
+setV :: Id -> Value -> Execution ()    
+setV id val = do
+  tc <- gets envTypeContext
+  if M.member id (TC.localScope tc)
+    then modify $ setLocal id val
+    else modify $ setGlobal id val      
+    
+-- | Set values of variables ids to vals.  
+setAll :: [Id] -> [Value] -> Execution ()
+setAll ids vals = zipWithM_ setV ids vals  
+
+-- | Enter local scope (apply localTC to the type context and assign actuals to formals),
+-- | execute computation,
+-- | then restore type context and local variables to the old values
+executeLocally :: (TypeContext -> TypeContext) -> [Id] -> [Value] -> Execution a -> Execution a
+executeLocally localTC formals actuals computation = do
+  env <- get
+  put env { envTypeContext = localTC (envTypeContext env) }
+  setAll formals actuals
+  res <- computation
+  env' <- get
+  put env' { envTypeContext = envTypeContext env, envLocals = envLocals env }
+  return res
   
 {- Errors -}
 
@@ -111,106 +151,119 @@ instance Show ExecutionError where
   show (NoEntryPoint name) = "Cannot find program entry point: " ++ name
   show (OtherError s) = "Unknown error type: " ++ s
 
--- | Execution result: either 'a' or an error
-type Result a = Either ExecutionError a
-
 {- Expressions -}
 
 -- | Semantics of unary operators
--- | They are strict and cannot fail, hence the non-monadic types
 unOp :: UnOp -> Value -> Value
 unOp Neg (IntValue n)   = IntValue (-n)
 unOp Not (BoolValue b)  = BoolValue (not b)
 
--- | Semantics of binary operators
--- | Some of them are semi-strict and some can fail, hence the monadic types
-binOp :: BinOp -> Result Value -> Result Value -> Result Value
-binOp And     (Right (BoolValue False)) _ = return $ BoolValue False
-binOp Or      (Right (BoolValue True)) _  = return $ BoolValue True
-binOp Implies (Right (BoolValue False)) _ = return $ BoolValue True
-binOp op (Right v1) (Right v2) = binOpStrict op v1 v2
-  where
-    binOpStrict Plus    (IntValue n1) (IntValue n2)   = return $ IntValue (n1 + n2)
-    binOpStrict Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
-    binOpStrict Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
-    binOpStrict Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                    then throwError DivisionByZero
-                                                    else return $ IntValue (n1 `div` n2)
-    binOpStrict Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                    then throwError DivisionByZero
-                                                    else return (IntValue (n1 `mod` n2))
-    binOpStrict Leq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 <= n2)
-    binOpStrict Ls      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 < n2)
-    binOpStrict Geq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 >= n2)
-    binOpStrict Gt      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 > n2)
-    binOpStrict And     (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 && b2)
-    binOpStrict Or      (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 || b2)
-    binOpStrict Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
-    binOpStrict Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
-    binOpStrict Eq      v1 v2                         = return $ BoolValue (v1 == v2)
-    binOpStrict Neq     v1 v2                         = return $ BoolValue (v1 /= v2)
-    binOpStrict Lc      v1 v2                         = throwError (UnsupportedConstruct "orders")
-binOp _ (Left e) _ = Left e
-binOp _ _ (Left e) = Left e
-  
--- | Evaluate an expression in an environment
-eval :: Environment -> Expression -> Result Value
-eval env e = eval' env (contents e) 
+-- | Semi-strict semantics of binary operators:
+-- | binOpLazy op lhs: returns a value of "lhs `op`" if already defined, otherwise Nothing 
+binOpLazy :: BinOp -> Value -> Maybe Value
+binOpLazy And     (BoolValue False) = Just $ BoolValue False
+binOpLazy Or      (BoolValue True)  = Just $ BoolValue True
+binOpLazy Implies (BoolValue False) = Just $ BoolValue True
+binOpLazy _ _                       = Nothing
 
-eval' _   TT                          = return $ BoolValue True
-eval' _   FF                          = return $ BoolValue False
-eval' _   (Numeral n)                 = return $ IntValue n
-eval' env (Var id)                    = value env id
-eval' env (Application id args)       = case M.lookup id (envFunctions env) of
-                                          Nothing -> return $ defaultValue returnType
+-- | Strict semantics of binary operators
+binOp :: BinOp -> Value -> Value -> Execution Value 
+binOp Plus    (IntValue n1) (IntValue n2)   = return $ IntValue (n1 + n2)
+binOp Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
+binOp Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
+binOp Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
+                                                then throwError DivisionByZero
+                                                else return $ IntValue (n1 `div` n2)
+binOp Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
+                                                then throwError DivisionByZero
+                                                else return (IntValue (n1 `mod` n2))
+binOp Leq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 <= n2)
+binOp Ls      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 < n2)
+binOp Geq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 >= n2)
+binOp Gt      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 > n2)
+binOp And     (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 && b2)
+binOp Or      (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 || b2)
+binOp Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
+binOp Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
+binOp Eq      v1 v2                         = return $ BoolValue (v1 == v2)
+binOp Neq     v1 v2                         = return $ BoolValue (v1 /= v2)
+binOp Lc      v1 v2                         = throwError (UnsupportedConstruct "orders")
+
+-- | Evaluate an expression;
+-- | can have a side-effect of initializing variables that were not previously defined
+eval :: Expression -> Execution Value
+eval e = eval' (contents e) 
+
+eval' TT                          = return $ BoolValue True
+eval' FF                          = return $ BoolValue False
+eval' (Numeral n)                 = return $ IntValue n
+eval' (Var id)                    = getV id
+eval' (Application id args)       = do
+                                        functions <- gets envFunctions
+                                        tc <- gets envTypeContext
+                                        case M.lookup id functions of
+                                          Nothing -> return $ defaultValue (returnType tc)
                                           Just (FDef formals body) -> do
-                                            argsV <- mapM (eval env) args
-                                            eval (localEnv formals argsV) body
+                                            argsV <- mapM eval args
+                                            executeLocally (TC.enterFunction id formals args) formals argsV (eval body)
   where
-    returnType = fromRight $ TC.checkExpression (envTypeContext env) (gen $ Application id args)
-    localEnv formals actuals = assignAll env { envTypeContext = TC.enterFunction (envTypeContext env) id formals args } formals actuals
-eval' env (MapSelection m args)       = do 
-                                          mV <- eval env m
-                                          argsV <- mapM (eval env) args
-                                          case mV of 
-                                            MapValue map -> case M.lookup argsV map of
-                                              Nothing -> return $ defaultValue rangeType
-                                              Just v -> return v
+    returnType tc = fromRight $ TC.checkExpression tc (gen $ Application id args)
+eval' (MapSelection m args)       = do 
+                                        tc <- gets envTypeContext
+                                        mV <- eval m
+                                        argsV <- mapM eval args
+                                        case mV of 
+                                          MapValue map -> case M.lookup argsV map of
+                                            Nothing -> return $ defaultValue (rangeType tc)
+                                            Just v -> return v
   where
-    rangeType = fromRight $ TC.checkExpression (envTypeContext env) (gen $ MapSelection m args)
-eval' env  (MapUpdate m args new)     = do
-                                          mV <- eval env m
-                                          argsV <- mapM (eval env) args
-                                          newV <- eval env new
-                                          case mV of 
-                                            MapValue map -> return $ MapValue (M.insert argsV newV map)
-eval' env (Old e)                     = eval env { envGlobals = envOld env } e
-eval' env (UnaryExpression op e)      = unOp op <$> eval env e
-eval' env (BinaryExpression op e1 e2) = binOp op (eval env e1) (eval env e2)                                                
-eval' env (Quantified op args vars e) = throwError (UnsupportedConstruct "quantified expressions")
-
+    rangeType tc = fromRight $ TC.checkExpression tc (gen $ MapSelection m args)
+eval' (MapUpdate m args new)      = do
+                                        mV <- eval m
+                                        argsV <- mapM eval args
+                                        newV <- eval new
+                                        case mV of 
+                                          MapValue map -> return $ MapValue (M.insert argsV newV map)
+eval' (Old e)                     = do
+                                        env <- get
+                                        put env { envGlobals = envOld env }
+                                        res <- eval e
+                                        put env
+                                        return res
+eval' (UnaryExpression op e)      = unOp op <$> eval e
+eval' (BinaryExpression op e1 e2) = do
+                                        left <- eval e1
+                                        case binOpLazy op left of
+                                          Just result -> return result
+                                          Nothing -> do
+                                            right <- eval e2
+                                            binOp op left right
+eval' (Quantified op args vars e) = throwError (UnsupportedConstruct "quantified expressions")
+  
 {- Statements -}
 
--- | Execute a simple statement in an environment
-exec :: Environment -> Statement -> Result Environment
-exec env stmt = exec' env (contents stmt)
+-- | Execute a simple statement
+exec :: Statement -> Execution ()
+exec stmt = exec' (contents stmt)
 
-exec' env (Assert e) = do
-  b <- eval env e
+exec' (Assert e) = do
+  b <- eval e
   case b of 
-    BoolValue True -> return env
+    BoolValue True -> return ()
     BoolValue False -> throwError (AssertViolation (show e))
-exec' env (Assume e) = do
-  b <- eval env e
+exec' (Assume e) = do
+  b <- eval e
   case b of 
-    BoolValue True -> return env
+    BoolValue True -> return ()
     BoolValue False -> throwError (AssumeViolation (show e))
-exec' env (Havoc ids) = return $ assignAll env ids (map defaultValue types)
+exec' (Havoc ids) = do
+  tc <- gets envTypeContext
+  setAll ids (map defaultValue (types tc))
   where
-    types = map (fromRight . TC.checkExpression (envTypeContext env) . gen . Var) ids
-exec' env (Assign lhss rhss) = do
-  rVals <- mapM (eval env) rhss'
-  return $ assignAll env lhss' rVals
+    types tc = map (fromRight . TC.checkExpression tc . gen . Var) ids
+exec' (Assign lhss rhss) = do
+  rVals <- mapM eval rhss'
+  setAll lhss' rVals
   where
     lhss' = map fst (zipWith normalize lhss rhss)
     rhss' = map snd (zipWith normalize lhss rhss)
@@ -218,48 +271,51 @@ exec' env (Assign lhss rhss) = do
     normalize (id, argss) rhs = (id, mapUpdate (gen $ Var id) argss rhs)
     mapUpdate e [args] rhs = gen $ MapUpdate e args rhs
     mapUpdate e (args1 : argss) rhs = gen $ MapUpdate e args1 (mapUpdate (gen $ MapSelection e args1) argss rhs)
-exec' env (Call lhss name args) = case M.lookup name (envProcedures env) of
-  Nothing -> return $ assignAll env lhss (map defaultValue returnTypes)
-  Just (def : defs) -> do
-    (env', retsV) <- execProcedure env name def args
-    return $ assignAll env' lhss retsV
+exec' (Call lhss name args) = do
+  tc <- gets envTypeContext
+  procedures <- gets envProcedures
+  case M.lookup name procedures of
+    Nothing -> setAll lhss (map defaultValue (returnTypes tc))
+    Just (def : defs) -> do
+      retsV <- execProcedure name def args
+      setAll lhss retsV
   where
-    returnTypes = map (fromRight . TC.checkExpression (envTypeContext env) . gen . Var) lhss
-exec' env (CallForall name args) = return env -- ToDo: assume pre ==> post?
-  
--- | Execute program consisting of blocks starting from the block labeled label in an environment env
-execBlock :: Environment -> Map Id [Statement] -> Id -> Result Environment
-execBlock env blocks label = let
+    returnTypes tc = map (fromRight . TC.checkExpression tc . gen . Var) lhss
+exec' (CallForall name args) = return () -- ToDo: assume pre ==> post?
+
+-- | Execute program consisting of blocks starting from the block labeled label
+execBlock :: Map Id [Statement] -> Id -> Execution ()
+execBlock blocks label = let
   block = blocks ! label
   statements = init block
   jump = contents (last block)
   in do
-    env' <- foldM exec env statements
+    mapM exec statements
     case jump of
-      Return -> return env'
-      Goto lbs -> tryOneOf env' blocks lbs
-
--- | tryOneOf env blocks labels: try executing blocks starting with each of labels,
--- | until we find one that does not result in an assumption violation
-tryOneOf :: Environment -> Map Id [Statement] -> [Id] -> Result Environment        
-tryOneOf env blocks [l] = execBlock env blocks l
-tryOneOf env blocks (l:lbs) = case execBlock env blocks l of
-  Right env' -> return env'
-  Left (AssumeViolation _) -> tryOneOf env blocks lbs
-  Left e -> throwError e
-
--- | Execute definition def of procedure name in an environment env with actual arguments actuals 
-execProcedure :: Environment -> Id -> PDef -> [Expression] -> Result (Environment, [Value])
-execProcedure env name def args = let 
+      Return -> return ()
+      Goto lbs -> tryOneOf blocks lbs
+  
+-- | tryOneOf blocks labels: try executing blocks starting with each of labels,
+-- | until we find one that does not result in an assumption violation      
+tryOneOf :: Map Id [Statement] -> [Id] -> Execution ()        
+tryOneOf blocks (l : lbs) = catchError (execBlock blocks l) retry
+  where
+    retry (AssumeViolation _) | not (null lbs) = tryOneOf blocks lbs
+    retry e = throwError e
+  
+-- | Execute definition def of procedure name with actual arguments actuals 
+execProcedure :: Id -> PDef -> [Expression] -> Execution [Value]
+execProcedure name def args = let 
   ins = pdefIns def
   outs = pdefOuts def
   locals = map noWhere (fst (pdefBody def))
-  localEnv argsV = assignAll env { envTypeContext = TC.enterProcedure (envTypeContext env) name ins args outs locals } ins argsV
+  execBody = do
+    execBlock (snd (pdefBody def)) startLabel
+    mapM getV outs
   in do
-    argsV <- mapM (eval env) args
-    env' <- execBlock (localEnv argsV) (snd (pdefBody def)) startLabel
-    retsV <- mapM (value env') outs
-    return (env' { envTypeContext = envTypeContext env, envLocals = envLocals env }, retsV)    
+    tc <- gets envTypeContext
+    argsV <- mapM eval args
+    executeLocally (TC.enterProcedure name ins args outs locals) ins argsV execBody  
 
 {- Preprocessing -}
 
