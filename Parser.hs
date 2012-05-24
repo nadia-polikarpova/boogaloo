@@ -243,7 +243,7 @@ whileStatement = do
       reserved "invariant"
       e <- e0
       semi
-      return (free, e)    
+      return (SpecClause free e)    
 
 statement :: Parser Statement
 statement = attachPosBefore (choice [
@@ -407,7 +407,7 @@ decl = attachPosBefore (choice [
   
 {- Contracts -}
 
-spec :: Parser Spec
+spec :: Parser Contract
 spec = do
   free <- hasKeyword "free"
   choice [
@@ -415,17 +415,17 @@ spec = do
       reserved "requires"
       e <- e0
       semi
-      return $ Requires e free,
+      return $ Requires free e,
     do
       reserved "modifies"
       ids <- commaSep identifier
       semi
-      return $ Modifies ids free,
+      return $ Modifies free ids,
     do
       reserved "ensures"
       e <- e0
       semi
-      return $ Ensures e free]
+      return $ Ensures free e]
 
 {- Misc -}
 

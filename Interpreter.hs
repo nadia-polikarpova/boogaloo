@@ -332,8 +332,18 @@ execProcedure name def args = let
   ins = pdefIns def
   outs = pdefOuts def
   locals = map noWhere (fst (pdefBody def))
+  blocks = snd (pdefBody def)
+  sig tc = TC.ctxProcedures tc ! name
+  checkPreconditions = do
+    s <- sig <$> gets envTypeContext
+    mapM_ (exec . gen . check) (psigRequires s)
+  checkPostonditions = do
+    s <- sig <$> gets envTypeContext
+    mapM_ (exec . gen . check) (psigEnsures s)
   execBody = do
-    execBlock (snd (pdefBody def)) startLabel
+    checkPreconditions
+    execBlock blocks startLabel
+    checkPostonditions
     mapM getV outs
   in do
     tc <- gets envTypeContext

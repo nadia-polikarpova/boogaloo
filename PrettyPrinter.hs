@@ -111,7 +111,7 @@ statementDoc (Pos _ s) = case s of
     wildcardDoc Wildcard = text "*"
     wildcardDoc (Expr e) = exprDoc e
     elseDoc b = text "else" <+> bracedBlockDoc b
-    invDoc (free, e) = option free (text "free") <+> text "invariant" <+> exprDoc e <> semi
+    invDoc (SpecClause free e) = option free (text "free") <+> text "invariant" <+> exprDoc e <> semi
 
 {- Blocks -}
 
@@ -196,15 +196,15 @@ procedureDoc name fv args rets specs mb =
   nestDef (vsep (map specDoc specs)) $+$
   optionMaybe mb bodyDoc
   where
-    specDoc (Requires e free) = option free (text "free") <+>
+    specDoc (Requires free e) = option free (text "free") <+>
       text "requires" <+>
       exprDoc e <>
       semi
-    specDoc (Ensures e free) = option free (text "free") <+>
+    specDoc (Ensures free e) = option free (text "free") <+>
       text "ensures" <+>
       exprDoc e <>
       semi
-    specDoc (Modifies ids free) = option free (text "free") <+>
+    specDoc (Modifies free ids) = option free (text "free") <+>
       text "modifies" <+>
       commaSep (map text ids) <>
       semi

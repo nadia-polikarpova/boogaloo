@@ -469,12 +469,12 @@ checkIf c cond thenBlock elseBlock = report $ do
     Nothing -> return ()
     Just b -> accum (checkBlock c b) ()
     
-checkWhile :: Context -> WildcardExpression -> [(Bool, Expression)] -> Block -> Checked ()
+checkWhile :: Context -> WildcardExpression -> [SpecClause] -> Block -> Checked ()
 checkWhile c cond invs body = report $ do
   case cond of  
     Wildcard -> return ()
     Expr e -> accum (compareType c "loop condition" BoolType e) ()
-  mapAccumA_ (compareType c "loop invariant" BoolType) (map snd invs)
+  mapAccumA_ (compareType c "loop invariant" BoolType) (map specExpr invs)
   accum (checkBlock c {ctxInLoop = True} body) ()
 
 checkGoto :: Context -> [Id] -> Checked ()  
@@ -600,7 +600,7 @@ checkFunctionSignature c name tv args ret
       argTypes = map (resolve c . snd) args
       retType = (resolve c . snd) ret
       
-checkProcSignature :: Context -> Id -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> [Spec] -> Checked Context
+checkProcSignature :: Context -> Id -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> [Contract] -> Checked Context
 checkProcSignature c name tv args rets specs
   | name `elem` funProcNames c = typeError (ctxPos c) ("Multiple declarations of function or procedure " ++ name)
   | otherwise = do
@@ -608,7 +608,7 @@ checkProcSignature c name tv args rets specs
     foldAccum checkPArg c' (args ++ rets)
     if not (null missingTV) 
       then typeError (ctxPos c) ("Type variable(s) must occur in procedure arguments: " ++ commaSep missingTV)
-      else return $ addPSig c name (PSig name tv argTypes retTypes (modifies specs))
+      else return $ addPSig c name (PSig name tv argTypes retTypes (modifies specs) (preconditions specs) (postconditions specs))
     where 
       checkPArg c arg = checkIdType ctxIns ctxIns setIns c (noWhere arg)
       missingTV = filter (not . freeInArgs) tv
@@ -662,14 +662,14 @@ checkFunction c tv args ret body = do
     addFArg c  _ = return c
     
 -- | Check "where" parts of procedure arguments and statements in its body
-checkProcedure :: Context -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> [Spec] -> (Maybe Body) -> Checked ()
+checkProcedure :: Context -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> [Contract] -> (Maybe Body) -> Checked ()
 checkProcedure c tv args rets specs mb = do 
   cArgs <- foldAccum (checkIdType localScope ctxIns setIns) c { ctxTypeVars = tv } (map noWhere args)
   mapAccum_ (checkWhere cArgs) args
-  mapAccum_ (compareType cArgs "precondition" BoolType) (preconditions specs)
+  mapAccum_ (compareType cArgs "precondition" BoolType . specExpr) (preconditions specs)
   cRets <- foldAccum (checkIdType localScope ctxLocals setLocals) cArgs (map noWhere rets)
   mapAccum_ (checkWhere cRets) rets
-  mapAccum_ (compareType cRets {ctxTwoState = True} "postcondition" BoolType) (postconditions specs)
+  mapAccum_ (compareType cRets {ctxTwoState = True} "postcondition" BoolType . specExpr) (postconditions specs)
   if not (null invalidModifies)
     then typeError (ctxPos c) ("Identifier in a modifies clause does not denote a global variable: " ++ commaSep invalidModifies)
     else case mb of
@@ -691,7 +691,7 @@ checkImplementation c name tv args rets bodies = case M.lookup name (ctxProcedur
     Nothing -> typeError (ctxPos c) ("Not in scope: procedure " ++ name)
     Just sig -> case boundUnifier [] (psigTypeVars sig) (psigArgTypes sig ++ psigRetTypes sig) tv (argTypes ++ retTypes) of
       Nothing -> typeError (ctxPos c) ("Could not match procedure signature " ++ show sig ++
-        " against implementation signature " ++ show (PSig name tv argTypes retTypes []) ++
+        " against implementation signature " ++ show (PSig name tv argTypes retTypes [] [] []) ++
         " in the implementation of " ++ name)
       Just _ -> do
         cArgs <- foldAccum (checkIdType localScope ctxIns setIns) c { ctxTypeVars = tv } args

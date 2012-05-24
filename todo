@@ -4,7 +4,6 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- Checking contracts
 	- Check axioms and where clauses when choosing a value
 	- Better error reporting (differentiate between different kinds of assertions, add locations, call stacks, use pretty print instead of message?)
 	- Better interface (show instance for Value, allow different entry points?)

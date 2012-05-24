@@ -94,7 +94,7 @@ transform m ([], Pos p stmt) = case stmt of
     t <- transBlock (M.insert innermost lDone m) body
     return $
       [justStatement $ Goto [lHead]] ++
-      attach lHead (map (justStatement . loopInv) invs ++ [justStatement $ Goto [lBody, lDone]]) ++ 
+      attach lHead (map (justStatement . check) invs ++ [justStatement $ Goto [lBody, lDone]]) ++ 
       attach lBody (t ++ [justStatement $ Goto [lHead]]) ++
       [justLabel lDone]
   While (Expr e) invs body -> do
@@ -105,12 +105,10 @@ transform m ([], Pos p stmt) = case stmt of
     t <- transBlock (M.insert innermost lDone m) body
     return $
       [justStatement $ Goto [lHead]] ++
-      attach lHead (map (justStatement . loopInv) invs ++ [justStatement $ Goto [lBody, lGDone]]) ++
+      attach lHead (map (justStatement . check) invs ++ [justStatement $ Goto [lBody, lGDone]]) ++
       [([lBody], gen $ Assume e)] ++ t ++ [justStatement $ Goto [lHead]] ++
       [([lGDone], gen $ Assume (gen $ UnaryExpression Not e))] ++ [justStatement $ Goto [lDone]] ++
       [justLabel lDone]    
   s -> return [justStatement stmt]  
   where
     transBlock m b = concat <$> mapM (transform m) (map contents b)
-    loopInv (False, e) = Assert e
-    loopInv (True, e) = Assume e

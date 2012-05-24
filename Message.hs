@@ -51,7 +51,7 @@ instance Show FDef where
   show (FDef args e) = "\\" ++ separated " " args ++ " -> " ++ show e
       
 instance Show PSig where
-  show (PSig name fv args rets mods) = typeArgs fv ++ " " ++ parens (commaSep (map show args)) ++ ": " ++ parens (commaSep (map show rets))
+  show sig = typeArgs (psigTypeVars sig) ++ " " ++ parens (commaSep (map show (psigArgTypes sig))) ++ ": " ++ parens (commaSep (map show (psigRetTypes sig)))
   
 instance Show PDef where
   show (PDef args rets _) = separated " " rets ++ "<- \\" ++ separated " " args ++ " -> ..."

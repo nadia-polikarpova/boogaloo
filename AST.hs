@@ -60,16 +60,16 @@ type Statement = Pos BareStatement
 
 data BareStatement = Assert Expression |
   Assume Expression |
-  Havoc [Id] |                                          -- Havoc var_names
-  Assign [(Id , [[Expression]])] [Expression] |         -- Assign var_map_selects rhss
-  Call [Id] Id [Expression] |                           -- Call call_lhss proc_name args
-  CallForall Id [WildcardExpression] |                  -- CallForall proc_name args
-  If WildcardExpression Block (Maybe Block) |           -- If wild_or_expr then_block else_block
-  While WildcardExpression [(Bool, Expression)] Block | -- While wild_or_expr free_loop_inv loop_body
-  Break (Maybe Id) |                                    -- Break label
+  Havoc [Id] |                                   -- Havoc var_names
+  Assign [(Id , [[Expression]])] [Expression] |  -- Assign var_map_selects rhss
+  Call [Id] Id [Expression] |                    -- Call call_lhss proc_name args
+  CallForall Id [WildcardExpression] |           -- CallForall proc_name args
+  If WildcardExpression Block (Maybe Block) |    -- If wild_or_expr then_block else_block
+  While WildcardExpression [SpecClause] Block |  -- While wild_or_expr free_loop_inv loop_body
+  Break (Maybe Id) |                             -- Break label
   Return |
-  Goto [Id] |                                           -- Goto labels
-  Skip                                                  -- only used at the end of a block
+  Goto [Id] |                                    -- Goto labels
+  Skip                                           -- only used at the end of a block
 
 -- | Statement labeled by multiple labels
 type LStatement = Pos BareLStatement
@@ -89,26 +89,37 @@ type BasicBody = ([IdTypeWhere], Map Id [Statement])
 
 {- Contracts -}
 
-data Spec = Requires Expression Bool |  -- Requires e free 
-  Modifies [Id] Bool |                  -- Modifies var_names free
-  Ensures Expression Bool               -- Ensures e free
+data SpecClause = SpecClause {
+    specFree :: Bool,
+    specExpr :: Expression
+  }
+
+-- | Statement that checks specification clause c at runtime
+check :: SpecClause -> BareStatement 
+check c = if specFree c 
+  then Assume (specExpr c) 
+  else Assert (specExpr c)  
+
+data Contract = Requires Bool Expression |  -- Requires e free 
+  Modifies Bool [Id] |                      -- Modifies var_names free
+  Ensures Bool Expression                   -- Ensures e free
   
-preconditions :: [Spec] -> [Expression]
+preconditions :: [Contract] -> [SpecClause]
 preconditions specs = catMaybes (map extractPre specs)
   where 
-    extractPre (Requires e _) = Just e
+    extractPre (Requires f e) = Just (SpecClause f e)
     extractPre _ = Nothing
 
-postconditions :: [Spec] -> [Expression]
+postconditions :: [Contract] -> [SpecClause]
 postconditions specs = catMaybes (map extractPost specs)
   where 
-    extractPost (Ensures e _) = Just e
+    extractPost (Ensures f e) = Just (SpecClause f e)
     extractPost _ = Nothing
     
-modifies :: [Spec] -> [Id]
+modifies :: [Contract] -> [Id]
 modifies specs = (nub . concat . catMaybes) (map extractMod specs)
   where
-    extractMod (Modifies ids _) = Just ids
+    extractMod (Modifies _ ids) = Just ids
     extractMod _ = Nothing
 
 {- Declarations -}
@@ -121,7 +132,7 @@ data BareDecl =
   FunctionDecl Id [Id] [FArg] FArg (Maybe Expression) |                    -- FunctionDecl name type_args formals ret body
   AxiomDecl Expression |
   VarDecl [IdTypeWhere] |
-  ProcedureDecl Id [Id] [IdTypeWhere] [IdTypeWhere] [Spec] (Maybe Body) |  -- ProcedureDecl name type_args formals rets contract body 
+  ProcedureDecl Id [Id] [IdTypeWhere] [IdTypeWhere] [Contract] (Maybe Body) |  -- ProcedureDecl name type_args formals rets contract body 
   ImplementationDecl Id [Id] [IdType] [IdType] [Body]                      -- ImplementationDecl name type_args formals rets body
   
 {- Functions and procedures -}
@@ -142,14 +153,17 @@ data FDef = FDef {
   
 -- | Procedure signature
 data PSig = PSig {
-    psigName :: Id,           -- Procedure name
-    psigTypeVars :: [Id],     -- Type variables
-    psigArgTypes :: [Type],   -- In-parameter types
-    psigRetTypes :: [Type],   -- Out-parameter types
-    psigModifies :: [Id]      -- Globals variable names in the modifies clause
+    psigName :: Id,               -- Procedure name
+    psigTypeVars :: [Id],         -- Type variables
+    psigArgTypes :: [Type],       -- In-parameter types
+    psigRetTypes :: [Type],       -- Out-parameter types
+    psigModifies :: [Id],         -- Globals variable names in the modifies clause
+    psigRequires :: [SpecClause], -- Preconditions
+    psigEnsures :: [SpecClause]   -- Postconditions
   }
   
--- | Procedure definition
+-- | Procedure definition;
+-- | a single procedure might have multiple definitions (one per body)
 data PDef = PDef { 
     pdefIns :: [Id],        -- In-parameter names (in the same order as psigArgsTypes in the corresponding signature)
     pdefOuts :: [Id],       -- Out-parameter names (in the same order as psigRetTypes in the corresponding signature) 
