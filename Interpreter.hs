@@ -38,7 +38,16 @@ data Value = IntValue Integer |   -- Integer value
   BoolValue Bool |                -- Boolean value
   MapValue (Map [Value] Value) |  -- Value of a map type
   CustomValue Integer             -- Value of a user-defined type (values with the same code are considered equal)
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord)
+  
+instance Show Value where
+  show (IntValue n) = show n
+  show (BoolValue False) = "false"
+  show (BoolValue True) = "true"
+  show (MapValue m) = brackets (commaSep (map showItem (M.toList m)))
+  show (CustomValue n) = "custom_" ++ show n  
+  
+showItem (keys, v) = commaSep (map show keys) ++ " -> " ++  show v  
   
 -- | Default value of a type (used to initialize variables)  
 defaultValue :: Type -> Value
