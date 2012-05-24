@@ -159,7 +159,7 @@ unOp Neg (IntValue n)   = IntValue (-n)
 unOp Not (BoolValue b)  = BoolValue (not b)
 
 -- | Semi-strict semantics of binary operators:
--- | binOpLazy op lhs: returns a value of "lhs `op`" if already defined, otherwise Nothing 
+-- | binOpLazy op lhs: returns the value of "lhs `op`" if already defined, otherwise Nothing 
 binOpLazy :: BinOp -> Value -> Maybe Value
 binOpLazy And     (BoolValue False) = Just $ BoolValue False
 binOpLazy Or      (BoolValue True)  = Just $ BoolValue True
@@ -192,76 +192,94 @@ binOp Lc      v1 v2                         = throwError (UnsupportedConstruct "
 -- | Evaluate an expression;
 -- | can have a side-effect of initializing variables that were not previously defined
 eval :: Expression -> Execution Value
-eval e = eval' (contents e) 
-
-eval' TT                          = return $ BoolValue True
-eval' FF                          = return $ BoolValue False
-eval' (Numeral n)                 = return $ IntValue n
-eval' (Var id)                    = getV id
-eval' (Application id args)       = do
-                                        functions <- gets envFunctions
-                                        tc <- gets envTypeContext
-                                        case M.lookup id functions of
-                                          Nothing -> return $ defaultValue (returnType tc)
-                                          Just (FDef formals body) -> do
-                                            argsV <- mapM eval args
-                                            executeLocally (TC.enterFunction id formals args) formals argsV (eval body)
+eval e = case contents e of
+  TT -> return $ BoolValue True
+  FF -> return $ BoolValue False
+  Numeral n -> return $ IntValue n
+  Var id -> getV id
+  Application id args -> evalApplication id args
+  MapSelection m args -> evalMapSelection m args
+  MapUpdate m args new -> evalMapUpdate m args new
+  Old e -> evalOld e
+  UnaryExpression op e -> unOp op <$> eval e
+  BinaryExpression op e1 e2 -> evalBinary op e1 e2
+  Quantified op args vars e -> throwError (UnsupportedConstruct "quantified expressions")
+  
+evalApplication id args = do
+  functions <- gets envFunctions
+  tc <- gets envTypeContext
+  case M.lookup id functions of
+    Nothing -> return $ defaultValue (returnType tc)
+    Just (FDef formals body) -> do
+      argsV <- mapM eval args
+      executeLocally (TC.enterFunction id formals args) formals argsV (eval body)
   where
     returnType tc = fromRight $ TC.checkExpression tc (gen $ Application id args)
-eval' (MapSelection m args)       = do 
-                                        tc <- gets envTypeContext
-                                        mV <- eval m
-                                        argsV <- mapM eval args
-                                        case mV of 
-                                          MapValue map -> case M.lookup argsV map of
-                                            Nothing -> return $ defaultValue (rangeType tc)
-                                            Just v -> return v
+    
+evalMapSelection m args = do 
+  tc <- gets envTypeContext
+  mV <- eval m
+  argsV <- mapM eval args
+  case mV of 
+    MapValue map -> case M.lookup argsV map of
+      Nothing -> return $ defaultValue (rangeType tc)
+      Just v -> return v
   where
     rangeType tc = fromRight $ TC.checkExpression tc (gen $ MapSelection m args)
-eval' (MapUpdate m args new)      = do
-                                        mV <- eval m
-                                        argsV <- mapM eval args
-                                        newV <- eval new
-                                        case mV of 
-                                          MapValue map -> return $ MapValue (M.insert argsV newV map)
-eval' (Old e)                     = do
-                                        env <- get
-                                        put env { envGlobals = envOld env }
-                                        res <- eval e
-                                        put env
-                                        return res
-eval' (UnaryExpression op e)      = unOp op <$> eval e
-eval' (BinaryExpression op e1 e2) = do
-                                        left <- eval e1
-                                        case binOpLazy op left of
-                                          Just result -> return result
-                                          Nothing -> do
-                                            right <- eval e2
-                                            binOp op left right
-eval' (Quantified op args vars e) = throwError (UnsupportedConstruct "quantified expressions")
+    
+evalMapUpdate m args new = do
+  mV <- eval m
+  argsV <- mapM eval args
+  newV <- eval new
+  case mV of 
+    MapValue map -> return $ MapValue (M.insert argsV newV map)
+    
+evalOld e = do
+  env <- get
+  put env { envGlobals = envOld env }
+  res <- eval e
+  put env
+  return res
+  
+evalBinary op e1 e2 = do
+  left <- eval e1
+  case binOpLazy op left of
+    Just result -> return result
+    Nothing -> do
+      right <- eval e2
+      binOp op left right
   
 {- Statements -}
 
 -- | Execute a simple statement
 exec :: Statement -> Execution ()
-exec stmt = exec' (contents stmt)
+exec stmt = case contents stmt of
+  Assert e -> execAssert e
+  Assume e -> execAssume e
+  Havoc ids -> execHavoc ids
+  Assign lhss rhss -> execAssign lhss rhss
+  Call lhss name args -> execCall lhss name args
+  CallForall name args -> return () -- ToDo: assume pre ==> post?
 
-exec' (Assert e) = do
+execAssert e = do
   b <- eval e
   case b of 
     BoolValue True -> return ()
     BoolValue False -> throwError (AssertViolation (show e))
-exec' (Assume e) = do
+    
+execAssume e = do
   b <- eval e
   case b of 
     BoolValue True -> return ()
     BoolValue False -> throwError (AssumeViolation (show e))
-exec' (Havoc ids) = do
+    
+execHavoc ids = do
   tc <- gets envTypeContext
   setAll ids (map defaultValue (types tc))
   where
     types tc = map (fromRight . TC.checkExpression tc . gen . Var) ids
-exec' (Assign lhss rhss) = do
+    
+execAssign lhss rhss = do
   rVals <- mapM eval rhss'
   setAll lhss' rVals
   where
@@ -271,7 +289,8 @@ exec' (Assign lhss rhss) = do
     normalize (id, argss) rhs = (id, mapUpdate (gen $ Var id) argss rhs)
     mapUpdate e [args] rhs = gen $ MapUpdate e args rhs
     mapUpdate e (args1 : argss) rhs = gen $ MapUpdate e args1 (mapUpdate (gen $ MapSelection e args1) argss rhs)
-exec' (Call lhss name args) = do
+    
+execCall lhss name args = do
   tc <- gets envTypeContext
   procedures <- gets envProcedures
   case M.lookup name procedures of
@@ -281,8 +300,7 @@ exec' (Call lhss name args) = do
       setAll lhss retsV
   where
     returnTypes tc = map (fromRight . TC.checkExpression tc . gen . Var) lhss
-exec' (CallForall name args) = return () -- ToDo: assume pre ==> post?
-
+    
 -- | Execute program consisting of blocks starting from the block labeled label
 execBlock :: Map Id [Statement] -> Id -> Execution ()
 execBlock blocks label = let
