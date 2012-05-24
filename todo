@@ -4,7 +4,6 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- Save old variables when entering the procedure
 	- Checking contracts
 	- Check axioms and where clauses when choosing a value
 	- Better error reporting (add locations, call stacks, use pretty print instead of message?)

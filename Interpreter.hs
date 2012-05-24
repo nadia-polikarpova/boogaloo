@@ -122,17 +122,17 @@ setV id val = do
 setAll :: [Id] -> [Value] -> Execution ()
 setAll ids vals = zipWithM_ setV ids vals  
 
--- | Enter local scope (apply localTC to the type context and assign actuals to formals),
+-- | Enter local scope (apply localTC to the type context, assign actuals to formals, save globals in the old state),
 -- | execute computation,
--- | then restore type context and local variables to the old values
+-- | then restore type context, local variables and the old state to their initial values
 executeLocally :: (TypeContext -> TypeContext) -> [Id] -> [Value] -> Execution a -> Execution a
 executeLocally localTC formals actuals computation = do
   env <- get
-  put env { envTypeContext = localTC (envTypeContext env) }
+  put env { envTypeContext = localTC (envTypeContext env), envOld = envGlobals env }
   setAll formals actuals
   res <- computation
   env' <- get
-  put env' { envTypeContext = envTypeContext env, envLocals = envLocals env }
+  put env' { envTypeContext = envTypeContext env, envLocals = envLocals env, envOld = envOld env }
   return res
   
 {- Errors -}
