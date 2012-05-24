@@ -5,7 +5,6 @@
 
 - Interpreter
 	- Save old variables when entering the procedure
-	- Normalize assignments during basic block transformation?
 	- Checking contracts
 	- Check axioms and where clauses when choosing a value
 	- Better error reporting (add locations, call stacks, use pretty print instead of message?)

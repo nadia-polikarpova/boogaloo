@@ -20,11 +20,12 @@ import Control.Monad.State
 executeProgram :: Program -> TypeContext -> Id -> Either ExecutionError (Map Id Value)
 executeProgram p tc main = envGlobals <$> finalEnvironment
   where
-    initEnvironment = collectDefinitions emptyEnv { envTypeContext = tc } p
+    initEnvironment = emptyEnv { envTypeContext = tc }
     finalEnvironment = case runState (runErrorT programState) initEnvironment of
       (Left err, _) -> Left err
       (_, env)      -> Right env            
     programState = do
+      collectDefinitions p
       procedures <- gets envProcedures
       case M.lookup main procedures of
         Nothing -> throwError (NoEntryPoint main)
@@ -70,11 +71,15 @@ emptyEnv = Environment
     envTypeContext = TC.emptyContext
   }
 
--- | set the value of global variable id to val
 setGlobal id val env = env { envGlobals = M.insert id val (envGlobals env) }    
-  
--- | Set the value of local variable id to val
 setLocal id val env = env { envLocals = M.insert id val (envLocals env) }
+addConstant id def env = env { envConstants = M.insert id def (envConstants env) }
+addFunction id def env = env { envFunctions = M.insert id def (envFunctions env) }
+addProcedure id def env = env { envProcedures = M.insert id (def : oldDefs) (envProcedures env) } 
+  where
+    oldDefs = case M.lookup id (envProcedures env) of
+      Nothing -> []
+      Just defs -> defs
 
 -- | Computations with Environment as state, which can result in either a or ExecutionError  
 type Execution a = ErrorT ExecutionError (State Environment) a  
@@ -337,40 +342,31 @@ execProcedure name def args = let
 
 {- Preprocessing -}
 
--- | Collect constant, function and procedure definitions, as well as global variable declarations from p
-collectDefinitions :: Environment -> Program -> Environment
-collectDefinitions env p = foldl processDecl env (map contents p)
+-- | Collect constant, function and procedure definitions from p
+collectDefinitions :: Program -> Execution ()
+collectDefinitions p = mapM_ (processDecl . contents) p
   where
-    processDecl env (FunctionDecl name _ args _ (Just body)) = processFunctionBody env name args body
-    processDecl env (ProcedureDecl name _ args rets _ (Just body)) = processProcedureBodies env name (map noWhere args) (map noWhere rets) [body]
-    processDecl env (ImplementationDecl name _ args rets bodies) = processProcedureBodies env name args rets bodies
-    processDecl env (AxiomDecl expr) = processAxiom env expr
-    processDecl env _ = env
+    processDecl (FunctionDecl name _ args _ (Just body)) = processFunctionBody name args body
+    processDecl (ProcedureDecl name _ args rets _ (Just body)) = processProcedureBody name (map noWhere args) (map noWhere rets) body
+    processDecl (ImplementationDecl name _ args rets bodies) = mapM_ (processProcedureBody name args rets) bodies
+    processDecl (AxiomDecl expr) = processAxiom expr
+    processDecl _ = return ()
       
-processFunctionBody env name args body = env 
-  { 
-    envFunctions = M.insert name (FDef (map (formalName . fst) args) body) (envFunctions env) 
-  }     
+processFunctionBody name args body = modify $ addFunction name (FDef (map (formalName . fst) args) body) 
   where
     formalName Nothing = dummyFArg 
     formalName (Just n) = n
 
-processProcedureBodies env name args rets bodies = env
-  {
-    envProcedures = M.insert name (oldDefs ++ map (PDef argNames retNames . flatten) bodies) (envProcedures env)
-  }
+processProcedureBody name args rets body = modify $ addProcedure name (PDef argNames retNames (flatten body)) 
   where
     argNames = map fst args
     retNames = map fst rets
     flatten (locals, statements) = (concat locals, M.fromList (toBasicBlocks statements))
-    oldDefs = case M.lookup name (envProcedures env) of
-      Nothing -> []
-      Just defs -> defs
       
-processAxiom env expr = case contents expr of
+processAxiom expr = case contents expr of
   -- c == expr: remember expr as a definition for c
-  BinaryExpression Eq (Pos _ (Var c)) rhs -> env { envConstants = M.insert c rhs (envConstants env) }
+  BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstant c rhs
   -- ToDo: add axioms that (partially) define functions
-  _ -> env
+  _ -> return ()
     
     
