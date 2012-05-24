@@ -87,30 +87,30 @@ transform m ([], Pos p stmt) = case stmt of
         [([lThen], gen $ Assume e)] ++ t1 ++ [justStatement $ Goto [lDone]] ++
         [([lElse], gen $ Assume (gen $ UnaryExpression Not e))] ++ t2 ++ [justStatement $ Goto [lDone]] ++
         [justLabel lDone]      
-  While Wildcard _ body -> do
+  While Wildcard invs body -> do
     lHead <- state $ genFreshLabel "head"
-    -- ToDo: loop invariants
     lBody <- state $ genFreshLabel "body"
     lDone <- state $ genFreshLabel "done"
     t <- transBlock (M.insert innermost lDone m) body
     return $
       [justStatement $ Goto [lHead]] ++
-      [([lHead], gen $ Goto [lBody, lDone])] ++
+      attach lHead (map (justStatement . loopInv) invs ++ [justStatement $ Goto [lBody, lDone]]) ++ 
       attach lBody (t ++ [justStatement $ Goto [lHead]]) ++
       [justLabel lDone]
-  While (Expr e) _ body -> do
+  While (Expr e) invs body -> do
     lHead <- state $ genFreshLabel "head"
-    -- ToDo: loop invariants
     lBody <- state $ genFreshLabel "body"
     lGDone <- state $ genFreshLabel "guarded_done"
     lDone <- state $ genFreshLabel "done"
     t <- transBlock (M.insert innermost lDone m) body
     return $
       [justStatement $ Goto [lHead]] ++
-      [([lHead], gen $ Goto [lBody, lGDone])] ++
+      attach lHead (map (justStatement . loopInv) invs ++ [justStatement $ Goto [lBody, lGDone]]) ++
       [([lBody], gen $ Assume e)] ++ t ++ [justStatement $ Goto [lHead]] ++
       [([lGDone], gen $ Assume (gen $ UnaryExpression Not e))] ++ [justStatement $ Goto [lDone]] ++
       [justLabel lDone]    
   s -> return [justStatement stmt]  
   where
     transBlock m b = concat <$> mapM (transform m) (map contents b)
+    loopInv (False, e) = Assert e
+    loopInv (True, e) = Assume e
