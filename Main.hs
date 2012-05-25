@@ -24,7 +24,7 @@ executeFromFile file = do
   case (result) of
     Left err -> print err
     Right ast -> case checkProgram ast of
-      Left err -> putStr err
+      Left errs -> print (typeErrorsDoc errs)
       Right context -> case executeProgram ast context entryPoint of
         Left err -> print err
         Right globals -> print (envDoc globals)

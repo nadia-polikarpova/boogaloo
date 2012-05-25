@@ -10,6 +10,7 @@ import Data.Maybe
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Error
+import Control.Monad.Trans.Error hiding (throwError)
 import Control.Applicative
 import Text.PrettyPrint
 
@@ -27,14 +28,26 @@ checkProgram p = do
 
 {- Errors -}
 
--- | Result of type checking: either 'a' or an error with strings message
-type Checked a = Either String a
+-- | Type error with a source position and a pretty-printed message
+data TypeError = TypeError SourcePos Doc
 
--- | Throw a type error with a source position and a message
-typeError pos msgDoc = throwError ("Type error in " ++ show pos ++ ":\n" ++ show msgDoc ++ "\n")
+instance ErrorList TypeError where
+  listMsg s = [TypeError noPos (text s)]
+
+-- | Pretty-printed type error  
+typeErrorDoc (TypeError pos msgDoc) = text "Type error in" <+> text (show pos) $+$ msgDoc  
+  
+-- | Pretty-printed list of type errors
+typeErrorsDoc errs = (vsep . punctuate newline . map typeErrorDoc) errs
+  
+-- | Result of type checking: either 'a' or a type error
+type Checked a = Either [TypeError] a
+
+-- | Throw a single type error
+typeError pos msgDoc = throwError [TypeError pos msgDoc]
 
 -- | Error accumulator: used to store intermediate type checking results, when errors should be accumulated rather than reported immediately
-data ErrorAccum a = ErrorAccum [String] a
+data ErrorAccum a = ErrorAccum [TypeError] a
 
 instance Monad ErrorAccum where
   return x                = ErrorAccum [] x
@@ -44,13 +57,13 @@ instance Monad ErrorAccum where
 -- | Transform a type checking result and default value into an error accumlator
 accum :: Checked a -> a -> ErrorAccum a
 accum cx y = case cx of
-  Left e -> ErrorAccum [e] y
+  Left e -> ErrorAccum e y
   Right x -> ErrorAccum [] x    
   
 -- | Trnasform an error accumulator back into a rgeular type checking result  
 report :: ErrorAccum a -> Checked a
 report (ErrorAccum [] x) = Right x
-report (ErrorAccum es _) = Left (concat (intersperse "\n" es))  
+report (ErrorAccum es _) = Left es  
 
 -- | Apply type checking f to all nodes in the initial context c,
 -- | accumulating errors from all nodes and reporting them at the end;
