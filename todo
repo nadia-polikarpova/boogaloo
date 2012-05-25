@@ -5,8 +5,6 @@
 
 - Interpreter
 	- Check axioms and where clauses when choosing a value
-	- Better error reporting (call stacks)
-	- Better interface (allow different entry points?)
 	- Quantified expressions
 	- Create package and some doc
 -> Release 0.1	
@@ -15,6 +13,11 @@
 	- Extends ordering
 	- Backtracking (logicT monad?)
 	- Constraint solving
+	- User interface
+		- allow choosing entry point and passing command line args
+		- settings for disabling different checking of different specs
+		- output local state with runtime error?
+	- Interactive sessions
 	
 Notes:
 - Where clauses of in-parameters: according to the manual can mention out-parameters, but actually can't

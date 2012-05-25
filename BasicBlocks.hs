@@ -109,6 +109,6 @@ transform m ([], Pos p stmt) = case stmt of
       [([lBody], gen $ Assume Inline e)] ++ t ++ [justStatement $ Goto [lHead]] ++
       [([lGDone], gen $ Assume Inline (gen $ UnaryExpression Not e))] ++ [justStatement $ Goto [lDone]] ++
       [justLabel lDone]    
-  s -> return [justStatement stmt]  
+  _ -> return [([], Pos p stmt)]  
   where
     transBlock m b = concat <$> mapM (transform m) (map contents b)

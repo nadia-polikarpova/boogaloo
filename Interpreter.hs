@@ -29,7 +29,7 @@ executeProgram p tc main = envGlobals <$> finalEnvironment
       collectDefinitions p
       procedures <- gets envProcedures
       case M.lookup main procedures of
-        Nothing -> throwError (NoEntryPoint main)
+        Nothing -> throwRuntimeError (NoEntryPoint main)
         Just (def : defs) -> do
           execProcedure main def [] >> return ()
       
@@ -48,6 +48,7 @@ defaultValue IntType          = IntValue 0
 defaultValue (MapType _ _ _)  = MapValue M.empty
 defaultValue (Instance _ _)   = CustomValue 0  
 
+-- | Pretty-printed value
 valueDoc :: Value -> Doc
 valueDoc (IntValue n) = integer n
 valueDoc (BoolValue False) = text "false"
@@ -89,7 +90,8 @@ addProcedure id def env = env { envProcedures = M.insert id (def : oldDefs) (env
     oldDefs = case M.lookup id (envProcedures env) of
       Nothing -> []
       Just defs -> defs
-      
+
+-- | Pretty-printed mapping of variables to values
 envDoc :: Map Id Value -> Doc
 envDoc env = vsep $ map varDoc (M.toList env)
   where varDoc (id, val) = text id <+> text "=" <+> valueDoc val      
@@ -150,36 +152,60 @@ executeLocally localTC formals actuals computation = do
   
 {- Errors -}
 
-data RuntimeError = AssertViolation SpecType Expression | 
+data RuntimeErrorInfo = AssertViolation SpecType Expression | 
   AssumeViolation SpecType Expression |
   DivisionByZero SourcePos |
   UnsupportedConstruct SourcePos String |
   NoEntryPoint String |
   OtherError String
 
-instance Error RuntimeError where
-  noMsg    = OtherError "Unknown error"
-  strMsg s = OtherError s
+-- | Information about a procedure or function call  
+data StackFrame = StackFrame {
+  callPos :: SourcePos, -- Source code position of the call
+  callName :: Id        -- Name of procedure or function
+}
+
+type StackTrace = [StackFrame]
+
+data RuntimeError = RuntimeError {
+  rteInfo :: RuntimeErrorInfo,
+  rteTrace :: StackTrace
+}
+
+-- | Throw a runtime error
+throwRuntimeError info = throwError (RuntimeError info [])
+
+-- | Push frame on the stack trace of a runtime error
+addStackFrame frame (RuntimeError info trace) = throwError (RuntimeError info (frame : trace))
+
+-- | Is err an assumptionviolation?
+isAssumeViolation :: RuntimeError -> Bool
+isAssumeViolation err = case rteInfo err of
+  AssumeViolation _ _ -> True
+  _ -> False
   
-runtimeErrorDoc err = case err of  
-  AssertViolation specType e -> errorPrefix (position e) $+$ text (assertViolationText specType) <+> text "violation:" <+> exprDoc e
-  AssumeViolation specType e -> errorPrefix (position e) $+$ text (assumeViolationText specType) <+> text "violation:" <+> exprDoc e
-  DivisionByZero pos -> errorPrefix pos $+$ text "Division by zero"
-  UnsupportedConstruct pos s -> errorPrefix pos $+$ text "Execution of" <+> text s <+> text "is not supported yet"
-  NoEntryPoint name -> text "Cannot find program entry point:" <+> text name
-  OtherError s -> text "Unknown error type:" <+> text s
+instance Error RuntimeError where
+  noMsg    = RuntimeError (OtherError "Unknown error") []
+  strMsg s = RuntimeError (OtherError s) []
+  
+runtimeErrorDoc err = errorInfoDoc (rteInfo err) $+$ vsep (map stackFrameDoc (reverse (rteTrace err)))
   where
-    errorPrefix pos = text "Runtime error in" <+> text (sourceName pos) <+> text "line " <+> int (sourceLine pos)
-
-    assertViolationText Inline = "Assertion"  
-    assertViolationText Precondition = "Precondition"  
-    assertViolationText Postcondition = "Postcondition"
-    assertViolationText LoopInvariant = "Loop invariant"  
-
-    assumeViolationText Inline = "Assumption"  
-    assumeViolationText Precondition = "Free precondition"  
-    assumeViolationText Postcondition = "Free postcondition"
-    assumeViolationText LoopInvariant = "Free loop invariant"
+  errorInfoDoc (AssertViolation specType e) = text (assertClauseName specType) <+> posDoc (position e) <+> doubleQuotes (exprDoc e) <+> text "violated" 
+  errorInfoDoc (AssumeViolation specType e) = text (assumeClauseName specType) <+> posDoc (position e) <+> doubleQuotes (exprDoc e) <+> text "violated"
+  errorInfoDoc (DivisionByZero pos) = text "Division by zero" <+> posDoc pos
+  errorInfoDoc (UnsupportedConstruct pos s) = text "Unsupported construct" <+> text s <+> posDoc pos
+  errorInfoDoc (NoEntryPoint name) = text "Cannot find program entry point:" <+> text name
+  errorInfoDoc (OtherError s) = text "Unknown error type:" <+> text s
+  assertClauseName Inline = "Assertion"  
+  assertClauseName Precondition = "Precondition"  
+  assertClauseName Postcondition = "Postcondition"
+  assertClauseName LoopInvariant = "Loop invariant"  
+  assumeClauseName Inline = "Assumption"  
+  assumeClauseName Precondition = "Free precondition"  
+  assumeClauseName Postcondition = "Free postcondition"
+  assumeClauseName LoopInvariant = "Free loop invariant"
+  stackFrameDoc f = text "in call to" <+> text (callName f) <+> posDoc (callPos f)
+  posDoc pos = text "at" <+> text (sourceName pos) <+> text "line" <+> int (sourceLine pos)
 
 instance Show RuntimeError where
   show err = show (runtimeErrorDoc err)
@@ -205,10 +231,10 @@ binOp pos Plus    (IntValue n1) (IntValue n2)   = return $ IntValue (n1 + n2)
 binOp pos Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
 binOp pos Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
 binOp pos Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then throwError (DivisionByZero pos)
+                                                then throwRuntimeError (DivisionByZero pos)
                                                 else return $ IntValue (n1 `div` n2)
 binOp pos Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then throwError (DivisionByZero pos)
+                                                then throwRuntimeError (DivisionByZero pos)
                                                 else return (IntValue (n1 `mod` n2))
 binOp pos Leq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 <= n2)
 binOp pos Ls      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 < n2)
@@ -220,7 +246,7 @@ binOp pos Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
 binOp pos Eq      v1 v2                         = return $ BoolValue (v1 == v2)
 binOp pos Neq     v1 v2                         = return $ BoolValue (v1 /= v2)
-binOp pos Lc      v1 v2                         = throwError (UnsupportedConstruct pos "orders")
+binOp pos Lc      v1 v2                         = throwRuntimeError (UnsupportedConstruct pos "orders")
 
 -- | Evaluate an expression;
 -- | can have a side-effect of initializing variables that were not previously defined
@@ -230,24 +256,26 @@ eval e = case contents e of
   FF -> return $ BoolValue False
   Numeral n -> return $ IntValue n
   Var id -> getV id
-  Application id args -> evalApplication id args
+  Application id args -> evalApplication id args (position e)
   MapSelection m args -> evalMapSelection m args
   MapUpdate m args new -> evalMapUpdate m args new
   Old e -> evalOld e
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
-  Quantified op args vars e -> throwError (UnsupportedConstruct (position e) "quantified expressions")
+  Quantified op args vars e -> throwRuntimeError (UnsupportedConstruct (position e) "quantified expressions")
   
-evalApplication id args = do
+evalApplication name args pos = do
   functions <- gets envFunctions
   tc <- gets envTypeContext
-  case M.lookup id functions of
+  case M.lookup name functions of
     Nothing -> return $ defaultValue (returnType tc)
     Just (FDef formals body) -> do
       argsV <- mapM eval args
-      executeLocally (TC.enterFunction id formals args) formals argsV (eval body)
+      catchError (evalBody formals argsV body) (addStackFrame frame)
   where
-    returnType tc = fromRight $ TC.checkExpression tc (gen $ Application id args)
+    evalBody formals actuals body = executeLocally (TC.enterFunction name formals args) formals actuals (eval body)
+    returnType tc = fromRight $ TC.checkExpression tc (gen $ Application name args)
+    frame = StackFrame pos name
     
 evalMapSelection m args = do 
   tc <- gets envTypeContext
@@ -291,20 +319,20 @@ exec stmt = case contents stmt of
   Assume specType e -> execAssume specType e
   Havoc ids -> execHavoc ids
   Assign lhss rhss -> execAssign lhss rhss
-  Call lhss name args -> execCall lhss name args
+  Call lhss name args -> execCall lhss name args (position stmt)
   CallForall name args -> return () -- ToDo: assume pre ==> post?
 
 execAssert specType e = do
   b <- eval e
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwError (AssertViolation specType e)
+    BoolValue False -> throwRuntimeError (AssertViolation specType e)
     
 execAssume specType e = do
   b <- eval e
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwError (AssumeViolation specType e)
+    BoolValue False -> throwRuntimeError (AssumeViolation specType e)
     
 execHavoc ids = do
   tc <- gets envTypeContext
@@ -323,16 +351,17 @@ execAssign lhss rhss = do
     mapUpdate e [args] rhs = gen $ MapUpdate e args rhs
     mapUpdate e (args1 : argss) rhs = gen $ MapUpdate e args1 (mapUpdate (gen $ MapSelection e args1) argss rhs)
     
-execCall lhss name args = do
+execCall lhss name args pos = do
   tc <- gets envTypeContext
   procedures <- gets envProcedures
   case M.lookup name procedures of
     Nothing -> setAll lhss (map defaultValue (returnTypes tc))
     Just (def : defs) -> do
-      retsV <- execProcedure name def args
+      retsV <- catchError (execProcedure name def args) (addStackFrame frame)
       setAll lhss retsV
   where
     returnTypes tc = map (fromRight . TC.checkExpression tc . gen . Var) lhss
+    frame = StackFrame pos name
     
 -- | Execute program consisting of blocks starting from the block labeled label
 execBlock :: Map Id [Statement] -> Id -> Execution ()
@@ -351,8 +380,9 @@ execBlock blocks label = let
 tryOneOf :: Map Id [Statement] -> [Id] -> Execution ()        
 tryOneOf blocks (l : lbs) = catchError (execBlock blocks l) retry
   where
-    retry (AssumeViolation _ _) | not (null lbs) = tryOneOf blocks lbs
-    retry e = throwError e
+    retry e 
+      | isAssumeViolation e && not (null lbs) = tryOneOf blocks lbs
+      | otherwise = throwError e
   
 -- | Execute definition def of procedure name with actual arguments actuals 
 execProcedure :: Id -> PDef -> [Expression] -> Execution [Value]
