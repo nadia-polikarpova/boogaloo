@@ -4,7 +4,7 @@ module Parser where
 import AST
 import Tokens
 import Position
-import Message hiding (separated, commaSep, parens, brackets, angles, typeArgs)
+import PrettyPrinter hiding (option, optionMaybe, commaSep, angles)
 import Data.List
 import Text.ParserCombinators.Parsec hiding (token)
 import qualified Text.ParserCombinators.Parsec.Token as P

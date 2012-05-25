@@ -2,6 +2,7 @@ module Main where
 
 import Text.ParserCombinators.Parsec
 import AST
+import Value
 import Position
 import Parser
 import TypeChecker
@@ -26,7 +27,7 @@ executeFromFile file = do
       Left err -> putStr err
       Right context -> case executeProgram ast context entryPoint of
         Left err -> print err
-        Right env -> print env
+        Right globals -> print (envDoc globals)
 
 main = executeFromFile "test.bpl" 
       

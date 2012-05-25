@@ -2,9 +2,12 @@
 module PrettyPrinter where
 
 import AST
-import qualified Message as Msg
+import Value
 import Position
+import Tokens
 import Data.Maybe
+import Data.Map (Map, (!))
+import qualified Data.Map as M
 import Text.PrettyPrint
   
 {- Interface -}
@@ -21,6 +24,13 @@ renderWithTabs = fullRender (mode style) (lineLength style) (ribbonsPerLine styl
     spacesToTabs (Str s1) s2 = if s1 == replicate (length s1) ' ' && length s1 > 1 
       then replicate (length s1 `div` defaultIndent) '\t' ++ s2 
       else s1 ++ s2
+      
+{- Tokens -}
+
+unOpDoc op = text (token op unOpTokens)
+binOpDoc op = text (token op binOpTokens)
+qOpDoc Forall = text "forall"
+qOpDoc Exists = text "exists"
 
 {- Types -}
 
@@ -70,9 +80,9 @@ exprDocAt n (Pos _ e) = condParens (n' <= n) (
     MapSelection m args -> exprDocAt n' m <> brackets (commaSep (map exprDoc args))
     MapUpdate m args val -> exprDocAt n' m <> brackets (commaSep (map exprDoc args) <+> text ":=" <+> exprDoc val)
     Old e -> text "old" <+> parens (exprDoc e)
-    UnaryExpression unOp e -> text (show unOp) <> exprDocAt n' e
-    BinaryExpression binOp e1 e2 -> exprDocAt n' e1 <+> text (show binOp) <+> exprDocAt n' e2
-    Quantified qOp fv vars e -> parens (text (show qOp) <+> typeArgsDoc fv <+> commaSep (map idTypeDoc vars) <+> text "::" <+> exprDoc e)
+    UnaryExpression unOp e -> unOpDoc unOp <> exprDocAt n' e
+    BinaryExpression binOp e1 e2 -> exprDocAt n' e1 <+> binOpDoc binOp <+> exprDocAt n' e2
+    Quantified qOp fv vars e -> parens (qOpDoc qOp <+> typeArgsDoc fv <+> commaSep (map idTypeDoc vars) <+> text "::" <+> exprDoc e)
   )
   where
     n' = power e
@@ -217,6 +227,20 @@ implementationDoc name fv args rets bodies =
   text "returns" <+>
   parens (commaSep (map idTypeDoc rets)) $+$
   vsep (map bodyDoc bodies)
+  
+{- Runtime -}
+
+valueDoc :: Value -> Doc
+valueDoc (IntValue n) = integer n
+valueDoc (BoolValue False) = text "false"
+valueDoc (BoolValue True) = text "true"
+valueDoc (MapValue m) = brackets (commaSep (map itemDoc (M.toList m)))
+  where itemDoc (keys, v) = commaSep (map valueDoc keys) <+> text "->" <+>  valueDoc v
+valueDoc (CustomValue n) = text "custom_" <> integer n
+
+envDoc :: Map Id Value -> Doc
+envDoc env = vsep $ map varDoc (M.toList env)
+  where varDoc (id, val) = text id <+> text "=" <+> valueDoc val
   
 {- Misc -}
   

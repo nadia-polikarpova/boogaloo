@@ -2,6 +2,7 @@
 module Tokens where
 
 import AST
+import Data.Maybe
 
 keywords :: [String]
 keywords = ["assert", "assume", "axiom", "bool", "break", "call", "complete", -- ToDO: bit vector keywords omitted
@@ -10,10 +11,7 @@ keywords = ["assert", "assume", "axiom", "bool", "break", "call", "complete", --
     "procedure", "requires", "return", "returns", "true", "type", "unique", "var",
     "where", "while"]
 
-token :: (Eq a, Show a) => a -> [(a, String)] -> String
-token node table = case lookup node table of
-  Just s -> s
-  Nothing -> show node    
+token node table = fromJust (lookup node table)
     
 unOpTokens :: [(UnOp, String)]
 unOpTokens = [(Neg, "-"),

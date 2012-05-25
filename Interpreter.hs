@@ -2,8 +2,9 @@
 module Interpreter where
 
 import AST
+import Value
 import Position
-import Message
+import PrettyPrinter (exprDoc)
 import qualified TypeChecker as TC
 import BasicBlocks
 import Data.Map (Map, (!))
@@ -33,28 +34,6 @@ executeProgram p tc main = envGlobals <$> finalEnvironment
           execProcedure main def [] >> return ()
       
 {- State -}
-
-data Value = IntValue Integer |   -- Integer value
-  BoolValue Bool |                -- Boolean value
-  MapValue (Map [Value] Value) |  -- Value of a map type
-  CustomValue Integer             -- Value of a user-defined type (values with the same code are considered equal)
-  deriving (Eq, Ord)
-  
-instance Show Value where
-  show (IntValue n) = show n
-  show (BoolValue False) = "false"
-  show (BoolValue True) = "true"
-  show (MapValue m) = brackets (commaSep (map showItem (M.toList m)))
-  show (CustomValue n) = "custom_" ++ show n  
-  
-showItem (keys, v) = commaSep (map show keys) ++ " -> " ++  show v  
-  
--- | Default value of a type (used to initialize variables)  
-defaultValue :: Type -> Value
-defaultValue BoolType         = BoolValue False  
-defaultValue IntType          = IntValue 0
-defaultValue (MapType _ _ _)  = MapValue M.empty
-defaultValue (Instance _ _)   = CustomValue 0
   
 type TypeContext = TC.Context
 
@@ -67,7 +46,7 @@ data Environment = Environment
     envFunctions :: Map Id FDef,          -- Function names to definitions
     envProcedures :: Map Id [PDef],       -- Procedure names to definitions
     envTypeContext :: TypeContext
-  } deriving Show
+  }
    
 emptyEnv = Environment
   {
@@ -146,22 +125,24 @@ executeLocally localTC formals actuals computation = do
   
 {- Errors -}
 
-data ExecutionError = AssertViolation String | 
-  AssumeViolation String |
-  DivisionByZero |
-  UnsupportedConstruct String |
+data ExecutionError = AssertViolation Expression | 
+  AssumeViolation Expression |
+  DivisionByZero SourcePos |
+  UnsupportedConstruct SourcePos String |
   NoEntryPoint String |
   OtherError String
 
 instance Error ExecutionError where
   noMsg    = OtherError "Unknown error"
   strMsg s = OtherError s
+  
+errorPrefix pos = "Runtime error in " ++ sourceName pos ++ ", line " ++ show (sourceLine pos) ++ ":\n"
 
 instance Show ExecutionError where
-  show (AssertViolation s) = "Assertion violation: " ++ s
-  show (AssumeViolation s) = "Assumption violation: " ++ s
-  show (DivisionByZero) = "Division by zero"
-  show (UnsupportedConstruct s) = "Execution of " ++ s ++ " is not supported yet"
+  show (AssertViolation e) = errorPrefix (position e) ++ "Assertion violation: " ++ show (exprDoc e)
+  show (AssumeViolation e) = errorPrefix (position e) ++ "Assumption violation: " ++ show (exprDoc e)
+  show (DivisionByZero pos) = errorPrefix pos ++ "Division by zero"
+  show (UnsupportedConstruct pos s) = errorPrefix pos ++ "Execution of " ++ s ++ " is not supported yet"
   show (NoEntryPoint name) = "Cannot find program entry point: " ++ name
   show (OtherError s) = "Unknown error type: " ++ s
 
@@ -181,27 +162,27 @@ binOpLazy Implies (BoolValue False) = Just $ BoolValue True
 binOpLazy _ _                       = Nothing
 
 -- | Strict semantics of binary operators
-binOp :: BinOp -> Value -> Value -> Execution Value 
-binOp Plus    (IntValue n1) (IntValue n2)   = return $ IntValue (n1 + n2)
-binOp Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
-binOp Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
-binOp Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then throwError DivisionByZero
+binOp :: SourcePos -> BinOp -> Value -> Value -> Execution Value 
+binOp pos Plus    (IntValue n1) (IntValue n2)   = return $ IntValue (n1 + n2)
+binOp pos Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
+binOp pos Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
+binOp pos Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
+                                                then throwError (DivisionByZero pos)
                                                 else return $ IntValue (n1 `div` n2)
-binOp Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then throwError DivisionByZero
+binOp pos Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
+                                                then throwError (DivisionByZero pos)
                                                 else return (IntValue (n1 `mod` n2))
-binOp Leq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 <= n2)
-binOp Ls      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 < n2)
-binOp Geq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 >= n2)
-binOp Gt      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 > n2)
-binOp And     (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 && b2)
-binOp Or      (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 || b2)
-binOp Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
-binOp Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
-binOp Eq      v1 v2                         = return $ BoolValue (v1 == v2)
-binOp Neq     v1 v2                         = return $ BoolValue (v1 /= v2)
-binOp Lc      v1 v2                         = throwError (UnsupportedConstruct "orders")
+binOp pos Leq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 <= n2)
+binOp pos Ls      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 < n2)
+binOp pos Geq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 >= n2)
+binOp pos Gt      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 > n2)
+binOp pos And     (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 && b2)
+binOp pos Or      (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 || b2)
+binOp pos Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
+binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
+binOp pos Eq      v1 v2                         = return $ BoolValue (v1 == v2)
+binOp pos Neq     v1 v2                         = return $ BoolValue (v1 /= v2)
+binOp pos Lc      v1 v2                         = throwError (UnsupportedConstruct pos "orders")
 
 -- | Evaluate an expression;
 -- | can have a side-effect of initializing variables that were not previously defined
@@ -217,7 +198,7 @@ eval e = case contents e of
   Old e -> evalOld e
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
-  Quantified op args vars e -> throwError (UnsupportedConstruct "quantified expressions")
+  Quantified op args vars e -> throwError (UnsupportedConstruct (position e) "quantified expressions")
   
 evalApplication id args = do
   functions <- gets envFunctions
@@ -261,7 +242,7 @@ evalBinary op e1 e2 = do
     Just result -> return result
     Nothing -> do
       right <- eval e2
-      binOp op left right
+      binOp (position e1) op left right
   
 {- Statements -}
 
@@ -279,13 +260,13 @@ execAssert e = do
   b <- eval e
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwError (AssertViolation (show e))
+    BoolValue False -> throwError (AssertViolation e)
     
 execAssume e = do
   b <- eval e
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwError (AssumeViolation (show e))
+    BoolValue False -> throwError (AssumeViolation e)
     
 execHavoc ids = do
   tc <- gets envTypeContext
