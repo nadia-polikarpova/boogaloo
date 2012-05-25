@@ -4,15 +4,16 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- Check axioms and where clauses when choosing a value
+	- Check where clauses of local variables
 	- Quantified expressions
 	- Create package and some doc
 -> Release 0.1	
-	- Extract function definitions from axioms
+	- Extract function and constant definitions/constraints from axioms
 	- User-defined types
 	- Extends ordering
 	- Backtracking (logicT monad?)
 	- Constraint solving
+	- What to do with call forall?
 	- User interface
 		- allow choosing entry point and passing command line args
 		- settings for disabling different checking of different specs

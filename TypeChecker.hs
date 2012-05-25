@@ -151,10 +151,12 @@ typeNames c = M.keys (ctxTypeConstructors c) ++ M.keys (ctxTypeSynonyms c)
 globalScope c = M.union (ctxGlobals c) (ctxConstants c)
 -- | Input parameters and local variables
 localScope c = M.union (ctxIns c) (ctxLocals c)
--- | Global and local variables
+-- | All variables that can be assigned to (local variables and global variables)
 mutableVars c = M.union (ctxGlobals c) (ctxLocals c)
+-- | All variables that can have where clauses (everything except constants)
+allVars c = M.union (localScope c) (ctxGlobals c)
 -- | All variables and constants (local-scope preferred)
-allVars c = M.union (localScope c) (globalScope c)
+allNames c = M.union (localScope c) (globalScope c)
 
 -- | Names of functions and procedures
 funProcNames c = M.keys (ctxFunctions c) ++ M.keys (ctxProcedures c)
@@ -343,7 +345,7 @@ checkExpression c (Pos pos e) = case e of
   TT -> return BoolType
   FF -> return BoolType
   Numeral n -> return IntType
-  Var id -> case M.lookup id (allVars c) of
+  Var id -> case M.lookup id (allNames c) of
     Nothing -> throwTypeError pos (text "Not in scope: variable or constant" <+> text id)
     Just t -> return t
   Application id args -> checkApplication cPos id args

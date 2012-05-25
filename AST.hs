@@ -90,7 +90,7 @@ type BasicBody = ([IdTypeWhere], Map Id [Statement])
 
 {- Specs -}
 
-data SpecType = Inline | Precondition | Postcondition | LoopInvariant
+data SpecType = Inline | Precondition | Postcondition | LoopInvariant | Where
 
 -- | Specification clause that can be checked at runtime
 data SpecClause = SpecClause {
