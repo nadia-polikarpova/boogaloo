@@ -2,7 +2,6 @@
 module PrettyPrinter where
 
 import AST
-import Value
 import Position
 import Tokens
 import Data.Maybe
@@ -91,8 +90,8 @@ exprDocAt n (Pos _ e) = condParens (n' <= n) (
 
 statementDoc :: Statement -> Doc
 statementDoc (Pos _ s) = case s of
-  Assert e -> text "assert" <+> exprDoc e <> semi
-  Assume e -> text "assume" <+> exprDoc e <> semi
+  Assert _ e -> text "assert" <+> exprDoc e <> semi
+  Assume _ e -> text "assume" <+> exprDoc e <> semi
   Havoc vars -> text "havoc" <+> commaSep (map text vars) <> semi
   Assign lhss rhss -> commaSep (map lhsDoc lhss) <+> 
     text ":=" <+> commaSep (map exprDoc rhss) <> semi
@@ -110,7 +109,7 @@ statementDoc (Pos _ s) = case s of
     bracedBlockDoc thenBlock <+>
     optionMaybe elseBlock elseDoc
   While cond invs b -> text "while" <+> parens (wildcardDoc cond) $+$
-    nestDef (vsep (map invDoc invs)) $+$
+    nestDef (vsep (map specClauseDoc invs)) $+$
     bracedBlockDoc b
   Break ml -> text "break" <+> optionMaybe ml text <> semi
   Return -> text "return" <> semi
@@ -121,7 +120,6 @@ statementDoc (Pos _ s) = case s of
     wildcardDoc Wildcard = text "*"
     wildcardDoc (Expr e) = exprDoc e
     elseDoc b = text "else" <+> bracedBlockDoc b
-    invDoc (SpecClause free e) = option free (text "free") <+> text "invariant" <+> exprDoc e <> semi
 
 {- Blocks -}
 
@@ -144,7 +142,15 @@ transformedBlockDoc block = vsep (map basicBlockDoc block)
     basicBlockDoc (l, stmts) = labelDoc l $+$ 
       nestDef (vsep (map statementDoc stmts))
 
-labelDoc l = text l <> text ":"     
+labelDoc l = text l <> text ":"
+
+{- Specs -}     
+
+specTypeDoc Precondition = text "precondition"
+specTypeDoc Postcondition = text "postcondition"
+specTypeDoc LoopInvariant = text "invariant"
+
+specClauseDoc (SpecClause t free e) = option free (text "free") <+> specTypeDoc t <+> exprDoc e <> semi
 
 {- Declarations -}
 
@@ -227,20 +233,6 @@ implementationDoc name fv args rets bodies =
   text "returns" <+>
   parens (commaSep (map idTypeDoc rets)) $+$
   vsep (map bodyDoc bodies)
-  
-{- Runtime -}
-
-valueDoc :: Value -> Doc
-valueDoc (IntValue n) = integer n
-valueDoc (BoolValue False) = text "false"
-valueDoc (BoolValue True) = text "true"
-valueDoc (MapValue m) = brackets (commaSep (map itemDoc (M.toList m)))
-  where itemDoc (keys, v) = commaSep (map valueDoc keys) <+> text "->" <+>  valueDoc v
-valueDoc (CustomValue n) = text "custom_" <> integer n
-
-envDoc :: Map Id Value -> Doc
-envDoc env = vsep $ map varDoc (M.toList env)
-  where varDoc (id, val) = text id <+> text "=" <+> valueDoc val
   
 {- Misc -}
   

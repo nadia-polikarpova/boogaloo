@@ -2,9 +2,8 @@
 module Interpreter where
 
 import AST
-import Value
 import Position
-import PrettyPrinter (exprDoc)
+import PrettyPrinter
 import qualified TypeChecker as TC
 import BasicBlocks
 import Data.Map (Map, (!))
@@ -12,13 +11,14 @@ import qualified Data.Map as M
 import Control.Monad.Error
 import Control.Applicative
 import Control.Monad.State
+import Text.PrettyPrint
 
 {- Interface -}
 
 -- | Execute program p with type context tc (produced by the type checker) and entry point main, 
 -- | and return the values of global variables;
 -- | main must have no arguments
-executeProgram :: Program -> TypeContext -> Id -> Either ExecutionError (Map Id Value)
+executeProgram :: Program -> TypeContext -> Id -> Either RuntimeError (Map Id Value)
 executeProgram p tc main = envGlobals <$> finalEnvironment
   where
     initEnvironment = emptyEnv { envTypeContext = tc }
@@ -34,6 +34,27 @@ executeProgram p tc main = envGlobals <$> finalEnvironment
           execProcedure main def [] >> return ()
       
 {- State -}
+
+data Value = IntValue Integer |   -- Integer value
+  BoolValue Bool |                -- Boolean value
+  MapValue (Map [Value] Value) |  -- Value of a map type
+  CustomValue Integer             -- Value of a user-defined type (values with the same code are considered equal)
+  deriving (Eq, Ord)
+  
+-- | Default value of a type (used to initialize variables)  
+defaultValue :: Type -> Value
+defaultValue BoolType         = BoolValue False  
+defaultValue IntType          = IntValue 0
+defaultValue (MapType _ _ _)  = MapValue M.empty
+defaultValue (Instance _ _)   = CustomValue 0  
+
+valueDoc :: Value -> Doc
+valueDoc (IntValue n) = integer n
+valueDoc (BoolValue False) = text "false"
+valueDoc (BoolValue True) = text "true"
+valueDoc (MapValue m) = brackets (commaSep (map itemDoc (M.toList m)))
+  where itemDoc (keys, v) = commaSep (map valueDoc keys) <+> text "->" <+>  valueDoc v
+valueDoc (CustomValue n) = text "custom_" <> integer n
   
 type TypeContext = TC.Context
 
@@ -68,9 +89,13 @@ addProcedure id def env = env { envProcedures = M.insert id (def : oldDefs) (env
     oldDefs = case M.lookup id (envProcedures env) of
       Nothing -> []
       Just defs -> defs
+      
+envDoc :: Map Id Value -> Doc
+envDoc env = vsep $ map varDoc (M.toList env)
+  where varDoc (id, val) = text id <+> text "=" <+> valueDoc val      
 
--- | Computations with Environment as state, which can result in either a or ExecutionError  
-type Execution a = ErrorT ExecutionError (State Environment) a  
+-- | Computations with Environment as state, which can result in either a or RuntimeError  
+type Execution a = ErrorT RuntimeError (State Environment) a  
 
 -- | Get value of variable or constant id.
 -- | id has to be declared in the current type context. 
@@ -125,26 +150,39 @@ executeLocally localTC formals actuals computation = do
   
 {- Errors -}
 
-data ExecutionError = AssertViolation Expression | 
-  AssumeViolation Expression |
+data RuntimeError = AssertViolation SpecType Expression | 
+  AssumeViolation SpecType Expression |
   DivisionByZero SourcePos |
   UnsupportedConstruct SourcePos String |
   NoEntryPoint String |
   OtherError String
 
-instance Error ExecutionError where
+instance Error RuntimeError where
   noMsg    = OtherError "Unknown error"
   strMsg s = OtherError s
   
-errorPrefix pos = "Runtime error in " ++ sourceName pos ++ ", line " ++ show (sourceLine pos) ++ ":\n"
+runtimeErrorDoc err = case err of  
+  AssertViolation specType e -> errorPrefix (position e) $+$ text (assertViolationText specType) <+> text "violation:" <+> exprDoc e
+  AssumeViolation specType e -> errorPrefix (position e) $+$ text (assumeViolationText specType) <+> text "violation:" <+> exprDoc e
+  DivisionByZero pos -> errorPrefix pos $+$ text "Division by zero"
+  UnsupportedConstruct pos s -> errorPrefix pos $+$ text "Execution of" <+> text s <+> text "is not supported yet"
+  NoEntryPoint name -> text "Cannot find program entry point:" <+> text name
+  OtherError s -> text "Unknown error type:" <+> text s
+  where
+    errorPrefix pos = text "Runtime error in" <+> text (sourceName pos) <+> text "line " <+> int (sourceLine pos)
 
-instance Show ExecutionError where
-  show (AssertViolation e) = errorPrefix (position e) ++ "Assertion violation: " ++ show (exprDoc e)
-  show (AssumeViolation e) = errorPrefix (position e) ++ "Assumption violation: " ++ show (exprDoc e)
-  show (DivisionByZero pos) = errorPrefix pos ++ "Division by zero"
-  show (UnsupportedConstruct pos s) = errorPrefix pos ++ "Execution of " ++ s ++ " is not supported yet"
-  show (NoEntryPoint name) = "Cannot find program entry point: " ++ name
-  show (OtherError s) = "Unknown error type: " ++ s
+    assertViolationText Inline = "Assertion"  
+    assertViolationText Precondition = "Precondition"  
+    assertViolationText Postcondition = "Postcondition"
+    assertViolationText LoopInvariant = "Loop invariant"  
+
+    assumeViolationText Inline = "Assumption"  
+    assumeViolationText Precondition = "Free precondition"  
+    assumeViolationText Postcondition = "Free postcondition"
+    assumeViolationText LoopInvariant = "Free loop invariant"
+
+instance Show RuntimeError where
+  show err = show (runtimeErrorDoc err)
 
 {- Expressions -}
 
@@ -249,24 +287,24 @@ evalBinary op e1 e2 = do
 -- | Execute a simple statement
 exec :: Statement -> Execution ()
 exec stmt = case contents stmt of
-  Assert e -> execAssert e
-  Assume e -> execAssume e
+  Assert specType e -> execAssert specType e
+  Assume specType e -> execAssume specType e
   Havoc ids -> execHavoc ids
   Assign lhss rhss -> execAssign lhss rhss
   Call lhss name args -> execCall lhss name args
   CallForall name args -> return () -- ToDo: assume pre ==> post?
 
-execAssert e = do
+execAssert specType e = do
   b <- eval e
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwError (AssertViolation e)
+    BoolValue False -> throwError (AssertViolation specType e)
     
-execAssume e = do
+execAssume specType e = do
   b <- eval e
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwError (AssumeViolation e)
+    BoolValue False -> throwError (AssumeViolation specType e)
     
 execHavoc ids = do
   tc <- gets envTypeContext
@@ -313,7 +351,7 @@ execBlock blocks label = let
 tryOneOf :: Map Id [Statement] -> [Id] -> Execution ()        
 tryOneOf blocks (l : lbs) = catchError (execBlock blocks l) retry
   where
-    retry (AssumeViolation _) | not (null lbs) = tryOneOf blocks lbs
+    retry (AssumeViolation _ _) | not (null lbs) = tryOneOf blocks lbs
     retry e = throwError e
   
 -- | Execute definition def of procedure name with actual arguments actuals 

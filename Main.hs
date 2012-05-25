@@ -2,7 +2,6 @@ module Main where
 
 import Text.ParserCombinators.Parsec
 import AST
-import Value
 import Position
 import Parser
 import TypeChecker

@@ -429,8 +429,8 @@ checkQuantified c _ tv vars e = do
 
 checkStatement :: Context -> Statement -> Checked ()
 checkStatement c (Pos pos s) = case s of
-  Assert e -> compareType cPos "assertion" BoolType e
-  Assume e -> compareType cPos "assumption" BoolType e
+  Assert _ e -> compareType cPos "assertion" BoolType e
+  Assume _ e -> compareType cPos "assumption" BoolType e
   Havoc vars -> checkLefts cPos (nub vars) (length (nub vars))
   Assign lhss rhss -> checkAssign cPos lhss rhss
   Call lhss name args -> checkCall cPos lhss name args

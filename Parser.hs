@@ -243,12 +243,12 @@ whileStatement = do
       reserved "invariant"
       e <- e0
       semi
-      return (SpecClause free e)    
+      return (SpecClause LoopInvariant free e)    
 
 statement :: Parser Statement
 statement = attachPosBefore (choice [
-  do { reserved "assert"; e <- e0; semi; return $ Assert e },
-  do { reserved "assume"; e <- e0; semi; return $ Assume e },
+  do { reserved "assert"; e <- e0; semi; return $ Assert Inline e },
+  do { reserved "assume"; e <- e0; semi; return $ Assume Inline e },
   do { reserved "havoc"; ids <- commaSep1 identifier; semi; return $ Havoc ids },
   assign,
   try call,

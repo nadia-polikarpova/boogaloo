@@ -56,10 +56,11 @@ data WildcardExpression = Wildcard | Expr Expression
 mapSelectExpr target args = attachPos (position target) (MapSelection target args)
   
 {- Statements -}
+
 type Statement = Pos BareStatement
 
-data BareStatement = Assert Expression |
-  Assume Expression |
+data BareStatement = Assert SpecType Expression |
+  Assume SpecType Expression |
   Havoc [Id] |                                   -- Havoc var_names
   Assign [(Id , [[Expression]])] [Expression] |  -- Assign var_map_selects rhss
   Call [Id] Id [Expression] |                    -- Call call_lhss proc_name args
@@ -87,18 +88,22 @@ type BasicBlock = (Id, [Statement])
 
 type BasicBody = ([IdTypeWhere], Map Id [Statement])
 
-{- Contracts -}
+{- Specs -}
 
+data SpecType = Inline | Precondition | Postcondition | LoopInvariant
+
+-- | Specification clause that can be checked at runtime
 data SpecClause = SpecClause {
-    specFree :: Bool,
-    specExpr :: Expression
+    specType :: SpecType,   -- Source of the clause
+    specFree :: Bool,       -- Is it free (assumption) or checked (assertions)?
+    specExpr :: Expression  -- Boolean expression
   }
 
 -- | Statement that checks specification clause c at runtime
 check :: SpecClause -> BareStatement 
 check c = if specFree c 
-  then Assume (specExpr c) 
-  else Assert (specExpr c)  
+  then Assume (specType c) (specExpr c) 
+  else Assert (specType c) (specExpr c)  
 
 data Contract = Requires Bool Expression |  -- Requires e free 
   Modifies Bool [Id] |                      -- Modifies var_names free
@@ -107,13 +112,13 @@ data Contract = Requires Bool Expression |  -- Requires e free
 preconditions :: [Contract] -> [SpecClause]
 preconditions specs = catMaybes (map extractPre specs)
   where 
-    extractPre (Requires f e) = Just (SpecClause f e)
+    extractPre (Requires f e) = Just (SpecClause Precondition f e)
     extractPre _ = Nothing
 
 postconditions :: [Contract] -> [SpecClause]
 postconditions specs = catMaybes (map extractPost specs)
   where 
-    extractPost (Ensures f e) = Just (SpecClause f e)
+    extractPost (Ensures f e) = Just (SpecClause Postcondition f e)
     extractPost _ = Nothing
     
 modifies :: [Contract] -> [Id]

@@ -84,8 +84,8 @@ transform m ([], Pos p stmt) = case stmt of
         [justLabel lDone]
       Expr e -> return $
         [justStatement $ Goto [lThen, lElse]] ++
-        [([lThen], gen $ Assume e)] ++ t1 ++ [justStatement $ Goto [lDone]] ++
-        [([lElse], gen $ Assume (gen $ UnaryExpression Not e))] ++ t2 ++ [justStatement $ Goto [lDone]] ++
+        [([lThen], gen $ Assume Inline e)] ++ t1 ++ [justStatement $ Goto [lDone]] ++
+        [([lElse], gen $ Assume Inline (gen $ UnaryExpression Not e))] ++ t2 ++ [justStatement $ Goto [lDone]] ++
         [justLabel lDone]      
   While Wildcard invs body -> do
     lHead <- state $ genFreshLabel "head"
@@ -106,8 +106,8 @@ transform m ([], Pos p stmt) = case stmt of
     return $
       [justStatement $ Goto [lHead]] ++
       attach lHead (map (justStatement . check) invs ++ [justStatement $ Goto [lBody, lGDone]]) ++
-      [([lBody], gen $ Assume e)] ++ t ++ [justStatement $ Goto [lHead]] ++
-      [([lGDone], gen $ Assume (gen $ UnaryExpression Not e))] ++ [justStatement $ Goto [lDone]] ++
+      [([lBody], gen $ Assume Inline e)] ++ t ++ [justStatement $ Goto [lHead]] ++
+      [([lGDone], gen $ Assume Inline (gen $ UnaryExpression Not e))] ++ [justStatement $ Goto [lDone]] ++
       [justLabel lDone]    
   s -> return [justStatement stmt]  
   where
