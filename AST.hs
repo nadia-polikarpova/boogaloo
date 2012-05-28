@@ -2,8 +2,6 @@
 module AST where
 
 import Position
-import Data.Maybe
-import Data.List
 import Data.Map (Map)
 
 {- Basic -}
@@ -51,9 +49,9 @@ data BareExpression = FF | TT |
   BinaryExpression BinOp Expression Expression |
   Quantified QOp [Id] [IdType] Expression          -- Quantified quantifier type_vars bound_vars expression
   
+mapSelectExpr target args = attachPos (position target) (MapSelection target args)  
+  
 data WildcardExpression = Wildcard | Expr Expression
-
-mapSelectExpr target args = attachPos (position target) (MapSelection target args)
   
 {- Statements -}
 
@@ -99,33 +97,9 @@ data SpecClause = SpecClause {
     specExpr :: Expression  -- Boolean expression
   }
 
--- | Statement that checks specification clause c at runtime
-check :: SpecClause -> BareStatement 
-check c = if specFree c 
-  then Assume (specType c) (specExpr c) 
-  else Assert (specType c) (specExpr c)  
-
 data Contract = Requires Bool Expression |  -- Requires e free 
   Modifies Bool [Id] |                      -- Modifies var_names free
   Ensures Bool Expression                   -- Ensures e free
-  
-preconditions :: [Contract] -> [SpecClause]
-preconditions specs = catMaybes (map extractPre specs)
-  where 
-    extractPre (Requires f e) = Just (SpecClause Precondition f e)
-    extractPre _ = Nothing
-
-postconditions :: [Contract] -> [SpecClause]
-postconditions specs = catMaybes (map extractPost specs)
-  where 
-    extractPost (Ensures f e) = Just (SpecClause Postcondition f e)
-    extractPost _ = Nothing
-    
-modifies :: [Contract] -> [Id]
-modifies specs = (nub . concat . catMaybes) (map extractMod specs)
-  where
-    extractMod (Modifies _ ids) = Just ids
-    extractMod _ = Nothing
 
 {- Declarations -}
 
@@ -140,45 +114,7 @@ data BareDecl =
   ProcedureDecl Id [Id] [IdTypeWhere] [IdTypeWhere] [Contract] (Maybe Body) |  -- ProcedureDecl name type_args formals rets contract body 
   ImplementationDecl Id [Id] [IdType] [IdType] [Body]                      -- ImplementationDecl name type_args formals rets body
   
-{- Functions and procedures -}
-
--- | Function signature
-data FSig = FSig {
-    fsigName :: Id,         -- Function name
-    fsigTypeVars :: [Id],   -- Type variables
-    fsigArgTypes :: [Type], -- Argument types
-    fsigRetType :: Type     -- Return type
-  }
-  
--- | Function definition
-data FDef = FDef {
-    fdefArgs :: [Id],       -- Argument names (in the same order as fsigArgTypes in the corresponding signature)
-    fdefBody :: Expression  -- Body 
-  }
-  
--- | Procedure signature
-data PSig = PSig {
-    psigName :: Id,               -- Procedure name
-    psigTypeVars :: [Id],         -- Type variables
-    psigArgTypes :: [Type],       -- In-parameter types
-    psigRetTypes :: [Type],       -- Out-parameter types
-    psigModifies :: [Id],         -- Globals variable names in the modifies clause
-    psigRequires :: [SpecClause], -- Preconditions
-    psigEnsures :: [SpecClause]   -- Postconditions
-  }
-  
--- | Procedure definition;
--- | a single procedure might have multiple definitions (one per body)
-data PDef = PDef { 
-    pdefIns :: [Id],        -- In-parameter names (in the same order as psigArgsTypes in the corresponding signature)
-    pdefOuts :: [Id],       -- Out-parameter names (in the same order as psigRetTypes in the corresponding signature) 
-    pdefBody :: BasicBody   -- Body
-  }  
-  
 {- Misc -}
-
-fromRight :: Either a b -> b
-fromRight (Right x) = x
 
 data NewType = NewType {
   tId :: Id,

@@ -36,6 +36,10 @@ binOpTokens = [(Plus,    "+"),
          (Gt,      ">"),
          (Geq,     ">=")]
          
+qOpTokens :: [(QOp, String)]
+qOpTokens = [(Forall, "forall"),
+              (Exists, "exists")]         
+         
 otherOps :: [String]
 otherOps = [":", ";", "::", ":=", "="] 
 

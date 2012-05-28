@@ -2,8 +2,8 @@
 module TypeChecker where
 
 import AST
+import Util
 import Position
-import Tokens
 import PrettyPrinter
 import Data.List
 import Data.Maybe
@@ -19,12 +19,12 @@ import Text.PrettyPrint
 -- | Check program p and return the type information in the global part of the context
 checkProgram :: Program -> Checked Context
 checkProgram p = do
-  pass1   <- foldAccum collectTypes emptyContext p                            -- collect type names from type declarations
-  _pass2  <- mapAccum_ (checkTypeSynonyms pass1) p                            -- check values of type synonyms
-  _pass3  <- mapAccum_ (checkCycles pass1 p) (M.keys (ctxTypeSynonyms pass1)) -- check that type synonyms do not form a cycle 
-  pass4   <- foldAccum checkSignatures pass1 p                                -- check variable, constant, function and procedure signatures
-  _pass5  <- mapAccum_ (checkBodies pass4) p                                  -- check axioms, function and procedure bodies, constant parent info
-  return pass4
+  pass1  <- foldAccum collectTypes emptyContext p                            -- collect type names from type declarations
+  _pass2 <- mapAccum_ (checkTypeSynonyms pass1) p                            -- check values of type synonyms
+  _pass3 <- mapAccum_ (checkCycles pass1 p) (M.keys (ctxTypeSynonyms pass1)) -- check that type synonyms do not form a cycle 
+  pass4  <- foldAccum checkSignatures pass1 p                                -- check variable, constant, function and procedure signatures
+  pass5  <- foldAccum checkBodies pass4 p                                    -- check axioms, function and procedure bodies, constant parent info
+  return pass5
 
 {- Errors -}
 
@@ -110,6 +110,7 @@ data Context = Context
     ctxConstants :: Map Id Type,            -- constant types (type synonyms resolved)
     ctxFunctions :: Map Id FSig,            -- function signatures (type synonyms resolved)
     ctxProcedures :: Map Id PSig,           -- procedure signatures (type synonyms resolved)
+    ctxWhere :: Map Id Expression,          -- where clauses of variables (global and local)
     -- Local context:
     ctxTypeVars :: [Id],                    -- free type variables
     ctxIns :: Map Id Type,                  -- input parameter types
@@ -129,6 +130,7 @@ emptyContext = Context {
     ctxConstants        = M.empty,
     ctxFunctions        = M.empty,
     ctxProcedures       = M.empty,
+    ctxWhere            = M.empty,
     ctxTypeVars         = [],
     ctxIns              = M.empty,
     ctxLocals           = M.empty,
@@ -137,7 +139,7 @@ emptyContext = Context {
     ctxEncLabels        = [],
     ctxTwoState         = False,
     ctxInLoop           = False,
-    ctxPos              = noPos    
+    ctxPos              = noPos
   }
 
 setGlobals ctx g    = ctx { ctxGlobals = g }
@@ -161,10 +163,6 @@ allNames c = M.union (localScope c) (globalScope c)
 -- | Names of functions and procedures
 funProcNames c = M.keys (ctxFunctions c) ++ M.keys (ctxProcedures c)
 
--- | deleteAll keys m : map m with keys removed from its domain
-deleteAll :: Ord k => [k] -> Map k a -> Map k a
-deleteAll keys m = foldr M.delete m keys
-
 -- | Local context of function name with formal arguments formals and actual arguments actuals
 -- | (function signature has to be stored in ctxFunctions)
 enterFunction :: Id -> [Id] -> [Expression] -> Context -> Context 
@@ -179,104 +177,37 @@ enterFunction name formals actuals c = c
   }
   where 
     sig = ctxFunctions c ! name
-    inst = substitution (fromRight $ fInstance c sig actuals)
+    inst = typeSubst (fromRight $ fInstance c sig actuals)
     argTypes = map inst (fsigArgTypes sig)
 
--- | Local context of procedure name with in-parameters formals, actual arguments actuals, out-parameters rets and local variables locals
+-- | Local context of procedure name with definition def and actual arguments actuals
 -- | (procedure signature has to be stored in ctxProcedures)  
-enterProcedure :: Id -> [Id] -> [Expression] -> [Id] -> [IdType] -> Context -> Context 
-enterProcedure name formals actuals rets locals c = c 
+enterProcedure :: Id -> PDef -> [Expression] -> Context -> Context 
+enterProcedure name def actuals c = c 
   {
     ctxTypeVars = [],
-    ctxIns = M.fromList $ zip formals argTypes,
-    ctxLocals = M.union (M.fromList $ zip (map fst locals) localTypes) (M.fromList $ zip rets retTypes),
+    ctxIns = M.fromList $ zip ins inTypes,
+    ctxLocals = M.union (M.fromList $ zip localNames localTypes) (M.fromList $ zip outs outTypes),
+    ctxWhere = foldl addWhere (ctxWhere c) (zip (ins ++ outs ++ localNames) (paramWhere ++ localWhere)), 
     ctxModifies = psigModifies sig,
     ctxTwoState = True,
     ctxInLoop = False
   }
-  where 
+  where
+    ins = pdefIns def
+    outs = pdefOuts def
+    locals = fst (pdefBody def)
     sig = ctxProcedures c ! name
-    inst = substitution (fromRight $ pInstance c sig actuals)
-    argTypes = map inst (psigArgTypes sig)
-    retTypes = map inst (psigRetTypes sig)
-    localTypes = map (inst . snd) locals
+    inst = typeSubst (fromRight $ pInstance c sig actuals)
+    inTypes = map inst (psigArgTypes sig)
+    outTypes = map inst (psigRetTypes sig)
+    localTypes = map (inst . itwType) locals
+    localNames = map itwId locals
+    addWhere m (id, w) = M.insert id w m
+    localWhere = map itwWhere locals
+    paramWhere = map (paramSubst sig def . itwWhere) (psigArgs sig ++ psigRets sig)
   
 {- Types -}
-
--- | Mapping from type variables to types
-type Binding = Map Id Type
-
--- | substitution binding t : type t with all free type variables instantiated according to binding.
--- All variables in the domain of bindings are considered free if not explicitly bound. 
-substitution :: Binding -> Type -> Type
-substitution _ BoolType = BoolType
-substitution _ IntType = IntType
-substitution binding (Instance id []) = case M.lookup id binding of
-  Just t -> t
-  Nothing -> Instance id []
-substitution binding (Instance id args) = Instance id (map (substitution binding) args)
-substitution binding (MapType bv domains range) = MapType bv (map (substitution removeBound) domains) (substitution removeBound range)
-  where removeBound = deleteAll bv binding
-  
--- | isFree x t : does x occur as a free type variable in t?
--- x must not be a name of a type constructor.  
-isFree :: Id -> Type -> Bool
-isFree x (Instance y []) = x == y
-isFree x (Instance y args) = any (isFree x) args
-isFree x (MapType bv domains range) = x `notElem` bv && any (isFree x) (range:domains)
-isFree x _ = False
-  
--- | unifier fv xs ys : most general unifier of xs and ys with free type variables fv   
-unifier :: [Id] -> [Type] -> [Type] -> Maybe Binding
-unifier _ [] [] = Just M.empty
-unifier fv (IntType:xs) (IntType:ys) = unifier fv xs ys
-unifier fv (BoolType:xs) (BoolType:ys) = unifier fv xs ys
-unifier fv ((Instance id1 args1):xs) ((Instance id2 args2):ys) | id1 == id2 = unifier fv (args1 ++ xs) (args2 ++ ys)
-unifier fv ((Instance id []):xs) (y:ys) | id `elem` fv = 
-  if isFree id y then Nothing 
-  else M.insert id y <$> unifier fv (update xs) (update ys)
-    where update = map (substitution (M.singleton id y))
-unifier fv (x:xs) ((Instance id []):ys) | id `elem` fv = 
-  if isFree id x then Nothing 
-  else M.insert id x <$> unifier fv (update xs) (update ys)
-    where update = map (substitution (M.singleton id x))
-unifier fv ((MapType bv1 domains1 range1):xs) ((MapType bv2 domains2 range2):ys) =
-  case boundUnifier fv bv1 (range1:domains1) bv2 (range2:domains2) of
-    Nothing -> Nothing
-    Just u -> M.union u <$> (unifier fv (update u xs) (update u ys))
-  where
-    update u = map (substitution u)
-unifier _ _ _ = Nothing
-
--- | boundUnifier fv bv1 xs bv2 ys: most geenral unifier of xs and ys,
--- | where bv1 are bound type variables in xs and bv2 are bound type variables in ys,
--- | and fv are free type variables of the enclosing context
-boundUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= length ys 
-  then Nothing
-  else case unifier (fv ++ bv1) xs (map replacedBV ys) of
-    Nothing -> Nothing
-    Just u -> if all isFreshBV (M.elems (bound u)) && not (any hasFreshBV (M.elems (free u)))
-      then Just (free u)
-      else Nothing
-    where
-      -- substitution of bound variables of m2 with fresh names
-      replacedBV = substitution (M.fromList (zip bv2 (map idType freshBVNames)))
-      -- fresh names for bound variables of m2: with non-identifier chanarcter prepended 
-      freshBVNames = map (nonIdChar:) bv2
-      -- does a type correspond to one of the fresh bound variables of m2?
-      isFreshBV (Instance id []) = id `elem` freshBVNames
-      isFreshBV _ = False
-      -- does type t contain any fresh bound variables of m2?
-      hasFreshBV t = any (flip isFree t) freshBVNames
-      -- binding restricted to free variables
-      free = deleteAll bv1
-      -- binding restricted to bound variables
-      bound = deleteAll (fv \\ bv1)
-      -- type list updated with all free variables updated according to binding u      
-
--- | Equality of types
-instance Eq Type where
-  t1 == t2 = isJust (unifier [] [t1] [t2])
   
 -- | Check that a type variable is fresh and add it to context  
 checkTypeVar :: Context -> Id -> Checked Context
@@ -314,11 +245,11 @@ resolve c (Instance name args)
   | name `elem` ctxTypeVars c = Instance name args
   | otherwise = case M.lookup name (ctxTypeSynonyms c) of
     Nothing -> Instance name (map (resolve c) args)
-    Just (formals, t) -> resolve c (substitution (M.fromList (zip formals args)) t)
+    Just (formals, t) -> resolve c (typeSubst (M.fromList (zip formals args)) t)
 resolve _ t = t
 
 -- | Instantiation of type variables in a function signature sig given the actual arguments actuals in a context c 
-fInstance :: Context -> FSig -> [Expression] -> Checked Binding
+fInstance :: Context -> FSig -> [Expression] -> Checked TypeBinding
 fInstance c sig actuals = do
   actualTypes <- mapAccum (checkExpression c) noType actuals
   case unifier (fsigTypeVars sig) (fsigArgTypes sig) actualTypes of
@@ -328,7 +259,7 @@ fInstance c sig actuals = do
     Just u -> return u
       
 -- | Instantiation of type variables in a procedure signature sig given the actual arguments actuals in a context c 
-pInstance :: Context -> PSig -> [Expression] -> Checked Binding
+pInstance :: Context -> PSig -> [Expression] -> Checked TypeBinding
 pInstance c sig actuals = do
   actualTypes <- mapAccum (checkExpression c) noType actuals
   case unifier (psigTypeVars sig) (psigArgTypes sig) actualTypes of
@@ -365,7 +296,7 @@ checkApplication c id args = case M.lookup id (ctxFunctions c) of
   Nothing -> throwTypeError (ctxPos c) (text "Not in scope: function" <+> text id)
   Just sig -> do
     u <- fInstance c sig args
-    return $ substitution u (fsigRetType sig)
+    return $ typeSubst u (fsigRetType sig)
     
 checkMapSelection :: Context -> Expression -> [Expression] -> Checked Type
 checkMapSelection c m args = do
@@ -377,7 +308,7 @@ checkMapSelection c m args = do
         Nothing -> throwTypeError (ctxPos c) (text "Could not match map domain types" <+> commaSep (map typeDoc domainTypes) <+>
           text "against map selection types" <+> commaSep (map typeDoc actualTypes) <+>
           text "for the map" <+> exprDoc m)
-        Just u -> return (substitution u rangeType)
+        Just u -> return (typeSubst u rangeType)
     t -> throwTypeError (ctxPos c) (text "Map selection applied to a non-map" <+> exprDoc m <+> text "of type" <+> typeDoc t)
   
 checkMapUpdate :: Context -> Expression -> [Expression] -> Expression -> Checked Type
@@ -462,14 +393,14 @@ checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
     else do
       u <- pInstance c sig args 
       checkLefts c lhss (length (psigRetTypes sig))
-      zipWithAccum_ (compareType c "call left-hand side") (map (substitution u) (psigRetTypes sig)) (map (attachPos (ctxPos c) . Var) lhss)
+      zipWithAccum_ (compareType c "call left-hand side") (map (typeSubst u) (psigRetTypes sig)) (map (attachPos (ctxPos c) . Var) lhss)
         
 checkCallForall :: Context -> Id -> [WildcardExpression] -> Checked ()
 checkCallForall c name args = case M.lookup name (ctxProcedures c) of
   Nothing -> throwTypeError (ctxPos c) (text "Not in scope: procedure" <+> text name)
   Just sig -> if not (null (psigModifies sig)) 
     then throwTypeError (ctxPos c) (text "Call forall to a procedure with a non-empty modifies clause")
-    else pInstance c sig { psigArgTypes = concrete (psigArgTypes sig) } concreteArgs >> return ()
+    else pInstance c sig { psigArgs = concrete (psigArgs sig) } concreteArgs >> return ()
   where
     concreteArgs = [e | (Expr e) <- args]
     concrete at = [at !! i | i <- [0..length args - 1], isConcrete (args !! i)]
@@ -625,31 +556,32 @@ checkProcSignature c name tv args rets specs
     foldAccum checkPArg c' (args ++ rets)
     if not (null missingTV) 
       then throwTypeError (ctxPos c) (text "Type variable(s) must occur in procedure arguments:" <+> commaSep (map text missingTV))
-      else return $ addPSig c name (PSig name tv argTypes retTypes (modifies specs) (preconditions specs) (postconditions specs))
+      else return $ addPSig c name (PSig name tv (map resolveType args) (map resolveType rets) specs)
     where 
       checkPArg c arg = checkIdType ctxIns ctxIns setIns c (noWhere arg)
       missingTV = filter (not . freeInArgs) tv
       freeInArgs v = any (isFree v) (map itwType args)
       addPSig c name sig = c { ctxProcedures = M.insert name sig (ctxProcedures c) }
-      argTypes = map (resolve c . itwType) args
-      retTypes = map (resolve c . itwType) rets      
+      resolveType (IdTypeWhere id t w) = IdTypeWhere id (resolve c t) w
 
 -- | Check axioms, function and procedure bodies      
-checkBodies :: Context -> Decl -> Checked ()
+checkBodies :: Context -> Decl -> Checked Context
 checkBodies c (Pos pos d) = case d of
-  VarDecl vars -> mapAccum_ (checkWhere cPos) vars
-  ConstantDecl _ ids t (Just edges) _ -> checkParentInfo cPos ids t (map snd edges)
-  FunctionDecl name tv args ret (Just body) -> checkFunction cPos tv args ret body
-  AxiomDecl e -> checkAxiom cPos e
-  ProcedureDecl name tv args rets specs mb -> checkProcedure cPos tv args rets specs mb
-  ImplementationDecl name tv args rets bodies -> checkImplementation cPos name tv args rets bodies
-  otherwise -> return ()
+  VarDecl vars -> foldAccum checkWhere cPos vars
+  ConstantDecl _ ids t (Just edges) _ -> checkParentInfo cPos ids t (map snd edges) >> return c
+  FunctionDecl name tv args ret (Just body) -> checkFunction cPos tv args ret body >> return c
+  AxiomDecl e -> checkAxiom cPos e >> return c
+  ProcedureDecl name tv args rets specs mb -> checkProcedure cPos tv args rets specs mb >> return c
+  ImplementationDecl name tv args rets bodies -> checkImplementation cPos name tv args rets bodies >> return c
+  otherwise -> return c
   where
     cPos = c { ctxPos = pos }  
   
 -- | Check that "where" part is a valid boolean expression
-checkWhere :: Context -> IdTypeWhere -> Checked ()
-checkWhere c var = compareType c "where clause" BoolType (itwWhere var)
+checkWhere :: Context -> IdTypeWhere -> Checked Context
+checkWhere c var = do
+  compareType c "where clause" BoolType (itwWhere var)
+  return c { ctxWhere = M.insert (itwId var) (itwWhere var) (ctxWhere c) }
 
 -- | Check that identifiers in parents are distinct constants of a proper type and do not occur among ids
 checkParentInfo :: Context -> [Id] -> Type -> [Id] -> Checked ()
@@ -682,10 +614,10 @@ checkFunction c tv args ret body = do
 checkProcedure :: Context -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> [Contract] -> (Maybe Body) -> Checked ()
 checkProcedure c tv args rets specs mb = do 
   cArgs <- foldAccum (checkIdType localScope ctxIns setIns) c { ctxTypeVars = tv } (map noWhere args)
-  mapAccum_ (checkWhere cArgs) args
+  _ <- foldAccum checkWhere cArgs args
   mapAccum_ (compareType cArgs "precondition" BoolType . specExpr) (preconditions specs)
   cRets <- foldAccum (checkIdType localScope ctxLocals setLocals) cArgs (map noWhere rets)
-  mapAccum_ (checkWhere cRets) rets
+  _ <- foldAccum checkWhere cRets rets
   mapAccum_ (compareType cRets {ctxTwoState = True} "postcondition" BoolType . specExpr) (postconditions specs)
   if not (null invalidModifies)
     then throwTypeError (ctxPos c) (text "Identifier in a modifies clause does not denote a global variable:" <+> commaSep (map text invalidModifies))
@@ -698,7 +630,7 @@ checkProcedure c tv args rets specs mb = do
 checkBody :: Context -> Body -> Checked ()
 checkBody c body = do
   bodyScope <- foldAccum (checkIdType localScope ctxLocals setLocals) c (map noWhere (concat (fst body)))
-  mapAccum_ (checkWhere bodyScope) (concat (fst body))
+  _ <- foldAccum checkWhere bodyScope (concat (fst body))
   bodyScope' <- collectLabels bodyScope (snd body)
   checkBlock bodyScope' (snd body)
 

@@ -2,8 +2,9 @@
 module Parser where
 
 import AST
-import Tokens
+import Util
 import Position
+import Tokens
 import PrettyPrinter hiding (option, optionMaybe, commaSep, angles)
 import Data.List
 import Text.ParserCombinators.Parsec hiding (token)

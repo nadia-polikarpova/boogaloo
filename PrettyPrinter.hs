@@ -28,8 +28,7 @@ renderWithTabs = fullRender (mode style) (lineLength style) (ribbonsPerLine styl
 
 unOpDoc op = text (token op unOpTokens)
 binOpDoc op = text (token op binOpTokens)
-qOpDoc Forall = text "forall"
-qOpDoc Exists = text "exists"
+qOpDoc op = text (token op qOpTokens)
 
 {- Types -}
 

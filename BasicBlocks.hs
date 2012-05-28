@@ -2,6 +2,7 @@
 module BasicBlocks (toBasicBlocks, startLabel) where
 
 import AST
+import Util
 import Position
 import Data.Map (Map, (!))
 import qualified Data.Map as M

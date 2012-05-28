@@ -2,6 +2,7 @@
 module Interpreter where
 
 import AST
+import Util
 import Position
 import PrettyPrinter
 import qualified TypeChecker as TC
@@ -67,8 +68,7 @@ data Environment = Environment
     envConstants :: Map Id Expression,  -- Constant names to expressions
     envFunctions :: Map Id FDef,        -- Function names to definitions
     envProcedures :: Map Id [PDef],     -- Procedure names to definitions
-    envTypeContext :: TypeContext,      -- Type context (see TypeChecker)
-    envWhere :: Map Id Expression       -- Variables to where clauses
+    envTypeContext :: TypeContext       -- Type context (see TypeChecker)
   }
    
 emptyEnv = Environment
@@ -79,8 +79,7 @@ emptyEnv = Environment
     envConstants = M.empty,
     envFunctions = M.empty,
     envProcedures = M.empty,
-    envTypeContext = TC.emptyContext,
-    envWhere = M.empty
+    envTypeContext = TC.emptyContext
   }
 
 setGlobal id val env = env { envGlobals = M.insert id val (envGlobals env) }    
@@ -92,7 +91,6 @@ addProcedure id def env = env { envProcedures = M.insert id (def : oldDefs) (env
     oldDefs = case M.lookup id (envProcedures env) of
       Nothing -> []
       Just defs -> defs
-addWhereClause id w env = env { envWhere = M.insert id w (envWhere env) }      
 
 -- | Pretty-printed mapping of variables to values
 envDoc :: Map Id Value -> Doc
@@ -417,37 +415,38 @@ execProcedure :: Id -> PDef -> [Expression] -> Execution [Value]
 execProcedure name def args = let 
   ins = pdefIns def
   outs = pdefOuts def
-  locals = map noWhere (fst (pdefBody def))
   blocks = snd (pdefBody def)
   execBody = do
-    checkPreconditions name
+    checkPreconditions name def
     execBlock blocks startLabel
-    checkPostonditions name
+    checkPostonditions name def
     mapM getV outs
   in do
     tc <- gets envTypeContext
     argsV <- mapM eval args
-    executeLocally (TC.enterProcedure name ins args outs locals) ins argsV execBody  
+    executeLocally (TC.enterProcedure name def args) ins argsV execBody  
     
 {- Specs -}
 
 -- | Assert preconditions of procedure name
-checkPreconditions name = do
+checkPreconditions name def = do
   s <- sig <$> gets envTypeContext
-  mapM_ (exec . gen . check) (psigRequires s)
+  mapM_ (exec . gen . check . subst s) (psigRequires s)
   where 
     sig tc = TC.ctxProcedures tc ! name
+    subst s (SpecClause t f e) = SpecClause t f (paramSubst s def e)
 
 -- | Assert postconditions of procedure name    
-checkPostonditions name = do
+checkPostonditions name def = do
   s <- sig <$> gets envTypeContext
-  mapM_ (exec . gen . check) (psigEnsures s)
+  mapM_ (exec . gen . check . subst s) (psigEnsures s)
   where 
     sig tc = TC.ctxProcedures tc ! name
+    subst s (SpecClause t f e) = SpecClause t f (paramSubst s def e)
 
 -- | Assume where clause of variable id
 checkWhere id = do
-  whereClauses <- gets envWhere
+  whereClauses <- TC.ctxWhere <$> gets envTypeContext
   case M.lookup id whereClauses of
     Nothing -> return ()
     Just w -> (exec . gen . Assume Where) w
@@ -458,17 +457,12 @@ checkWhere id = do
 collectDefinitions :: Program -> Execution ()
 collectDefinitions p = mapM_ (processDecl . contents) p
   where
-    processDecl (VarDecl itws) = mapM_ processVarWhere itws
     processDecl (FunctionDecl name _ args _ (Just body)) = processFunctionBody name args body
     processDecl (ProcedureDecl name _ args rets _ (Just body)) = processProcedureBody name (map noWhere args) (map noWhere rets) body
     processDecl (ImplementationDecl name _ args rets bodies) = mapM_ (processProcedureBody name args rets) bodies
     processDecl (AxiomDecl expr) = processAxiom expr
     processDecl _ = return ()
-    
-processVarWhere itw = case itwWhere itw of
-  Pos _ TT -> return ()
-  w -> modify $ addWhereClause (itwId itw) w    
-      
+  
 processFunctionBody name args body = modify $ addFunction name (FDef (map (formalName . fst) args) body) 
   where
     formalName Nothing = dummyFArg 
@@ -485,5 +479,3 @@ processAxiom expr = case contents expr of
   BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstant c rhs
   -- ToDo: add axioms that (partially) define functions
   _ -> return ()
-    
-    
