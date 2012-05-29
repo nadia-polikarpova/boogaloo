@@ -4,9 +4,7 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- If there are several implementations, report which one the error comes from
 	- Refactor types context: get rid of global/local variable distinction or use state?
-	- When checking where clauses, also report the line where variable havoc occurs, not only the line of the where clause
 	- Quantified expressions
 	- Create package and some doc
 -> Release 0.1	
@@ -23,7 +21,11 @@
 	- Interactive sessions
 	
 	Optional
-	- Have an intermediate context when calling a procedure, with signature names (would allow reporting pre/post violations with sig names)?	
+	- For each violation except inline assertions/assumptions have to locations: where the property is defined and where it is checked
+		Preconditions	requires clause of psig		call site/first line of the implementation?
+		Postconditions	ensures clause of psig		exit point of the procedure
+		Where clauses	variable definition			lookup/havoc
+	- Should pre-/postcondition violations be reported in terms of psig or pdef?
 	
 Notes:
 - Where clauses of in-parameters: according to the manual can mention out-parameters, but actually can't

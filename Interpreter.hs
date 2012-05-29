@@ -99,29 +99,6 @@ envDoc env = vsep $ map varDoc (M.toList env)
 
 -- | Computations with Environment as state, which can result in either a or RuntimeError  
 type Execution a = ErrorT RuntimeError (State Environment) a  
-
--- | Get value of variable or constant id.
--- | id has to be declared in the current type context. 
--- | In case id does not yet have a value in the current environment, a default value is returned and cached in the environment.
-getV :: Id -> Execution Value
-getV id = do
-  tc <- gets envTypeContext
-  case M.lookup id (TC.localScope tc) of
-    Just t -> lookup envLocals setLocal t
-    Nothing -> case M.lookup id (TC.ctxGlobals tc) of
-      Just t -> lookup envGlobals setGlobal t
-      Nothing -> case M.lookup id (TC.ctxConstants tc) of
-        Just t -> do
-          constants <- gets envConstants
-          case M.lookup id constants of
-            Just e -> eval e
-            Nothing -> return $ defaultValue t -- ToDo: cache constant value?
-  where
-    lookup getter setter t = do
-      vars <- gets getter
-      case M.lookup id vars of
-        Just val -> return val
-        Nothing -> generateValue t (modify . setter id) (checkWhere id)
         
 -- | Set value of variable id to val.
 -- | id has to be declared in the current type context.
@@ -271,14 +248,33 @@ eval e = case contents e of
   TT -> return $ BoolValue True
   FF -> return $ BoolValue False
   Numeral n -> return $ IntValue n
-  Var id -> getV id
+  Var id -> evalVar id (position e)
   Application id args -> evalApplication id args (position e)
-  MapSelection m args -> evalMapSelection m args
+  MapSelection m args -> evalMapSelection m args (position e)
   MapUpdate m args new -> evalMapUpdate m args new
   Old e -> evalOld e
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
   Quantified op args vars e -> throwRuntimeError (UnsupportedConstruct (position e) "quantified expressions")
+  
+evalVar id pos = do
+  tc <- gets envTypeContext
+  case M.lookup id (TC.localScope tc) of
+    Just t -> lookup envLocals setLocal t
+    Nothing -> case M.lookup id (TC.ctxGlobals tc) of
+      Just t -> lookup envGlobals setGlobal t
+      Nothing -> case M.lookup id (TC.ctxConstants tc) of
+        Just t -> do
+          constants <- gets envConstants
+          case M.lookup id constants of
+            Just e -> eval e
+            Nothing -> return $ defaultValue t -- ToDo: cache constant value?
+  where
+    lookup getter setter t = do
+      vars <- gets getter
+      case M.lookup id vars of
+        Just val -> return val
+        Nothing -> generateValue t (modify . setter id) (checkWhere id pos)
   
 evalApplication name args pos = do
   functions <- gets envFunctions
@@ -293,7 +289,7 @@ evalApplication name args pos = do
     returnType tc = fromRight $ TC.checkExpression tc (gen $ Application name args)
     frame = StackFrame pos name
     
-evalMapSelection m args = do 
+evalMapSelection m args pos = do 
   tc <- gets envTypeContext
   mV <- eval m
   argsV <- mapM eval args
@@ -301,9 +297,9 @@ evalMapSelection m args = do
     MapValue map -> case M.lookup argsV map of
       Nothing -> case mapVariable tc (contents m) of
         Nothing -> return $ defaultValue (rangeType tc) -- The underlying map comes from a constant or function, nothing to check
-        Just v -> generateValue (rangeType tc) (\_ -> return ()) (checkWhere v) -- The underlying map comes from a variable: check the where clause
+        Just v -> generateValue (rangeType tc) (\_ -> return ()) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause
         -- Decided not to cache map access so far, because it leads to strange effects when the map is passed as an argument and can take a lot of memory 
-        -- Just v -> generateValue (rangeType tc) (cache v map argsV) (checkWhere v) -- The underlying map comes from a variable: check the where clause and cache the value
+        -- Just v -> generateValue (rangeType tc) (cache v map argsV) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause and cache the value
       Just v -> return v
   where
     rangeType tc = fromRight $ TC.checkExpression tc (gen $ MapSelection m args)
@@ -343,7 +339,7 @@ exec :: Statement -> Execution ()
 exec stmt = case contents stmt of
   Assert specType e -> execAssert specType e
   Assume specType e -> execAssume specType e
-  Havoc ids -> execHavoc ids
+  Havoc ids -> execHavoc ids (position stmt)
   Assign lhss rhss -> execAssign lhss rhss
   Call lhss name args -> execCall lhss name args (position stmt)
   CallForall name args -> return () -- ToDo: assume (forall args :: pre ==> post)?
@@ -360,11 +356,11 @@ execAssume specType e = do
     BoolValue True -> return ()
     BoolValue False -> throwRuntimeError (AssumeViolation specType e)
     
-execHavoc ids = do
+execHavoc ids pos = do
   tc <- gets envTypeContext
-  setAll ids (map defaultValue (types tc))
+  mapM_ (havoc tc) ids 
   where
-    types tc = map (fromRight . TC.checkExpression tc . gen . Var) ids
+    havoc tc id = generateValue (fromRight . TC.checkExpression tc . gen . Var $ id) (setV id) (checkWhere id pos) 
     
 execAssign lhss rhss = do
   rVals <- mapM eval rhss'
@@ -381,12 +377,11 @@ execCall lhss name args pos = do
   tc <- gets envTypeContext
   procedures <- gets envProcedures
   case M.lookup name procedures of
-    Nothing -> setAll lhss (map defaultValue (returnTypes tc))
+    Nothing -> execHavoc lhss pos
     Just (def : defs) -> do
       retsV <- catchError (execProcedure name def args) (addStackFrame frame)
       setAll lhss retsV
   where
-    returnTypes tc = map (fromRight . TC.checkExpression tc . gen . Var) lhss
     frame = StackFrame pos name
     
 -- | Execute program consisting of blocks starting from the block labeled label
@@ -420,7 +415,7 @@ execProcedure name def args = let
     checkPreconditions name def
     execBlock blocks startLabel
     checkPostonditions name def
-    mapM getV outs
+    mapM (eval . attachPos (pdefPos def) . Var) outs
   in do
     tc <- gets envTypeContext
     argsV <- mapM eval args
@@ -431,34 +426,35 @@ execProcedure name def args = let
 -- | Assert preconditions of procedure name
 checkPreconditions name def = do
   s <- TC.procSig name <$> gets envTypeContext
-  mapM_ (exec . gen . check . subst s) (psigRequires s)
+  mapM_ (exec . attachPos (pdefPos def) . check . subst s) (psigRequires s)
   where 
     subst s (SpecClause t f e) = SpecClause t f (paramSubst s def e)
 
 -- | Assert postconditions of procedure name    
 checkPostonditions name def = do
   s <- TC.procSig name <$> gets envTypeContext
-  mapM_ (exec . gen . check . subst s) (psigEnsures s)
+  mapM_ (exec . attachPos (pdefPos def) . check . subst s) (psigEnsures s)
   where 
     subst s (SpecClause t f e) = SpecClause t f (paramSubst s def e)
 
--- | Assume where clause of variable id
-checkWhere id = do
+-- | Assume where clause of variable at a program location pos
+-- | (pos will be reported as the location of the error instead of the location of the variable definition).
+checkWhere id pos = do
   whereClauses <- TC.ctxWhere <$> gets envTypeContext
   case M.lookup id whereClauses of
     Nothing -> return ()
-    Just w -> (exec . gen . Assume Where) w
+    Just (Pos _ w) -> (exec . gen . Assume Where) (Pos pos w)
 
 {- Preprocessing -}
 
 -- | Collect constant, function and procedure definitions from p
 collectDefinitions :: Program -> Execution ()
-collectDefinitions p = mapM_ (processDecl . contents) p
+collectDefinitions p = mapM_ processDecl p
   where
-    processDecl (FunctionDecl name _ args _ (Just body)) = processFunctionBody name args body
-    processDecl (ProcedureDecl name _ args rets _ (Just body)) = processProcedureBody name (map noWhere args) (map noWhere rets) body
-    processDecl (ImplementationDecl name _ args rets bodies) = mapM_ (processProcedureBody name args rets) bodies
-    processDecl (AxiomDecl expr) = processAxiom expr
+    processDecl (Pos _ (FunctionDecl name _ args _ (Just body))) = processFunctionBody name args body
+    processDecl (Pos pos (ProcedureDecl name _ args rets _ (Just body))) = processProcedureBody name pos (map noWhere args) (map noWhere rets) body
+    processDecl (Pos pos (ImplementationDecl name _ args rets bodies)) = mapM_ (processProcedureBody name pos args rets) bodies
+    processDecl (Pos _ (AxiomDecl expr)) = processAxiom expr
     processDecl _ = return ()
   
 processFunctionBody name args body = modify $ addFunction name (FDef (map (formalName . fst) args) body) 
@@ -466,15 +462,14 @@ processFunctionBody name args body = modify $ addFunction name (FDef (map (forma
     formalName Nothing = dummyFArg 
     formalName (Just n) = n
 
-processProcedureBody name args rets body = do
+processProcedureBody name pos args rets body = do
   sig <- TC.procSig name <$> gets envTypeContext
-  modify $ addProcedure name (PDef argNames retNames (paramsRenamed sig) (flatten body)) 
+  modify $ addProcedure name (PDef argNames retNames (paramsRenamed sig) (flatten body) pos) 
   where
     argNames = map fst args
     retNames = map fst rets
     flatten (locals, statements) = (concat locals, M.fromList (toBasicBlocks statements))
-    paramsRenamed sig = map itwId (psigArgs sig ++ psigRets sig) /= (argNames ++ retNames) 
-    
+    paramsRenamed sig = map itwId (psigArgs sig ++ psigRets sig) /= (argNames ++ retNames)     
       
 processAxiom expr = case contents expr of
   -- c == expr: remember expr as a definition for c

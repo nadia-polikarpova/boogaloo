@@ -192,7 +192,8 @@ data PDef = PDef {
     pdefIns :: [Id],            -- In-parameter names (in the same order as psigArgsTypes in the corresponding signature)
     pdefOuts :: [Id],           -- Out-parameter names (in the same order as psigRetTypes in the corresponding signature)
     pdefParamsRenamed :: Bool,  -- Are any parameter names in this definition different for the procedure signature? (used for optimizing parameter renaming, True is a safe default)
-    pdefBody :: BasicBody       -- Body
+    pdefBody :: BasicBody,      -- Body
+    pdefPos :: SourcePos        -- Location of the (first line of the) procedure definition in the source
   }  
   
 {- Misc -}
