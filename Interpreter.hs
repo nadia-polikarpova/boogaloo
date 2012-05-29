@@ -430,18 +430,16 @@ execProcedure name def args = let
 
 -- | Assert preconditions of procedure name
 checkPreconditions name def = do
-  s <- sig <$> gets envTypeContext
+  s <- TC.procSig name <$> gets envTypeContext
   mapM_ (exec . gen . check . subst s) (psigRequires s)
   where 
-    sig tc = TC.ctxProcedures tc ! name
     subst s (SpecClause t f e) = SpecClause t f (paramSubst s def e)
 
 -- | Assert postconditions of procedure name    
 checkPostonditions name def = do
-  s <- sig <$> gets envTypeContext
+  s <- TC.procSig name <$> gets envTypeContext
   mapM_ (exec . gen . check . subst s) (psigEnsures s)
   where 
-    sig tc = TC.ctxProcedures tc ! name
     subst s (SpecClause t f e) = SpecClause t f (paramSubst s def e)
 
 -- | Assume where clause of variable id
@@ -468,11 +466,15 @@ processFunctionBody name args body = modify $ addFunction name (FDef (map (forma
     formalName Nothing = dummyFArg 
     formalName (Just n) = n
 
-processProcedureBody name args rets body = modify $ addProcedure name (PDef argNames retNames (flatten body)) 
+processProcedureBody name args rets body = do
+  sig <- TC.procSig name <$> gets envTypeContext
+  modify $ addProcedure name (PDef argNames retNames (paramsRenamed sig) (flatten body)) 
   where
     argNames = map fst args
     retNames = map fst rets
     flatten (locals, statements) = (concat locals, M.fromList (toBasicBlocks statements))
+    paramsRenamed sig = map itwId (psigArgs sig ++ psigRets sig) /= (argNames ++ retNames) 
+    
       
 processAxiom expr = case contents expr of
   -- c == expr: remember expr as a definition for c

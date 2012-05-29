@@ -122,7 +122,9 @@ paramBinding sig def = M.fromList $ zip (sigIns ++ sigOuts) (defIns ++ defOuts)
   
 -- | Substitute parameter names from sig in an expression with their equivalents from def  
 paramSubst :: PSig -> PDef -> Expression -> Expression  
-paramSubst sig def = exprSubst (paramBinding sig def)   
+paramSubst sig def = if not (pdefParamsRenamed def) 
+  then id 
+  else exprSubst (paramBinding sig def)   
 
 {- Specs -}
 
@@ -187,9 +189,10 @@ psigEnsures = postconditions . psigContracts
 -- | Procedure definition;
 -- | a single procedure might have multiple definitions (one per body)
 data PDef = PDef { 
-    pdefIns :: [Id],        -- In-parameter names (in the same order as psigArgsTypes in the corresponding signature)
-    pdefOuts :: [Id],       -- Out-parameter names (in the same order as psigRetTypes in the corresponding signature) 
-    pdefBody :: BasicBody   -- Body
+    pdefIns :: [Id],            -- In-parameter names (in the same order as psigArgsTypes in the corresponding signature)
+    pdefOuts :: [Id],           -- Out-parameter names (in the same order as psigRetTypes in the corresponding signature)
+    pdefParamsRenamed :: Bool,  -- Are any parameter names in this definition different for the procedure signature? (used for optimizing parameter renaming, True is a safe default)
+    pdefBody :: BasicBody       -- Body
   }  
   
 {- Misc -}

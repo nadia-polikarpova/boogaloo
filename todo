@@ -4,8 +4,7 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- Generate pre/post checks together with basic block transformation?
-	- Have an intermediate context when calling a procedure, with signature names (would allow reporting pre/post violations with sig names)?
+	- If there are several implementations, report which one the error comes from
 	- Refactor types context: get rid of global/local variable distinction or use state?
 	- When checking where clauses, also report the line where variable havoc occurs, not only the line of the where clause
 	- Quantified expressions
@@ -22,7 +21,9 @@
 		- settings for disabling different checking of different specs
 		- output local state with runtime error?
 	- Interactive sessions
-	- When procedure and implementation have different parameter names, pre/post violations are reported with implementation names; is that ok?
+	
+	Optional
+	- Have an intermediate context when calling a procedure, with signature names (would allow reporting pre/post violations with sig names)?	
 	
 Notes:
 - Where clauses of in-parameters: according to the manual can mention out-parameters, but actually can't

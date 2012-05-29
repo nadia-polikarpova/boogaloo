@@ -159,9 +159,13 @@ mutableVars c = M.union (ctxGlobals c) (ctxLocals c)
 allVars c = M.union (localScope c) (ctxGlobals c)
 -- | All variables and constants (local-scope preferred)
 allNames c = M.union (localScope c) (globalScope c)
-
 -- | Names of functions and procedures
 funProcNames c = M.keys (ctxFunctions c) ++ M.keys (ctxProcedures c)
+-- | Signature of funtion name
+funSig name c = ctxFunctions c ! name
+-- | Signature of procedure name
+procSig name c = ctxProcedures c ! name
+
 
 -- | Local context of function name with formal arguments formals and actual arguments actuals
 -- | (function signature has to be stored in ctxFunctions)
@@ -176,7 +180,7 @@ enterFunction name formals actuals c = c
     ctxInLoop = False
   }
   where 
-    sig = ctxFunctions c ! name
+    sig = funSig name c
     inst = typeSubst (fromRight $ fInstance c sig actuals)
     argTypes = map inst (fsigArgTypes sig)
 
@@ -197,7 +201,7 @@ enterProcedure name def actuals c = c
     ins = pdefIns def
     outs = pdefOuts def
     locals = fst (pdefBody def)
-    sig = ctxProcedures c ! name
+    sig = procSig name c
     inst = typeSubst (fromRight $ pInstance c sig actuals)
     inTypes = map inst (psigArgTypes sig)
     outTypes = map inst (psigRetTypes sig)
