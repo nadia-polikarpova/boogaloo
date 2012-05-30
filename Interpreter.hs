@@ -10,7 +10,7 @@ import BasicBlocks
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Error
-import Control.Applicative
+import Control.Applicative hiding (empty)
 import Control.Monad.State
 import Text.PrettyPrint
 
@@ -180,8 +180,8 @@ instance Error RuntimeError where
   
 runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vsep (map stackFrameDoc (reverse (rteTrace err)))
   where
-  errorInfoDoc (AssertViolation specType e) = text (assertClauseName specType) <+> doubleQuotes (exprDoc e) <+> text "defined" <+> posDoc (position e) <+> text "violated" 
-  errorInfoDoc (AssumeViolation specType e) = text (assumeClauseName specType) <+> doubleQuotes (exprDoc e) <+> text "defined" <+> posDoc (position e) <+> text "violated"
+  errorInfoDoc (AssertViolation specType e) = text (assertClauseName specType) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated" 
+  errorInfoDoc (AssumeViolation specType e) = text (assumeClauseName specType) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
   errorInfoDoc (DivisionByZero) = text "Division by zero"
   errorInfoDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
   errorInfoDoc (NoEntryPoint name) = text "Cannot find program entry point:" <+> text name
@@ -197,6 +197,9 @@ runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vse
   assumeClauseName Postcondition = "Free postcondition"
   assumeClauseName LoopInvariant = "Free loop invariant"
   assumeClauseName Where = "Where clause"
+  
+  defPosition Inline _ = empty
+  defPosition _ e = text "defined" <+> posDoc (position e)
   
   stackFrameDoc f = text "in call to" <+> text (callName f) <+> posDoc (callPos f)
   posDoc pos = text "at" <+> text (sourceName pos) <+> text "line" <+> int (sourceLine pos)
