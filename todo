@@ -4,10 +4,12 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- Refactor types context: get rid of global/local variable distinction or use state?
+	- Refactor types context: get rid of global/local variable distinction, use state?
 	- Quantified expressions
+	- First take on exhaustive/random testing (randomness/backtracking only in the outermost call)
 	- Create package and some doc
--> Release 0.1	
+-> Release 0.1
+	- Turn source positions into spans; use the end of the span to report postcondition violations
 	- Extract function and constant definitions/constraints from axioms
 	- User-defined types
 	- Extends ordering
@@ -20,12 +22,6 @@
 		- output local state with runtime error?
 	- Interactive sessions
 	
-	Optional
-	- For each violation except inline assertions/assumptions have to locations: where the property is defined and where it is checked
-		Preconditions	requires clause of psig		call site/first line of the implementation?
-		Postconditions	ensures clause of psig		exit point of the procedure
-		Where clauses	variable definition			lookup/havoc
-	- Should pre-/postcondition violations be reported in terms of psig or pdef?
 	
 Notes:
 - Where clauses of in-parameters: according to the manual can mention out-parameters, but actually can't

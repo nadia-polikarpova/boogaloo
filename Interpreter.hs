@@ -30,7 +30,7 @@ executeProgram p tc main = envGlobals <$> finalEnvironment
       collectDefinitions p
       procedures <- gets envProcedures
       case M.lookup main procedures of
-        Nothing -> throwRuntimeError (NoEntryPoint main)
+        Nothing -> throwRuntimeError (NoEntryPoint main) noPos
         Just (def : defs) -> do
           execProcedure main def [] >> return ()
       
@@ -143,8 +143,8 @@ generateValue t set guard = let newValue = defaultValue t in
 
 data RuntimeErrorInfo = AssertViolation SpecType Expression | 
   AssumeViolation SpecType Expression |
-  DivisionByZero SourcePos |
-  UnsupportedConstruct SourcePos String |
+  DivisionByZero |
+  UnsupportedConstruct String |
   NoEntryPoint String |
   OtherError String
 
@@ -157,15 +157,16 @@ data StackFrame = StackFrame {
 type StackTrace = [StackFrame]
 
 data RuntimeError = RuntimeError {
-  rteInfo :: RuntimeErrorInfo,
-  rteTrace :: StackTrace
+  rteInfo :: RuntimeErrorInfo,  -- Type of error and additional information
+  rtePos :: SourcePos,          -- Location where the error occurred
+  rteTrace :: StackTrace        -- Stack trace from the program entry point to the procedure where the error occurred
 }
 
 -- | Throw a runtime error
-throwRuntimeError info = throwError (RuntimeError info [])
+throwRuntimeError info pos = throwError (RuntimeError info pos [])
 
 -- | Push frame on the stack trace of a runtime error
-addStackFrame frame (RuntimeError info trace) = throwError (RuntimeError info (frame : trace))
+addStackFrame frame (RuntimeError info pos trace) = throwError (RuntimeError info pos (frame : trace))
 
 -- | Is err an assumptionviolation?
 isAssumeViolation :: RuntimeError -> Bool
@@ -174,15 +175,15 @@ isAssumeViolation err = case rteInfo err of
   _ -> False
   
 instance Error RuntimeError where
-  noMsg    = RuntimeError (OtherError "Unknown error") []
-  strMsg s = RuntimeError (OtherError s) []
+  noMsg    = RuntimeError (OtherError "Unknown error") noPos []
+  strMsg s = RuntimeError (OtherError s) noPos []
   
-runtimeErrorDoc err = errorInfoDoc (rteInfo err) $+$ vsep (map stackFrameDoc (reverse (rteTrace err)))
+runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vsep (map stackFrameDoc (reverse (rteTrace err)))
   where
-  errorInfoDoc (AssertViolation specType e) = text (assertClauseName specType) <+> posDoc (position e) <+> doubleQuotes (exprDoc e) <+> text "violated" 
-  errorInfoDoc (AssumeViolation specType e) = text (assumeClauseName specType) <+> posDoc (position e) <+> doubleQuotes (exprDoc e) <+> text "violated"
-  errorInfoDoc (DivisionByZero pos) = text "Division by zero" <+> posDoc pos
-  errorInfoDoc (UnsupportedConstruct pos s) = text "Unsupported construct" <+> text s <+> posDoc pos
+  errorInfoDoc (AssertViolation specType e) = text (assertClauseName specType) <+> doubleQuotes (exprDoc e) <+> text "defined" <+> posDoc (position e) <+> text "violated" 
+  errorInfoDoc (AssumeViolation specType e) = text (assumeClauseName specType) <+> doubleQuotes (exprDoc e) <+> text "defined" <+> posDoc (position e) <+> text "violated"
+  errorInfoDoc (DivisionByZero) = text "Division by zero"
+  errorInfoDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
   errorInfoDoc (NoEntryPoint name) = text "Cannot find program entry point:" <+> text name
   errorInfoDoc (OtherError s) = text "Unknown error type:" <+> text s
   
@@ -224,10 +225,10 @@ binOp pos Plus    (IntValue n1) (IntValue n2)   = return $ IntValue (n1 + n2)
 binOp pos Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
 binOp pos Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
 binOp pos Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then throwRuntimeError (DivisionByZero pos)
+                                                then throwRuntimeError DivisionByZero pos
                                                 else return $ IntValue (n1 `div` n2)
 binOp pos Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then throwRuntimeError (DivisionByZero pos)
+                                                then throwRuntimeError DivisionByZero pos
                                                 else return (IntValue (n1 `mod` n2))
 binOp pos Leq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 <= n2)
 binOp pos Ls      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 < n2)
@@ -239,7 +240,7 @@ binOp pos Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
 binOp pos Eq      v1 v2                         = return $ BoolValue (v1 == v2)
 binOp pos Neq     v1 v2                         = return $ BoolValue (v1 /= v2)
-binOp pos Lc      v1 v2                         = throwRuntimeError (UnsupportedConstruct pos "orders")
+binOp pos Lc      v1 v2                         = throwRuntimeError (UnsupportedConstruct "orders") pos
 
 -- | Evaluate an expression;
 -- | can have a side-effect of initializing variables that were not previously defined
@@ -255,7 +256,7 @@ eval e = case contents e of
   Old e -> evalOld e
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
-  Quantified op args vars e -> throwRuntimeError (UnsupportedConstruct (position e) "quantified expressions")
+  Quantified op args vars e -> throwRuntimeError (UnsupportedConstruct "quantified expressions") (position e)
   
 evalVar id pos = do
   tc <- gets envTypeContext
@@ -337,24 +338,24 @@ evalBinary op e1 e2 = do
 -- | Execute a simple statement
 exec :: Statement -> Execution ()
 exec stmt = case contents stmt of
-  Assert specType e -> execAssert specType e
-  Assume specType e -> execAssume specType e
+  Assert specType e -> execAssert specType e (position stmt)
+  Assume specType e -> execAssume specType e (position stmt)
   Havoc ids -> execHavoc ids (position stmt)
   Assign lhss rhss -> execAssign lhss rhss
   Call lhss name args -> execCall lhss name args (position stmt)
   CallForall name args -> return () -- ToDo: assume (forall args :: pre ==> post)?
 
-execAssert specType e = do
+execAssert specType e pos = do
   b <- eval e
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwRuntimeError (AssertViolation specType e)
+    BoolValue False -> throwRuntimeError (AssertViolation specType e) pos
     
-execAssume specType e = do
+execAssume specType e pos = do
   b <- eval e
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwRuntimeError (AssumeViolation specType e)
+    BoolValue False -> throwRuntimeError (AssumeViolation specType e) pos
     
 execHavoc ids pos = do
   tc <- gets envTypeContext
@@ -384,21 +385,21 @@ execCall lhss name args pos = do
   where
     frame = StackFrame pos name
     
--- | Execute program consisting of blocks starting from the block labeled label
-execBlock :: Map Id [Statement] -> Id -> Execution ()
+-- | Execute program consisting of blocks starting from the block labeled label.
+-- | Return the location of the exit point.
+execBlock :: Map Id [Statement] -> Id -> Execution SourcePos
 execBlock blocks label = let
   block = blocks ! label
   statements = init block
-  jump = contents (last block)
   in do
     mapM exec statements
-    case jump of
-      Return -> return ()
-      Goto lbs -> tryOneOf blocks lbs
+    case last block of
+      Pos pos Return -> return pos
+      Pos _ (Goto lbs) -> tryOneOf blocks lbs
   
 -- | tryOneOf blocks labels: try executing blocks starting with each of labels,
 -- | until we find one that does not result in an assumption violation      
-tryOneOf :: Map Id [Statement] -> [Id] -> Execution ()        
+tryOneOf :: Map Id [Statement] -> [Id] -> Execution SourcePos        
 tryOneOf blocks (l : lbs) = catchError (execBlock blocks l) retry
   where
     retry e 
@@ -411,29 +412,32 @@ execProcedure name def args = let
   ins = pdefIns def
   outs = pdefOuts def
   blocks = snd (pdefBody def)
+  exitPoint pos = if pos == noPos 
+    then pdefPos def  -- Fall off the procedure body: take the procedure definition location
+    else pos          -- A return statement inside the body
   execBody = do
     checkPreconditions name def
-    execBlock blocks startLabel
-    checkPostonditions name def
+    pos <- exitPoint <$> execBlock blocks startLabel
+    checkPostonditions name def pos
     mapM (eval . attachPos (pdefPos def) . Var) outs
   in do
     tc <- gets envTypeContext
     argsV <- mapM eval args
-    executeLocally (TC.enterProcedure name def args) ins argsV execBody  
+    executeLocally (TC.enterProcedure name def args) ins argsV execBody
     
 {- Specs -}
 
--- | Assert preconditions of procedure name
+-- | Assert preconditions of definition def of procedure name
 checkPreconditions name def = do
   s <- TC.procSig name <$> gets envTypeContext
   mapM_ (exec . attachPos (pdefPos def) . check . subst s) (psigRequires s)
   where 
     subst s (SpecClause t f e) = SpecClause t f (paramSubst s def e)
 
--- | Assert postconditions of procedure name    
-checkPostonditions name def = do
+-- | Assert postconditions of definition def of procedure name at exitPoint    
+checkPostonditions name def exitPoint = do
   s <- TC.procSig name <$> gets envTypeContext
-  mapM_ (exec . attachPos (pdefPos def) . check . subst s) (psigEnsures s)
+  mapM_ (exec . attachPos exitPoint . check . subst s) (psigEnsures s)
   where 
     subst s (SpecClause t f e) = SpecClause t f (paramSubst s def e)
 
@@ -443,7 +447,7 @@ checkWhere id pos = do
   whereClauses <- TC.ctxWhere <$> gets envTypeContext
   case M.lookup id whereClauses of
     Nothing -> return ()
-    Just (Pos _ w) -> (exec . gen . Assume Where) (Pos pos w)
+    Just w -> (exec . attachPos pos . Assume Where) w
 
 {- Preprocessing -}
 
