@@ -4,8 +4,11 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
+	- Quantified expressions:
+		- Execution for all values from multiple domains
+		- Generating multiple domains
+		- Issue with equality
 	- Refactor types context: get rid of global/local variable distinction, use state?
-	- Quantified expressions
 	- First take on exhaustive/random testing (randomness/backtracking only in the outermost call)
 	- Create package and some doc
 -> Release 0.1

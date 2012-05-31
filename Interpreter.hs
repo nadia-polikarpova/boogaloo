@@ -8,6 +8,7 @@ import PrettyPrinter
 import qualified TypeChecker as TC
 import BasicBlocks
 import Data.Map (Map, (!))
+import Data.Ratio
 import qualified Data.Map as M
 import Control.Monad.Error
 import Control.Applicative hiding (empty)
@@ -47,7 +48,7 @@ defaultValue :: Type -> Value
 defaultValue BoolType         = BoolValue False  
 defaultValue IntType          = IntValue 0
 defaultValue (MapType _ _ _)  = MapValue M.empty
-defaultValue (Instance _ _)   = CustomValue 0  
+defaultValue (Instance _ _)   = CustomValue 0
 
 -- | Pretty-printed value
 valueDoc :: Value -> Doc
@@ -57,6 +58,9 @@ valueDoc (BoolValue True) = text "true"
 valueDoc (MapValue m) = brackets (commaSep (map itemDoc (M.toList m)))
   where itemDoc (keys, v) = commaSep (map valueDoc keys) <+> text "->" <+>  valueDoc v
 valueDoc (CustomValue n) = text "custom_" <> integer n
+
+instance Show Value where
+  show v = show (valueDoc v)
   
 type TypeContext = TC.Context
 
@@ -199,6 +203,7 @@ runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vse
   assumeClauseName Where = "Where clause"
   
   defPosition Inline _ = empty
+  defPosition LoopInvariant _ = empty
   defPosition _ e = text "defined" <+> posDoc (position e)
   
   stackFrameDoc f = text "in call to" <+> text (callName f) <+> posDoc (callPos f)
@@ -259,7 +264,15 @@ eval e = case contents e of
   Old e -> evalOld e
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
-  Quantified op args vars e -> throwRuntimeError (UnsupportedConstruct "quantified expressions") (position e)
+  Quantified Forall tv vars e -> do
+    dom <- head <$> domains ((inheritPos (UnaryExpression Not)) e) vars -- With one domain for now
+    results <- forM dom evalFor
+    return $ BoolValue (all boolValue results)
+    where
+      evalFor :: Value -> Execution Value
+      evalFor val = executeLocally (TC.enterQuantified tv vars) [fst (head vars)] [val] (eval e)
+      boolValue (BoolValue b) = b
+  Quantified Exists tv vars e -> throwRuntimeError (UnsupportedConstruct "quantified expressions") (position e)
   
 evalVar id pos = do
   tc <- gets envTypeContext
@@ -483,3 +496,134 @@ processAxiom expr = case contents expr of
   BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstant c rhs
   -- ToDo: add axioms that (partially) define functions
   _ -> return ()
+  
+  
+{- Quantification -}
+
+data Bound = Finite Integer | Inf | NegInf
+  deriving (Eq, Show)
+
+instance Ord Bound where
+  NegInf <= b = True
+  b <= NegInf = False
+  b <= Inf = True
+  Inf <= b = False
+  Finite x <= Finite y = x <= y    
+
+data Interval = Interval {
+  lower :: Bound,
+  upper :: Bound
+} deriving Show
+
+isBottom (Interval l u) = l > u
+
+instance Eq Interval where
+  int1 == int2 | isBottom int1, isBottom int2 = True
+  Interval l1 u1 == Interval l2 u2            = l1 == l2 && u1 == u2
+
+top = Interval NegInf Inf
+bottom = Interval Inf NegInf
+
+lub int1 int2 | isBottom int1 = int2
+lub int1 int2 | isBottom int2 = int1
+lub (Interval l1 u1) (Interval l2 u2) = Interval (min l1 l2) (max u1 u2)
+
+glb int1 int2 | isBottom int1 = int1
+glb int1 int2 | isBottom int2 = int2
+glb (Interval l1 u1) (Interval l2 u2) = Interval (max l1 l2) (min u1 u2)
+
+type LinearForm = (Integer, Integer)
+
+toLinearForm :: Expression -> Id -> Execution (Maybe LinearForm)
+toLinearForm aExpr x = case contents aExpr of
+  Numeral n -> return $ Just (0, n)
+  Var y -> if x == y
+    then return $ Just (1, 0)
+    else const aExpr
+  Application name args -> if x `elem` freeVars aExpr
+    then return Nothing
+    else const aExpr
+  MapSelection m args -> if x `elem` freeVars aExpr
+    then return Nothing
+    else const aExpr
+  Old e -> toLinearForm e x
+  UnaryExpression Neg e -> do
+    f <- toLinearForm e x
+    return $ fmap (\(a, b) -> (-a, -b)) f
+  BinaryExpression op e1 e2 -> do
+    left <- toLinearForm e1 x
+    right <- toLinearForm e2 x 
+    return $ combineBinOp op left right
+  where
+    const e = do
+      v <- eval e
+      case v of
+        IntValue n -> return $ Just (0, n)
+    combineBinOp Plus   (Just (a1, b1)) (Just (a2, b2)) = Just (a1 + a2, b1 + b2)
+    combineBinOp Minus  (Just (a1, b1)) (Just (a2, b2)) = Just (a1 - a2, b1 - b2)
+    combineBinOp Times  (Just (a, b))   (Just (0, k))   = Just (k * a, k * b)
+    combineBinOp Times  (Just (0, k))   (Just (a, b))   = Just (k * a, k * b)
+    combineBinOp _ _ _ = Nothing
+    
+type Domain = [Value]    
+        
+-- | The set of variable values, outside which booExpr is always false
+domains :: Expression -> [IdType] -> Execution [Domain]
+domains boolExpr vars = forM vars (domain (negationNF boolExpr))
+  where
+    domain :: Expression -> IdType -> Execution Domain
+    domain boolExpr (id, t) = case t of
+      BoolType -> return $ map BoolValue [True, False]
+      IntType -> do
+        int <- inferInterval boolExpr id
+        case int of
+          int | isBottom int -> return []
+          Interval (Finite l) (Finite u) -> return $ map IntValue [l..u]
+          _ -> throwRuntimeError (UnsupportedConstruct "infinite domain") (position boolExpr) -- ToDo: special error type?
+      _ -> throwRuntimeError (UnsupportedConstruct "non-integer variable") (position boolExpr)
+
+inferInterval :: Expression -> Id -> Execution Interval
+inferInterval boolExpr x = case contents boolExpr of
+  FF -> return bottom
+  BinaryExpression And be1 be2 -> liftM2 glb (inferInterval be1 x) (inferInterval be2 x)
+  BinaryExpression Or be1 be2 -> liftM2 lub (inferInterval be1 x) (inferInterval be2 x)
+  BinaryExpression Eq ae1 ae2 -> do
+    lf <- toLinearForm (ae1 |-| ae2) x
+    case lf of
+      Nothing -> return top
+      Just (0, _) -> return top
+      Just (a, b) -> return $ Interval (Finite (ceiling (-b % a))) (Finite (floor (-b % a)))
+  BinaryExpression Leq ae1 ae2 -> do
+    lf <- toLinearForm (ae1 |-| ae2) x
+    case lf of
+      Nothing -> return top
+      Just (0, _) -> return top
+      Just (a, b) -> if a > 0
+        then return $ Interval NegInf (Finite (floor (-b % a)))
+        else return $ Interval (Finite (ceiling (-b % a))) Inf
+  BinaryExpression Ls ae1 ae2 -> inferInterval (ae1 |<=| (ae2 |-| num 1)) x
+  BinaryExpression Geq ae1 ae2 -> inferInterval (ae2 |<=| ae1) x
+  BinaryExpression Gt ae1 ae2 -> inferInterval (ae2 |<=| (ae1 |-| num 1)) x
+  -- -- Quantification?
+  _ -> return top
+  
+negationNF :: Expression -> Expression
+negationNF boolExpr = case contents boolExpr of
+  UnaryExpression Not e -> case contents e of
+    UnaryExpression Not e' -> negationNF e'
+    BinaryExpression And e1 e2 -> negationNF (enot e1) ||| negationNF (enot e2)
+    BinaryExpression Or e1 e2 -> negationNF (enot e1) |&| negationNF (enot e2)
+    BinaryExpression Implies e1 e2 -> negationNF e1 |&| negationNF (enot e2)
+    BinaryExpression Equiv e1 e2 ->(negationNF e1 |&| negationNF (enot e2)) |&| (negationNF (enot e1) |&| negationNF e2)
+    BinaryExpression Eq ae1 ae2 -> ae1 |!=| ae2 -- ToDo: Need type info to determine if operands are boolean
+    BinaryExpression Neq ae1 ae2 -> ae1 |=| ae2
+    BinaryExpression Leq ae1 ae2 -> ae1 |>| ae2
+    BinaryExpression Ls ae1 ae2 -> ae1 |>=| ae2
+    BinaryExpression Geq ae1 ae2 -> ae1 |<| ae2
+    BinaryExpression Gt ae1 ae2 -> ae1 |<=| ae2
+    _ -> boolExpr
+  BinaryExpression Implies e1 e2 -> negationNF (enot e1) ||| negationNF e2
+  BinaryExpression Equiv e1 e2 -> (negationNF (enot e1) ||| negationNF e2) |&| (negationNF e1 ||| negationNF (enot e2))
+  BinaryExpression op e1 e2 | op == And || op == Or -> gen $ BinaryExpression op (negationNF e1) (negationNF e2)
+  -- Quantification?
+  _ -> boolExpr

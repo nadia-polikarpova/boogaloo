@@ -210,6 +210,16 @@ enterProcedure name def actuals c = c
     addWhere m (id, w) = M.insert id w m
     localWhere = map itwWhere locals
     paramWhere = map (paramSubst sig def . itwWhere) (psigArgs sig ++ psigRets sig)
+   
+-- | Local context of a quantified expression   
+enterQuantified :: [Id] -> [IdType] -> Context -> Context 
+enterQuantified tv vars c = c 
+  {
+    ctxTypeVars = tv,
+    ctxIns = foldl addIn (ctxIns c) vars
+  }
+  where
+    addIn ins (id, t) = M.insert id t ins  
   
 {- Types -}
   

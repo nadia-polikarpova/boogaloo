@@ -90,6 +90,19 @@ instance Eq Type where
 
 {- Expressions -}
 
+-- | Free variables in an expression
+freeVars :: Expression -> [Id]
+freeVars e = freeVars' (contents e)
+
+freeVars' (Var x) = [x]
+freeVars' (Application name args) = nub $ concatMap freeVars args
+freeVars' (MapSelection m args) = nub $ concatMap freeVars (m : args)
+freeVars' (MapUpdate m args val) = nub $ concatMap freeVars (val : m : args)
+freeVars' (Old e) = freeVars e
+freeVars' (UnaryExpression _ e) = freeVars e
+freeVars' (BinaryExpression _ e1 e2) = nub $ freeVars e1 ++ freeVars e2
+freeVars' (Quantified _ _ boundVars e) = freeVars e \\ map fst boundVars
+
 -- | Mapping from variables to expressions
 type VarBinding = Map Id BareExpression
 
@@ -194,7 +207,28 @@ data PDef = PDef {
     pdefParamsRenamed :: Bool,  -- Are any parameter names in this definition different for the procedure signature? (used for optimizing parameter renaming, True is a safe default)
     pdefBody :: BasicBody,      -- Body
     pdefPos :: SourcePos        -- Location of the (first line of the) procedure definition in the source
-  }  
+  }
+
+{- Code generation -}
+
+num i = gen $ Numeral i
+eneg e = gen $ UnaryExpression Neg e
+enot e = gen $ UnaryExpression Not e
+(|+|) e1 e2 = gen $ BinaryExpression Plus e1 e2
+(|-|) e1 e2 = gen $ BinaryExpression Minus e1 e2
+(|*|) e1 e2 = gen $ BinaryExpression Times e1 e2
+(|/|) e1 e2 = gen $ BinaryExpression Div e1 e2
+(|%|) e1 e2 = gen $ BinaryExpression Mod e1 e2
+(|=|) e1 e2 = gen $ BinaryExpression Eq e1 e2
+(|!=|) e1 e2 = gen $ BinaryExpression Neq e1 e2
+(|<|) e1 e2 = gen $ BinaryExpression Ls e1 e2
+(|<=|) e1 e2 = gen $ BinaryExpression Leq e1 e2
+(|>|) e1 e2 = gen $ BinaryExpression Gt e1 e2
+(|>=|) e1 e2 = gen $ BinaryExpression Geq e1 e2
+(|&|) e1 e2 = gen $ BinaryExpression And e1 e2
+(|||) e1 e2 = gen $ BinaryExpression Or e1 e2
+(|=>|) e1 e2 = gen $ BinaryExpression Implies e1 e2
+(|<=>|) e1 e2 = gen $ BinaryExpression Equiv e1 e2
   
 {- Misc -}
 
