@@ -253,26 +253,20 @@ binOp pos Lc      v1 v2                         = throwRuntimeError (Unsupported
 -- | Evaluate an expression;
 -- | can have a side-effect of initializing variables that were not previously defined
 eval :: Expression -> Execution Value
-eval e = case contents e of
+eval expr = case contents expr of
   TT -> return $ BoolValue True
   FF -> return $ BoolValue False
   Numeral n -> return $ IntValue n
-  Var id -> evalVar id (position e)
-  Application id args -> evalApplication id args (position e)
-  MapSelection m args -> evalMapSelection m args (position e)
+  Var id -> evalVar id (position expr)
+  Application id args -> evalApplication id args (position expr)
+  MapSelection m args -> evalMapSelection m args (position expr)
   MapUpdate m args new -> evalMapUpdate m args new
   Old e -> evalOld e
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
-  Quantified Forall tv vars e -> do
-    dom <- head <$> domains ((inheritPos (UnaryExpression Not)) e) vars -- With one domain for now
-    results <- forM dom evalFor
-    return $ BoolValue (all boolValue results)
-    where
-      evalFor :: Value -> Execution Value
-      evalFor val = executeLocally (TC.enterQuantified tv vars) [fst (head vars)] [val] (eval e)
-      boolValue (BoolValue b) = b
-  Quantified Exists tv vars e -> throwRuntimeError (UnsupportedConstruct "quantified expressions") (position e)
+  Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e)
+    where vnot (BoolValue b) = BoolValue (not b)
+  Quantified Exists tv vars e -> evalExists tv vars e
   
 evalVar id pos = do
   tc <- gets envTypeContext
@@ -348,6 +342,26 @@ evalBinary op e1 e2 = do
     Nothing -> do
       right <- eval e2
       binOp (position e1) op left right
+      
+evalExists tv vars e = do
+  results <- executeLocally (TC.enterQuantified tv vars) [] [] evalWithDomains
+  return $ BoolValue (any isTrue results)
+  where
+    evalWithDomains = do
+      doms <- domains e varNames
+      evalForEach varNames doms
+    -- | evalForEach vars domains: evaluate e for each combination of possible values of vars, drown from respective domains
+    evalForEach :: [Id] -> [Domain] -> Execution [Value]
+    evalForEach [] [] = replicate 1 <$> eval e
+    evalForEach (var : vars) (dom : doms) = concat <$> forM dom (fixOne vars doms var)
+    -- | Fix the value of var to val, then evaluate e for each combination of values for the rest of vars
+    fixOne :: [Id] -> [Domain] -> Id -> Value -> Execution [Value]
+    fixOne vars doms var val = do
+      setV var val
+      evalForEach vars doms
+    isTrue (BoolValue b) = b
+    varNames = map fst vars
+      
   
 {- Statements -}
 
@@ -568,19 +582,21 @@ toLinearForm aExpr x = case contents aExpr of
 type Domain = [Value]    
         
 -- | The set of variable values, outside which booExpr is always false
-domains :: Expression -> [IdType] -> Execution [Domain]
+domains :: Expression -> [Id] -> Execution [Domain]
 domains boolExpr vars = forM vars (domain (negationNF boolExpr))
   where
-    domain :: Expression -> IdType -> Execution Domain
-    domain boolExpr (id, t) = case t of
-      BoolType -> return $ map BoolValue [True, False]
-      IntType -> do
-        int <- inferInterval boolExpr id
-        case int of
-          int | isBottom int -> return []
-          Interval (Finite l) (Finite u) -> return $ map IntValue [l..u]
-          _ -> throwRuntimeError (UnsupportedConstruct "infinite domain") (position boolExpr) -- ToDo: special error type?
-      _ -> throwRuntimeError (UnsupportedConstruct "non-integer variable") (position boolExpr)
+    domain :: Expression -> Id -> Execution Domain
+    domain boolExpr var = do
+      tc <- gets envTypeContext
+      case M.lookup var (TC.allVars tc) of
+        Just BoolType -> return $ map BoolValue [True, False]
+        Just IntType -> do
+          int <- inferInterval boolExpr var
+          case int of
+            int | isBottom int -> return []
+            Interval (Finite l) (Finite u) -> return $ map IntValue [l..u]
+            _ -> throwRuntimeError (UnsupportedConstruct "infinite domain") (position boolExpr) -- ToDo: special error type?
+        _ -> throwRuntimeError (UnsupportedConstruct "quantification over a map or user-defined type") (position boolExpr)
 
 inferInterval :: Expression -> Id -> Execution Interval
 inferInterval boolExpr x = case contents boolExpr of

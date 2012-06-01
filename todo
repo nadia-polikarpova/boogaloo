@@ -5,9 +5,9 @@
 
 - Interpreter
 	- Quantified expressions:
-		- Execution for all values from multiple domains
 		- Generating multiple domains
 		- Issue with equality
+		- What kind of errors to report when the domain is infinite or cannot be found?
 	- Refactor types context: get rid of global/local variable distinction, use state?
 	- First take on exhaustive/random testing (randomness/backtracking only in the outermost call)
 	- Create package and some doc

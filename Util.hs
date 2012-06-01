@@ -212,23 +212,23 @@ data PDef = PDef {
 {- Code generation -}
 
 num i = gen $ Numeral i
-eneg e = gen $ UnaryExpression Neg e
-enot e = gen $ UnaryExpression Not e
-(|+|) e1 e2 = gen $ BinaryExpression Plus e1 e2
-(|-|) e1 e2 = gen $ BinaryExpression Minus e1 e2
-(|*|) e1 e2 = gen $ BinaryExpression Times e1 e2
-(|/|) e1 e2 = gen $ BinaryExpression Div e1 e2
-(|%|) e1 e2 = gen $ BinaryExpression Mod e1 e2
-(|=|) e1 e2 = gen $ BinaryExpression Eq e1 e2
-(|!=|) e1 e2 = gen $ BinaryExpression Neq e1 e2
-(|<|) e1 e2 = gen $ BinaryExpression Ls e1 e2
-(|<=|) e1 e2 = gen $ BinaryExpression Leq e1 e2
-(|>|) e1 e2 = gen $ BinaryExpression Gt e1 e2
-(|>=|) e1 e2 = gen $ BinaryExpression Geq e1 e2
-(|&|) e1 e2 = gen $ BinaryExpression And e1 e2
-(|||) e1 e2 = gen $ BinaryExpression Or e1 e2
-(|=>|) e1 e2 = gen $ BinaryExpression Implies e1 e2
-(|<=>|) e1 e2 = gen $ BinaryExpression Equiv e1 e2
+eneg e = inheritPos (UnaryExpression Neg) e
+enot e = inheritPos (UnaryExpression Not) e
+e1 |+|    e2 = inheritPos2 (BinaryExpression Plus) e1 e2
+e1 |-|    e2 = inheritPos2 (BinaryExpression Minus) e1 e2
+e1 |*|    e2 = inheritPos2 (BinaryExpression Times) e1 e2
+e1 |/|    e2 = inheritPos2 (BinaryExpression Div) e1 e2
+e1 |%|    e2 = inheritPos2 (BinaryExpression Mod) e1 e2
+e1 |=|    e2 = inheritPos2 (BinaryExpression Eq) e1 e2
+e1 |!=|   e2 = inheritPos2 (BinaryExpression Neq) e1 e2
+e1 |<|    e2 = inheritPos2 (BinaryExpression Ls) e1 e2
+e1 |<=|   e2 = inheritPos2 (BinaryExpression Leq) e1 e2
+e1 |>|    e2 = inheritPos2 (BinaryExpression Gt) e1 e2
+e1 |>=|   e2 = inheritPos2 (BinaryExpression Geq) e1 e2
+e1 |&|    e2 = inheritPos2 (BinaryExpression And) e1 e2
+e1 |||    e2 = inheritPos2 (BinaryExpression Or) e1 e2
+e1 |=>|   e2 = inheritPos2 (BinaryExpression Implies) e1 e2
+e1 |<=>|  e2 = inheritPos2 (BinaryExpression Equiv) e1 e2
   
 {- Misc -}
 

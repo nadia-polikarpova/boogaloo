@@ -213,13 +213,13 @@ enterProcedure name def actuals c = c
    
 -- | Local context of a quantified expression   
 enterQuantified :: [Id] -> [IdType] -> Context -> Context 
-enterQuantified tv vars c = c 
+enterQuantified tv vars c = c' 
   {
-    ctxTypeVars = tv,
     ctxIns = foldl addIn (ctxIns c) vars
   }
   where
-    addIn ins (id, t) = M.insert id t ins  
+    c' = c { ctxTypeVars = tv }
+    addIn ins (id, t) = M.insert id (resolve c' t) ins  
   
 {- Types -}
   

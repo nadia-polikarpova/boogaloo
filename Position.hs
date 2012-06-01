@@ -14,7 +14,8 @@ module Position
     ,attachPosM
     ,gen
     ,attachPosBefore
-    ,inheritPos    
+    ,inheritPos
+    ,inheritPos2
 
     ) where
 
@@ -51,3 +52,6 @@ attachPosBefore = attachPosM getPosition
 
 inheritPos :: (Pos a -> b) -> Pos a -> Pos b
 inheritPos f a = attachPos (position a) (f a)
+
+inheritPos2 :: (Pos a -> Pos b -> c) -> Pos a -> Pos b -> Pos c
+inheritPos2 f a b = attachPos (position a) (f a b)
