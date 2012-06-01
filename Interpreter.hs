@@ -3,6 +3,7 @@ module Interpreter where
 
 import AST
 import Util
+import Intervals
 import Position
 import PrettyPrinter
 import qualified TypeChecker as TC
@@ -10,9 +11,9 @@ import BasicBlocks
 import Data.Map (Map, (!))
 import Data.Ratio
 import qualified Data.Map as M
-import Control.Monad.Error
+import Control.Monad.Error hiding (join)
 import Control.Applicative hiding (empty)
-import Control.Monad.State
+import Control.Monad.State hiding (join)
 import Text.PrettyPrint
 
 {- Interface -}
@@ -510,42 +511,9 @@ processAxiom expr = case contents expr of
   BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstant c rhs
   -- ToDo: add axioms that (partially) define functions
   _ -> return ()
-  
-  
+   
 {- Quantification -}
-
-data Bound = Finite Integer | Inf | NegInf
-  deriving (Eq, Show)
-
-instance Ord Bound where
-  NegInf <= b = True
-  b <= NegInf = False
-  b <= Inf = True
-  Inf <= b = False
-  Finite x <= Finite y = x <= y    
-
-data Interval = Interval {
-  lower :: Bound,
-  upper :: Bound
-} deriving Show
-
-isBottom (Interval l u) = l > u
-
-instance Eq Interval where
-  int1 == int2 | isBottom int1, isBottom int2 = True
-  Interval l1 u1 == Interval l2 u2            = l1 == l2 && u1 == u2
-
-top = Interval NegInf Inf
-bottom = Interval Inf NegInf
-
-lub int1 int2 | isBottom int1 = int2
-lub int1 int2 | isBottom int2 = int1
-lub (Interval l1 u1) (Interval l2 u2) = Interval (min l1 l2) (max u1 u2)
-
-glb int1 int2 | isBottom int1 = int1
-glb int1 int2 | isBottom int2 = int2
-glb (Interval l1 u1) (Interval l2 u2) = Interval (max l1 l2) (min u1 u2)
-
+    
 type LinearForm = (Integer, Integer)
 
 toLinearForm :: Expression -> Id -> Execution (Maybe LinearForm)
@@ -577,7 +545,7 @@ toLinearForm aExpr x = case contents aExpr of
     combineBinOp Minus  (Just (a1, b1)) (Just (a2, b2)) = Just (a1 - a2, b1 - b2)
     combineBinOp Times  (Just (a, b))   (Just (0, k))   = Just (k * a, k * b)
     combineBinOp Times  (Just (0, k))   (Just (a, b))   = Just (k * a, k * b)
-    combineBinOp _ _ _ = Nothing
+    combineBinOp _ _ _ = Nothing    
     
 type Domain = [Value]    
         
@@ -600,9 +568,9 @@ domains boolExpr vars = forM vars (domain (negationNF boolExpr))
 
 inferInterval :: Expression -> Id -> Execution Interval
 inferInterval boolExpr x = case contents boolExpr of
-  FF -> return bottom
-  BinaryExpression And be1 be2 -> liftM2 glb (inferInterval be1 x) (inferInterval be2 x)
-  BinaryExpression Or be1 be2 -> liftM2 lub (inferInterval be1 x) (inferInterval be2 x)
+  FF -> return bot
+  BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 x) (inferInterval be2 x)
+  BinaryExpression Or be1 be2 -> liftM2 join (inferInterval be1 x) (inferInterval be2 x)
   BinaryExpression Eq ae1 ae2 -> do
     lf <- toLinearForm (ae1 |-| ae2) x
     case lf of
@@ -623,23 +591,3 @@ inferInterval boolExpr x = case contents boolExpr of
   -- -- Quantification?
   _ -> return top
   
-negationNF :: Expression -> Expression
-negationNF boolExpr = case contents boolExpr of
-  UnaryExpression Not e -> case contents e of
-    UnaryExpression Not e' -> negationNF e'
-    BinaryExpression And e1 e2 -> negationNF (enot e1) ||| negationNF (enot e2)
-    BinaryExpression Or e1 e2 -> negationNF (enot e1) |&| negationNF (enot e2)
-    BinaryExpression Implies e1 e2 -> negationNF e1 |&| negationNF (enot e2)
-    BinaryExpression Equiv e1 e2 ->(negationNF e1 |&| negationNF (enot e2)) |&| (negationNF (enot e1) |&| negationNF e2)
-    BinaryExpression Eq ae1 ae2 -> ae1 |!=| ae2 -- ToDo: Need type info to determine if operands are boolean
-    BinaryExpression Neq ae1 ae2 -> ae1 |=| ae2
-    BinaryExpression Leq ae1 ae2 -> ae1 |>| ae2
-    BinaryExpression Ls ae1 ae2 -> ae1 |>=| ae2
-    BinaryExpression Geq ae1 ae2 -> ae1 |<| ae2
-    BinaryExpression Gt ae1 ae2 -> ae1 |<=| ae2
-    _ -> boolExpr
-  BinaryExpression Implies e1 e2 -> negationNF (enot e1) ||| negationNF e2
-  BinaryExpression Equiv e1 e2 -> (negationNF (enot e1) ||| negationNF e2) |&| (negationNF e1 ||| negationNF (enot e2))
-  BinaryExpression op e1 e2 | op == And || op == Or -> gen $ BinaryExpression op (negationNF e1) (negationNF e2)
-  -- Quantification?
-  _ -> boolExpr

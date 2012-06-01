@@ -21,7 +21,8 @@
 	- What to do with call forall?
 	- User interface
 		- allow choosing entry point and passing command line args
-		- settings for disabling different checking of different specs
+		- settings for disabling checking of different specs
+		- settings for bounding domains to be checked in quantified expressions
 		- output local state with runtime error?
 	- Interactive sessions
 	
