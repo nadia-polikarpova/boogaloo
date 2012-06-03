@@ -156,12 +156,14 @@ generateValue t set guard = let newValue = defaultValue t in
   
 {- Errors -}
 
-data RuntimeErrorInfo = AssertViolation SpecType Expression | 
-  AssumeViolation SpecType Expression |
-  InfiniteDomain Id Interval |
-  DivisionByZero |
-  UnsupportedConstruct String |
-  NoEntryPoint String |
+data RuntimeErrorInfo = 
+  AssertViolation SpecType Expression |   -- Assertions violations
+  AssumeViolation SpecType Expression |   -- Assumption violations
+  InfiniteDomain Id Interval |            -- Quantification over an infinite set
+  DivisionByZero |                        -- Division by zero
+  UnsupportedConstruct String |           -- Language constructs that are not yet supported (should disappear in later versions)
+  NoEntryPoint String |                   -- Procedure specified as program entry point does not exist
+  InternalError InternalCode |            -- Must be cought inside the interpreter and never reach the user
   OtherError String
 
 -- | Information about a procedure or function call  
@@ -224,6 +226,10 @@ runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vse
 
 instance Show RuntimeError where
   show err = show (runtimeErrorDoc err)
+  
+data InternalCode = NotLinear
+
+throwInternalError code = throwRuntimeError (InternalError code) noPos
 
 {- Expressions -}
 
@@ -565,69 +571,70 @@ inferConstraints boolExpr constraints = do
 -- | Infer an interval for variable x, outside which boolean expression booExpr is always false, 
 -- | assuming all other quantified variables satisfy constraints.
 inferInterval :: Expression -> Constraints -> Id -> Execution Interval
-inferInterval boolExpr constraints x = case contents boolExpr of
+inferInterval boolExpr constraints x = catchError (case contents boolExpr of
   FF -> return bot
   BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 constraints x) (inferInterval be2 constraints x)
   BinaryExpression Or be1 be2 -> liftM2 join (inferInterval be1 constraints x) (inferInterval be2 constraints x)
   BinaryExpression Eq ae1 ae2 -> do
     lf <- toLinearForm (ae1 |-| ae2) constraints x
     case lf of
-      Nothing -> return top
-      Just (a, b) | 0 <: a, 0 <: b -> return top
-                  | otherwise -> return $ -b // a
+      (a, b) | 0 <: a, 0 <: b -> return top
+             | otherwise -> return $ -b // a
   BinaryExpression Leq ae1 ae2 -> do
     lf <- toLinearForm (ae1 |-| ae2) constraints x
     case lf of
-      Nothing -> return top
-      Just (a, b) | isBottom a || isBottom b -> return bot
-                  | 0 <: a, not (isBottom (meet b nonPositives)) -> return top
-                  | otherwise -> return $ join (lessEqual (-b // meet a positives)) (greaterEqual (-b // meet a negatives))
+      (a, b) | isBottom a || isBottom b -> return bot
+             | 0 <: a, not (isBottom (meet b nonPositives)) -> return top
+             | otherwise -> return $ join (lessEqual (-b // meet a positives)) (greaterEqual (-b // meet a negatives))
   BinaryExpression Ls ae1 ae2 -> inferInterval (ae1 |<=| (ae2 |-| num 1)) constraints x
   BinaryExpression Geq ae1 ae2 -> inferInterval (ae2 |<=| ae1) constraints x
   BinaryExpression Gt ae1 ae2 -> inferInterval (ae2 |<=| (ae1 |-| num 1)) constraints x
   -- ToDo: inner quantification
-  _ -> return top
-  where
+  _ -> return top) handleNotLinear
+  where      
     lessEqual int | isBottom int = bot
                   | otherwise = Interval NegInf (upper int)
     greaterEqual int  | isBottom int = bot
                       | otherwise = Interval (lower int) Inf
+    handleNotLinear (RuntimeError info pos trace) = case info of
+      InternalError NotLinear -> return top
+      _ -> throwError (RuntimeError info pos trace)                      
 
 -- | Linear form (A, B) represents a set of expressions a*x + b, where a in A and b in B
 type LinearForm = (Interval, Interval)
 
 -- | If possible, convert arithmetic expression aExpr into a linear form over variable x,
 -- | assuming all other quantified variables satisfy constraints.
-toLinearForm :: Expression -> Constraints -> Id -> Execution (Maybe LinearForm)
+toLinearForm :: Expression -> Constraints -> Id -> Execution LinearForm
 toLinearForm aExpr constraints x = case contents aExpr of
-  Numeral n -> return $ Just (0, fromInteger n)
+  Numeral n -> return (0, fromInteger n)
   Var y -> if x == y
-    then return $ Just (1, 0)
+    then return (1, 0)
     else case M.lookup y constraints of
-      Just int -> return $ Just (0, int)
+      Just int -> return (0, int)
       Nothing -> const aExpr
   Application name args -> if null $ M.keys constraints `intersect` freeVars aExpr
     then const aExpr
-    else return Nothing
+    else throwInternalError NotLinear
   MapSelection m args -> if null $ M.keys constraints `intersect` freeVars aExpr
     then const aExpr
-    else return Nothing
+    else throwInternalError NotLinear
   Old e -> old $ toLinearForm e constraints x
   UnaryExpression Neg e -> do
-    f <- toLinearForm e constraints x
-    return $ fmap (\(a, b) -> (-a, -b)) f
+    (a, b) <- toLinearForm e constraints x
+    return (-a, -b)
   BinaryExpression op e1 e2 -> do
     left <- toLinearForm e1 constraints x
     right <- toLinearForm e2 constraints x 
-    return $ combineBinOp op left right
+    combineBinOp op left right
   where
     const e = do
       v <- eval e
       case v of
-        IntValue n -> return $ Just (0, fromInteger n)
-    combineBinOp Plus   (Just (a1, b1)) (Just (a2, b2)) = Just (a1 + a2, b1 + b2)
-    combineBinOp Minus  (Just (a1, b1)) (Just (a2, b2)) = Just (a1 - a2, b1 - b2)
-    combineBinOp Times  (Just (a, b))   (Just (0, k))   = Just (k * a, k * b)
-    combineBinOp Times  (Just (0, k))   (Just (a, b))   = Just (k * a, k * b)
-    combineBinOp _ _ _ = Nothing                      
+        IntValue n -> return (0, fromInteger n)
+    combineBinOp Plus   (a1, b1) (a2, b2) = return (a1 + a2, b1 + b2)
+    combineBinOp Minus  (a1, b1) (a2, b2) = return (a1 - a2, b1 - b2)
+    combineBinOp Times  (a, b)   (0, k)   = return (k * a, k * b)
+    combineBinOp Times  (0, k)   (a, b)   = return (k * a, k * b)
+    combineBinOp _ _ _ = throwInternalError NotLinear                      
   
