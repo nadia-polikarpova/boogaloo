@@ -1,13 +1,16 @@
 {- Lattice of integer intervals -}
 module Intervals where
 
+import Ratio
+import Data.Maybe
+
 -- | Lattice type class 
 class Eq a => Lattice a where
-  top   :: a
-  bot   :: a
-  (<:)  :: a -> a -> Bool
-  join  :: a -> a -> a
-  meet  :: a -> a -> a
+  top   :: a              -- Top
+  bot   :: a              -- Bottom
+  (<:)  :: a -> a -> Bool -- Partial order
+  join  :: a -> a -> a    -- Least upper bound
+  meet  :: a -> a -> a    -- Greatest lower bound
   
   x <: y = meet x y == x
 
@@ -21,6 +24,8 @@ instance Show Extended where
   show Inf = "Infinity"
   
 instance Num Extended where
+  Inf + NegInf = error ("Cannot add " ++ show Inf ++ " and " ++ show NegInf)
+  NegInf + Inf = error ("Cannot add " ++ show NegInf ++ " and " ++ show Inf)
   Inf + _ = Inf
   NegInf + _ = NegInf
   Finite _ + Inf = Inf
@@ -50,6 +55,16 @@ instance Num Extended where
   
   fromInteger i = Finite i
 
+-- | extDiv r a b: result of dividing a by b, rounded with r in the finite case;
+-- | dividing infinty by infinity yields Nothing.
+extDiv :: (Ratio Integer -> Integer) -> Extended -> Extended -> Maybe Extended  
+extDiv r (Finite i) (Finite j) = Just $ Finite (r (i % j))
+extDiv _ Inf (Finite j) = Just $ signum (Finite j) * Inf
+extDiv _ NegInf (Finite j) = Just $ signum (Finite j) * NegInf
+extDiv _ (Finite i) Inf = Just $ 0
+extDiv _ (Finite i) NegInf = Just $ 0
+extDiv _ _ _ = Nothing  
+
 instance Ord Extended where
   NegInf <= b = True
   b <= NegInf = False
@@ -63,7 +78,24 @@ data Interval = Interval {
   upper :: Extended
 }
 
+-- | Is interval empty?
 isBottom (Interval l u) = l > u
+
+-- | Are both bounds of the interval finite?
+isBounded (Interval (Finite l) (Finite u)) = True
+isBounded _ = False
+
+-- | All positive integers
+positives = Interval 1 Inf
+-- | All negative integers
+negatives = Interval NegInf (-1)
+-- | All positive integers and 0
+nonNegatives = Interval 0 Inf
+-- | All netaive integers and 0
+nonPositives = Interval NegInf 0
+
+-- | f applied to all pairs of bounds, where each pair comes from two different intervals
+mapBounds f (Interval l1 u1) (Interval l2 u2) = [f b1 b2 | b1 <- [l1, u1], b2 <- [l2, u2]]
 
 instance Show Interval where
   show int | isBottom int = "[]"
@@ -90,9 +122,15 @@ instance Num Interval where
   Interval l1 u1 + Interval l2 u2 = Interval (l1 + l2) (u1 + u2)
   
   int1 * int2 | isBottom int1 || isBottom int2 = bot
-  Interval l1 u1 * Interval l2 u2 = Interval (minimum [l * u | l <- [l1, l2], u <- [u1, u2]]) (maximum [l * u | l <- [l1, l2], u <- [u1, u2]])
+              | otherwise = Interval (minimum (mapBounds (*) int1 int2)) (maximum (mapBounds (*) int1 int2))
   
   negate (Interval l u) = Interval (-u) (-l)  
   abs int = int
   signum _ = 1
   fromInteger n = Interval (Finite n) (Finite n)
+
+-- | Division on integer intervals
+(//) int1 int2 | isBottom int1 || isBottom int2 = bot
+               | 0 <: int2 = join (int1 // meet int2 negatives) (int1 // meet int2 positives)
+               | otherwise = Interval (minimum (catMaybes (mapBounds (extDiv ceiling) int1 int2))) (maximum (catMaybes (mapBounds (extDiv floor) int1 int2)))
+  

@@ -8,6 +8,7 @@ import Position
 import PrettyPrinter
 import qualified TypeChecker as TC
 import BasicBlocks
+import Data.List
 import Data.Map (Map, (!))
 import Data.Ratio
 import qualified Data.Map as M
@@ -116,7 +117,16 @@ setV id val = do
     
 -- | Set values of variables ids to vals.  
 setAll :: [Id] -> [Value] -> Execution ()
-setAll ids vals = zipWithM_ setV ids vals  
+setAll ids vals = zipWithM_ setV ids vals
+
+-- | Run execution in the old environment
+old :: Execution a -> Execution a
+old execution = do
+  env <- get
+  put env { envGlobals = envOld env }
+  res <- execution
+  put env
+  return res  
 
 -- | Enter local scope (apply localTC to the type context, assign actuals to formals, save globals in the old state),
 -- | execute computation,
@@ -148,6 +158,7 @@ generateValue t set guard = let newValue = defaultValue t in
 
 data RuntimeErrorInfo = AssertViolation SpecType Expression | 
   AssumeViolation SpecType Expression |
+  InfiniteDomain Id Interval |
   DivisionByZero |
   UnsupportedConstruct String |
   NoEntryPoint String |
@@ -187,6 +198,7 @@ runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vse
   where
   errorInfoDoc (AssertViolation specType e) = text (assertClauseName specType) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated" 
   errorInfoDoc (AssumeViolation specType e) = text (assumeClauseName specType) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
+  errorInfoDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
   errorInfoDoc (DivisionByZero) = text "Division by zero"
   errorInfoDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
   errorInfoDoc (NoEntryPoint name) = text "Cannot find program entry point:" <+> text name
@@ -262,7 +274,7 @@ eval expr = case contents expr of
   Application id args -> evalApplication id args (position expr)
   MapSelection m args -> evalMapSelection m args (position expr)
   MapUpdate m args new -> evalMapUpdate m args new
-  Old e -> evalOld e
+  Old e -> old $ eval e
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
   Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e)
@@ -328,13 +340,6 @@ evalMapUpdate m args new = do
   newV <- eval new
   case mV of 
     MapValue map -> return $ MapValue (M.insert argsV newV map)
-    
-evalOld e = do
-  env <- get
-  put env { envGlobals = envOld env }
-  res <- eval e
-  put env
-  return res
   
 evalBinary op e1 e2 = do
   left <- eval e1
@@ -343,6 +348,9 @@ evalBinary op e1 e2 = do
     Nothing -> do
       right <- eval e2
       binOp (position e1) op left right
+
+-- | Finite domain      
+type Domain = [Value]      
       
 evalExists tv vars e = do
   results <- executeLocally (TC.enterQuantified tv vars) [] [] evalWithDomains
@@ -363,7 +371,6 @@ evalExists tv vars e = do
     isTrue (BoolValue b) = b
     varNames = map fst vars
       
-  
 {- Statements -}
 
 -- | Execute a simple statement
@@ -513,81 +520,114 @@ processAxiom expr = case contents expr of
   _ -> return ()
    
 {- Quantification -}
-    
-type LinearForm = (Integer, Integer)
 
-toLinearForm :: Expression -> Id -> Execution (Maybe LinearForm)
-toLinearForm aExpr x = case contents aExpr of
-  Numeral n -> return $ Just (0, n)
+-- | Sets of interval constraints on integer variables
+type Constraints = Map Id Interval
+            
+-- | The set of domains for each variable in vars, outside which boolean expression booExpr is always false.
+-- | Fails if any of the domains are infinite or cannot be found.
+domains :: Expression -> [Id] -> Execution [Domain]
+domains boolExpr vars = do
+  initC <- foldM initConstraints M.empty vars
+  finalC <- inferConstraints (negationNF boolExpr) initC 
+  forM vars (domain finalC)
+  where
+    initConstraints c var = do
+      tc <- gets envTypeContext
+      case M.lookup var (TC.allVars tc) of
+        Just BoolType -> return c
+        Just IntType -> return $ M.insert var top c
+        _ -> throwRuntimeError (UnsupportedConstruct "quantification over a map or user-defined type") (position boolExpr)
+    domain c var = do
+      tc <- gets envTypeContext
+      case M.lookup var (TC.allVars tc) of
+        Just BoolType -> return $ map BoolValue [True, False]
+        Just IntType -> do
+          case c ! var of
+            int | isBottom int -> return []
+            Interval (Finite l) (Finite u) -> return $ map IntValue [l..u]
+            int -> throwRuntimeError (InfiniteDomain var int) (position boolExpr)
+
+-- | Starting from initial constraints, refine them with the information from boolExpr, until fixpoint.
+-- | This function terminates because the interval for each variable can only become smaller with each iteration.
+inferConstraints :: Expression -> Constraints -> Execution Constraints
+inferConstraints boolExpr constraints = do
+  constraints' <- foldM refineVar constraints (M.keys constraints)
+  if constraints == constraints'
+    then return constraints
+    else inferConstraints boolExpr constraints'
+  where
+    refineVar :: Constraints -> Id -> Execution Constraints
+    refineVar c id = do
+      int <- inferInterval boolExpr c id -- ToDo: if isBottom (meet (c ! id) int) doesn't make sense to continue
+      return $ M.insert id (meet (c ! id) int) c 
+
+-- | Infer an interval for variable x, outside which boolean expression booExpr is always false, 
+-- | assuming all other quantified variables satisfy constraints.
+inferInterval :: Expression -> Constraints -> Id -> Execution Interval
+inferInterval boolExpr constraints x = case contents boolExpr of
+  FF -> return bot
+  BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 constraints x) (inferInterval be2 constraints x)
+  BinaryExpression Or be1 be2 -> liftM2 join (inferInterval be1 constraints x) (inferInterval be2 constraints x)
+  BinaryExpression Eq ae1 ae2 -> do
+    lf <- toLinearForm (ae1 |-| ae2) constraints x
+    case lf of
+      Nothing -> return top
+      Just (a, b) | 0 <: a, 0 <: b -> return top
+                  | otherwise -> return $ -b // a
+  BinaryExpression Leq ae1 ae2 -> do
+    lf <- toLinearForm (ae1 |-| ae2) constraints x
+    case lf of
+      Nothing -> return top
+      Just (a, b) | isBottom a || isBottom b -> return bot
+                  | 0 <: a, not (isBottom (meet b nonPositives)) -> return top
+                  | otherwise -> return $ join (lessEqual (-b // meet a positives)) (greaterEqual (-b // meet a negatives))
+  BinaryExpression Ls ae1 ae2 -> inferInterval (ae1 |<=| (ae2 |-| num 1)) constraints x
+  BinaryExpression Geq ae1 ae2 -> inferInterval (ae2 |<=| ae1) constraints x
+  BinaryExpression Gt ae1 ae2 -> inferInterval (ae2 |<=| (ae1 |-| num 1)) constraints x
+  -- ToDo: inner quantification
+  _ -> return top
+  where
+    lessEqual int | isBottom int = bot
+                  | otherwise = Interval NegInf (upper int)
+    greaterEqual int  | isBottom int = bot
+                      | otherwise = Interval (lower int) Inf
+
+-- | Linear form (A, B) represents a set of expressions a*x + b, where a in A and b in B
+type LinearForm = (Interval, Interval)
+
+-- | If possible, convert arithmetic expression aExpr into a linear form over variable x,
+-- | assuming all other quantified variables satisfy constraints.
+toLinearForm :: Expression -> Constraints -> Id -> Execution (Maybe LinearForm)
+toLinearForm aExpr constraints x = case contents aExpr of
+  Numeral n -> return $ Just (0, fromInteger n)
   Var y -> if x == y
     then return $ Just (1, 0)
-    else const aExpr
-  Application name args -> if x `elem` freeVars aExpr
-    then return Nothing
-    else const aExpr
-  MapSelection m args -> if x `elem` freeVars aExpr
-    then return Nothing
-    else const aExpr
-  Old e -> toLinearForm e x
+    else case M.lookup y constraints of
+      Just int -> return $ Just (0, int)
+      Nothing -> const aExpr
+  Application name args -> if null $ M.keys constraints `intersect` freeVars aExpr
+    then const aExpr
+    else return Nothing
+  MapSelection m args -> if null $ M.keys constraints `intersect` freeVars aExpr
+    then const aExpr
+    else return Nothing
+  Old e -> old $ toLinearForm e constraints x
   UnaryExpression Neg e -> do
-    f <- toLinearForm e x
+    f <- toLinearForm e constraints x
     return $ fmap (\(a, b) -> (-a, -b)) f
   BinaryExpression op e1 e2 -> do
-    left <- toLinearForm e1 x
-    right <- toLinearForm e2 x 
+    left <- toLinearForm e1 constraints x
+    right <- toLinearForm e2 constraints x 
     return $ combineBinOp op left right
   where
     const e = do
       v <- eval e
       case v of
-        IntValue n -> return $ Just (0, n)
+        IntValue n -> return $ Just (0, fromInteger n)
     combineBinOp Plus   (Just (a1, b1)) (Just (a2, b2)) = Just (a1 + a2, b1 + b2)
     combineBinOp Minus  (Just (a1, b1)) (Just (a2, b2)) = Just (a1 - a2, b1 - b2)
     combineBinOp Times  (Just (a, b))   (Just (0, k))   = Just (k * a, k * b)
     combineBinOp Times  (Just (0, k))   (Just (a, b))   = Just (k * a, k * b)
-    combineBinOp _ _ _ = Nothing    
-    
-type Domain = [Value]    
-        
--- | The set of variable values, outside which booExpr is always false
-domains :: Expression -> [Id] -> Execution [Domain]
-domains boolExpr vars = forM vars (domain (negationNF boolExpr))
-  where
-    domain :: Expression -> Id -> Execution Domain
-    domain boolExpr var = do
-      tc <- gets envTypeContext
-      case M.lookup var (TC.allVars tc) of
-        Just BoolType -> return $ map BoolValue [True, False]
-        Just IntType -> do
-          int <- inferInterval boolExpr var
-          case int of
-            int | isBottom int -> return []
-            Interval (Finite l) (Finite u) -> return $ map IntValue [l..u]
-            _ -> throwRuntimeError (UnsupportedConstruct "infinite domain") (position boolExpr) -- ToDo: special error type?
-        _ -> throwRuntimeError (UnsupportedConstruct "quantification over a map or user-defined type") (position boolExpr)
-
-inferInterval :: Expression -> Id -> Execution Interval
-inferInterval boolExpr x = case contents boolExpr of
-  FF -> return bot
-  BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 x) (inferInterval be2 x)
-  BinaryExpression Or be1 be2 -> liftM2 join (inferInterval be1 x) (inferInterval be2 x)
-  BinaryExpression Eq ae1 ae2 -> do
-    lf <- toLinearForm (ae1 |-| ae2) x
-    case lf of
-      Nothing -> return top
-      Just (0, _) -> return top
-      Just (a, b) -> return $ Interval (Finite (ceiling (-b % a))) (Finite (floor (-b % a)))
-  BinaryExpression Leq ae1 ae2 -> do
-    lf <- toLinearForm (ae1 |-| ae2) x
-    case lf of
-      Nothing -> return top
-      Just (0, _) -> return top
-      Just (a, b) -> if a > 0
-        then return $ Interval NegInf (Finite (floor (-b % a)))
-        else return $ Interval (Finite (ceiling (-b % a))) Inf
-  BinaryExpression Ls ae1 ae2 -> inferInterval (ae1 |<=| (ae2 |-| num 1)) x
-  BinaryExpression Geq ae1 ae2 -> inferInterval (ae2 |<=| ae1) x
-  BinaryExpression Gt ae1 ae2 -> inferInterval (ae2 |<=| (ae1 |-| num 1)) x
-  -- -- Quantification?
-  _ -> return top
+    combineBinOp _ _ _ = Nothing                      
   

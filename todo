@@ -5,14 +5,19 @@
 
 - Interpreter
 	- Quantified expressions:
-		- Generating multiple domains
+		- Optimize when the domain of one of the variables is bottom
 		- Issue with equality
-		- What kind of errors to report when the domain is infinite or cannot be found?
+		- Nested quantified expressions currently cannot contribute to the constraints on outer variables. Alternatives:
+			- Take into account the expression of the inner quantification, while keeping the constraints for inner variables at top
+				Will help for (forall i: int :: (forall j: int :: 0 <= i && i < 10 && 0 <= j && j < i ==> f(i, j)))
+			- Join inner and outer quantifiers and look for common constraints
+				Will help for (forall j: int :: (forall i: int :: 0 <= i && i < 10 && 0 <= j && j < i ==> f(i, j)))
 	- Refactor types context: get rid of global/local variable distinction, use state?
 	- First take on exhaustive/random testing (randomness/backtracking only in the outermost call)
-	- Create package and some doc
+	- Create package and some doc (+ examples: sum_max, sorting/binary_search)
 -> Release 0.1
 	- Turn source positions into spans; use the end of the span to report postcondition violations
+	- Make Value/Execution types generic (or at least eval and exec?). This will allow support for abstract interpretation and symbolic execution.
 	- Extract function and constant definitions/constraints from axioms
 	- User-defined types
 	- Extends ordering
