@@ -5,7 +5,6 @@
 
 - Interpreter
 	- Quantified expressions:
-		- Issue with equality
 		- Nested quantified expressions currently cannot contribute to the constraints on outer variables. Alternatives:
 			- Take into account the expression of the inner quantification, while keeping the constraints for inner variables at top
 				Will help for (forall i: int :: (forall j: int :: 0 <= i && i < 10 && 0 <= j && j < i ==> f(i, j)))

@@ -25,6 +25,65 @@ checkProgram p = do
   pass4  <- foldAccum checkSignatures pass1 p                                -- check variable, constant, function and procedure signatures
   pass5  <- foldAccum checkBodies pass4 p                                    -- check axioms, function and procedure bodies, constant parent info
   return pass5
+  
+-- | Type of expr in context c;
+-- | fails if expr contains type errors.    
+exprType :: Context -> Expression -> Type
+exprType c expr = fromRight $ checkExpression c expr  
+  
+-- | Local context of function name with formal arguments formals and actual arguments actuals
+-- | (function signature has to be stored in ctxFunctions)
+enterFunction :: Id -> [Id] -> [Expression] -> Context -> Context 
+enterFunction name formals actuals c = c 
+  {
+    ctxTypeVars = [],
+    ctxIns = M.fromList (zip formals argTypes),
+    ctxLocals = M.empty,
+    ctxModifies = [],
+    ctxTwoState = False,
+    ctxInLoop = False
+  }
+  where 
+    sig = funSig name c
+    inst = typeSubst (fromRight $ fInstance c sig actuals)
+    argTypes = map inst (fsigArgTypes sig)
+
+-- | Local context of procedure name with definition def and actual arguments actuals
+-- | (procedure signature has to be stored in ctxProcedures)  
+enterProcedure :: Id -> PDef -> [Expression] -> Context -> Context 
+enterProcedure name def actuals c = c 
+  {
+    ctxTypeVars = [],
+    ctxIns = M.fromList $ zip ins inTypes,
+    ctxLocals = M.union (M.fromList $ zip localNames localTypes) (M.fromList $ zip outs outTypes),
+    ctxWhere = foldl addWhere (ctxWhere c) (zip (ins ++ outs ++ localNames) (paramWhere ++ localWhere)), 
+    ctxModifies = psigModifies sig,
+    ctxTwoState = True,
+    ctxInLoop = False
+  }
+  where
+    ins = pdefIns def
+    outs = pdefOuts def
+    locals = fst (pdefBody def)
+    sig = procSig name c
+    inst = typeSubst (fromRight $ pInstance c sig actuals)
+    inTypes = map inst (psigArgTypes sig)
+    outTypes = map inst (psigRetTypes sig)
+    localTypes = map (inst . itwType) locals
+    localNames = map itwId locals
+    addWhere m (id, w) = M.insert id w m
+    localWhere = map itwWhere locals
+    paramWhere = map (paramSubst sig def . itwWhere) (psigArgs sig ++ psigRets sig)
+   
+-- | Local context of a quantified expression   
+enterQuantified :: [Id] -> [IdType] -> Context -> Context 
+enterQuantified tv vars c = c' 
+  {
+    ctxIns = foldl addIn (ctxIns c) vars
+  }
+  where
+    c' = c { ctxTypeVars = tv }
+    addIn ins (id, t) = M.insert id (resolve c' t) ins
 
 {- Errors -}
 
@@ -164,62 +223,7 @@ funProcNames c = M.keys (ctxFunctions c) ++ M.keys (ctxProcedures c)
 -- | Signature of funtion name
 funSig name c = ctxFunctions c ! name
 -- | Signature of procedure name
-procSig name c = ctxProcedures c ! name
-
-
--- | Local context of function name with formal arguments formals and actual arguments actuals
--- | (function signature has to be stored in ctxFunctions)
-enterFunction :: Id -> [Id] -> [Expression] -> Context -> Context 
-enterFunction name formals actuals c = c 
-  {
-    ctxTypeVars = [],
-    ctxIns = M.fromList (zip formals argTypes),
-    ctxLocals = M.empty,
-    ctxModifies = [],
-    ctxTwoState = False,
-    ctxInLoop = False
-  }
-  where 
-    sig = funSig name c
-    inst = typeSubst (fromRight $ fInstance c sig actuals)
-    argTypes = map inst (fsigArgTypes sig)
-
--- | Local context of procedure name with definition def and actual arguments actuals
--- | (procedure signature has to be stored in ctxProcedures)  
-enterProcedure :: Id -> PDef -> [Expression] -> Context -> Context 
-enterProcedure name def actuals c = c 
-  {
-    ctxTypeVars = [],
-    ctxIns = M.fromList $ zip ins inTypes,
-    ctxLocals = M.union (M.fromList $ zip localNames localTypes) (M.fromList $ zip outs outTypes),
-    ctxWhere = foldl addWhere (ctxWhere c) (zip (ins ++ outs ++ localNames) (paramWhere ++ localWhere)), 
-    ctxModifies = psigModifies sig,
-    ctxTwoState = True,
-    ctxInLoop = False
-  }
-  where
-    ins = pdefIns def
-    outs = pdefOuts def
-    locals = fst (pdefBody def)
-    sig = procSig name c
-    inst = typeSubst (fromRight $ pInstance c sig actuals)
-    inTypes = map inst (psigArgTypes sig)
-    outTypes = map inst (psigRetTypes sig)
-    localTypes = map (inst . itwType) locals
-    localNames = map itwId locals
-    addWhere m (id, w) = M.insert id w m
-    localWhere = map itwWhere locals
-    paramWhere = map (paramSubst sig def . itwWhere) (psigArgs sig ++ psigRets sig)
-   
--- | Local context of a quantified expression   
-enterQuantified :: [Id] -> [IdType] -> Context -> Context 
-enterQuantified tv vars c = c' 
-  {
-    ctxIns = foldl addIn (ctxIns c) vars
-  }
-  where
-    c' = c { ctxTypeVars = tv }
-    addIn ins (id, t) = M.insert id (resolve c' t) ins  
+procSig name c = ctxProcedures c ! name    
   
 {- Types -}
   

@@ -142,26 +142,36 @@ paramSubst sig def = if not (pdefParamsRenamed def)
 -- | Negation normal form of a Boolean expression:
 -- | no negation above boolean connectives, quantifiers or relational operators;
 -- | no boolean connectives except && and ||.
-negationNF :: Expression -> Expression
-negationNF boolExpr = case contents boolExpr of
+negationNF :: (Expression -> Type) -> Expression -> Expression
+negationNF typing boolExpr = case contents boolExpr of
   UnaryExpression Not e -> case contents e of
-    UnaryExpression Not e' -> negationNF e'
-    BinaryExpression And e1 e2 -> negationNF (enot e1) ||| negationNF (enot e2)
-    BinaryExpression Or e1 e2 -> negationNF (enot e1) |&| negationNF (enot e2)
-    BinaryExpression Implies e1 e2 -> negationNF e1 |&| negationNF (enot e2)
-    BinaryExpression Equiv e1 e2 -> (negationNF e1 |&| negationNF (enot e2)) |&| (negationNF (enot e1) |&| negationNF e2)
-    BinaryExpression Eq ae1 ae2 -> ae1 |!=| ae2 -- ToDo: Need type info to determine if operands are boolean
-    BinaryExpression Neq ae1 ae2 -> ae1 |=| ae2
+    UnaryExpression Not e' -> negationNF typing e'
+    BinaryExpression And e1 e2 -> negationNF typing (enot e1) ||| negationNF typing (enot e2)
+    BinaryExpression Or e1 e2 -> negationNF typing (enot e1) |&| negationNF typing (enot e2)
+    BinaryExpression Implies e1 e2 -> negationNF typing e1 |&| negationNF typing (enot e2)
+    BinaryExpression Equiv e1 e2 -> (negationNF typing e1 |&| negationNF typing (enot e2)) |&| (negationNF typing (enot e1) |&| negationNF typing e2)
+    BinaryExpression Eq e1 e2 -> case typing e1 of
+      BoolType -> negationNF typing (enot (e1 |<=>| e2))
+      _ -> e1 |!=| e2
+    BinaryExpression Neq e1 e2 -> case typing e1 of
+      BoolType -> negationNF typing (e1 |<=>| e2)
+      _ -> e1 |=| e2
     BinaryExpression Leq ae1 ae2 -> ae1 |>| ae2
     BinaryExpression Ls ae1 ae2 -> ae1 |>=| ae2
     BinaryExpression Geq ae1 ae2 -> ae1 |<| ae2
     BinaryExpression Gt ae1 ae2 -> ae1 |<=| ae2
-    Quantified Forall tv vars e' -> attachPos (position e) (Quantified Exists tv vars (negationNF (enot e')))
-    Quantified Exists tv vars e' -> attachPos (position e) (Quantified Forall tv vars (negationNF (enot e')))
+    Quantified Forall tv vars e' -> attachPos (position e) (Quantified Exists tv vars (negationNF typing (enot e')))
+    Quantified Exists tv vars e' -> attachPos (position e) (Quantified Forall tv vars (negationNF typing (enot e')))
     _ -> boolExpr
-  BinaryExpression Implies e1 e2 -> negationNF (enot e1) ||| negationNF e2
-  BinaryExpression Equiv e1 e2 -> (negationNF (enot e1) ||| negationNF e2) |&| (negationNF e1 ||| negationNF (enot e2))
-  BinaryExpression op e1 e2 | op == And || op == Or -> gen $ BinaryExpression op (negationNF e1) (negationNF e2)
+  BinaryExpression Implies e1 e2 -> negationNF typing (enot e1) ||| negationNF typing e2
+  BinaryExpression Equiv e1 e2 -> (negationNF typing (enot e1) ||| negationNF typing e2) |&| (negationNF typing e1 ||| negationNF typing (enot e2))
+  BinaryExpression op e1 e2 | op == And || op == Or -> gen $ BinaryExpression op (negationNF typing e1) (negationNF typing e2)
+  BinaryExpression Eq e1 e2 -> case typing e1 of
+    BoolType -> negationNF typing (e1 |<=>| e2)
+    _ -> boolExpr
+  BinaryExpression Neq e1 e2 -> case typing e1 of
+    BoolType -> negationNF typing (enot (e1 |<=>| e2))
+    _ -> boolExpr
   _ -> boolExpr
 
 {- Specs -}

@@ -316,7 +316,7 @@ evalApplication name args pos = do
       evalBody formals argsV body `catchError` addStackFrame frame
   where
     evalBody formals actuals body = executeLocally (TC.enterFunction name formals args) formals actuals (eval body)
-    returnType tc = fromRight $ TC.checkExpression tc (gen $ Application name args)
+    returnType tc = TC.exprType tc (gen $ Application name args)
     frame = StackFrame pos name
     
 evalMapSelection m args pos = do 
@@ -332,7 +332,7 @@ evalMapSelection m args pos = do
         -- Just v -> generateValue (rangeType tc) (cache v map argsV) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause and cache the value
       Just v -> return v
   where
-    rangeType tc = fromRight $ TC.checkExpression tc (gen $ MapSelection m args)
+    rangeType tc = TC.exprType tc (gen $ MapSelection m args)
     mapVariable tc (Var v) = if M.member v (TC.allVars tc)
       then Just v
       else Nothing
@@ -405,7 +405,7 @@ execHavoc ids pos = do
   tc <- gets envTypeContext
   mapM_ (havoc tc) ids 
   where
-    havoc tc id = generateValue (fromRight . TC.checkExpression tc . gen . Var $ id) (setV id) (checkWhere id pos) 
+    havoc tc id = generateValue (TC.exprType tc . gen . Var $ id) (setV id) (checkWhere id pos) 
     
 execAssign lhss rhss = do
   rVals <- mapM eval rhss'
@@ -535,7 +535,8 @@ type Constraints = Map Id Interval
 domains :: Expression -> [Id] -> Execution [Domain]
 domains boolExpr vars = do
   initC <- foldM initConstraints M.empty vars
-  finalC <- inferConstraints (negationNF boolExpr) initC 
+  tc <- gets envTypeContext
+  finalC <- inferConstraints (negationNF (TC.exprType tc) boolExpr) initC 
   forM vars (domain finalC)
   where
     initConstraints c var = do
