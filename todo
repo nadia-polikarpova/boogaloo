@@ -5,7 +5,6 @@
 
 - Interpreter
 	- Quantified expressions:
-		- Optimize when the domain of one of the variables is bottom
 		- Issue with equality
 		- Nested quantified expressions currently cannot contribute to the constraints on outer variables. Alternatives:
 			- Take into account the expression of the inner quantification, while keeping the constraints for inner variables at top

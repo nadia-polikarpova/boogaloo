@@ -313,7 +313,7 @@ evalApplication name args pos = do
     Nothing -> return $ defaultValue (returnType tc)
     Just (FDef formals body) -> do
       argsV <- mapM eval args
-      catchError (evalBody formals argsV body) (addStackFrame frame)
+      evalBody formals argsV body `catchError` addStackFrame frame
   where
     evalBody formals actuals body = executeLocally (TC.enterFunction name formals args) formals actuals (eval body)
     returnType tc = fromRight $ TC.checkExpression tc (gen $ Application name args)
@@ -424,7 +424,7 @@ execCall lhss name args pos = do
   case M.lookup name procedures of
     Nothing -> execHavoc lhss pos
     Just (def : defs) -> do
-      retsV <- catchError (execProcedure name def args) (addStackFrame frame)
+      retsV <- execProcedure name def args `catchError` addStackFrame frame
       setAll lhss retsV
   where
     frame = StackFrame pos name
@@ -444,7 +444,7 @@ execBlock blocks label = let
 -- | tryOneOf blocks labels: try executing blocks starting with each of labels,
 -- | until we find one that does not result in an assumption violation      
 tryOneOf :: Map Id [Statement] -> [Id] -> Execution SourcePos        
-tryOneOf blocks (l : lbs) = catchError (execBlock blocks l) retry
+tryOneOf blocks (l : lbs) = execBlock blocks l `catchError` retry
   where
     retry e 
       | isAssumeViolation e && not (null lbs) = tryOneOf blocks lbs
@@ -554,24 +554,25 @@ domains boolExpr vars = do
             Interval (Finite l) (Finite u) -> return $ map IntValue [l..u]
             int -> throwRuntimeError (InfiniteDomain var int) (position boolExpr)
 
--- | Starting from initial constraints, refine them with the information from boolExpr, until fixpoint.
+-- | Starting from initial constraints, refine them with the information from boolExpr,
+-- | until fixpoint is reached or the domain for one of the variables is empty.
 -- | This function terminates because the interval for each variable can only become smaller with each iteration.
 inferConstraints :: Expression -> Constraints -> Execution Constraints
 inferConstraints boolExpr constraints = do
   constraints' <- foldM refineVar constraints (M.keys constraints)
-  if constraints == constraints'
-    then return constraints
+  if constraints == constraints' || bot `elem` M.elems constraints'
+    then return constraints'
     else inferConstraints boolExpr constraints'
   where
     refineVar :: Constraints -> Id -> Execution Constraints
     refineVar c id = do
-      int <- inferInterval boolExpr c id -- ToDo: if isBottom (meet (c ! id) int) doesn't make sense to continue
+      int <- inferInterval boolExpr c id
       return $ M.insert id (meet (c ! id) int) c 
 
 -- | Infer an interval for variable x, outside which boolean expression booExpr is always false, 
 -- | assuming all other quantified variables satisfy constraints.
 inferInterval :: Expression -> Constraints -> Id -> Execution Interval
-inferInterval boolExpr constraints x = catchError (case contents boolExpr of
+inferInterval boolExpr constraints x = (case contents boolExpr of
   FF -> return bot
   BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 constraints x) (inferInterval be2 constraints x)
   BinaryExpression Or be1 be2 -> liftM2 join (inferInterval be1 constraints x) (inferInterval be2 constraints x)
@@ -590,15 +591,16 @@ inferInterval boolExpr constraints x = catchError (case contents boolExpr of
   BinaryExpression Geq ae1 ae2 -> inferInterval (ae2 |<=| ae1) constraints x
   BinaryExpression Gt ae1 ae2 -> inferInterval (ae2 |<=| (ae1 |-| num 1)) constraints x
   -- ToDo: inner quantification
-  _ -> return top) handleNotLinear
+  _ -> return top
+  ) `catchError` handleNotLinear
   where      
     lessEqual int | isBottom int = bot
                   | otherwise = Interval NegInf (upper int)
     greaterEqual int  | isBottom int = bot
                       | otherwise = Interval (lower int) Inf
-    handleNotLinear (RuntimeError info pos trace) = case info of
+    handleNotLinear err = case rteInfo err of
       InternalError NotLinear -> return top
-      _ -> throwError (RuntimeError info pos trace)                      
+      _ -> throwError err                      
 
 -- | Linear form (A, B) represents a set of expressions a*x + b, where a in A and b in B
 type LinearForm = (Interval, Interval)
