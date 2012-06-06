@@ -283,9 +283,9 @@ eval expr = case contents expr of
   Old e -> old $ eval e
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
-  Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e)
+  Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e) (position expr)
     where vnot (BoolValue b) = BoolValue (not b)
-  Quantified Exists tv vars e -> evalExists tv vars e
+  Quantified Exists tv vars e -> evalExists tv vars e (position expr)
   
 evalVar id pos = do
   tc <- gets envTypeContext
@@ -357,8 +357,15 @@ evalBinary op e1 e2 = do
 
 -- | Finite domain      
 type Domain = [Value]      
-      
-evalExists tv vars e = do
+
+evalExists :: [Id] -> [IdType] -> Expression -> SourcePos -> Execution Value      
+evalExists tv vars e pos = do
+  tc <- gets envTypeContext
+  case contents $ normalize (TC.exprType tc) (attachPos pos $ Quantified Exists tv vars e) of
+    Quantified Exists tv' vars' e' -> evalExists' tv' vars' e'
+
+evalExists' :: [Id] -> [IdType] -> Expression -> Execution Value    
+evalExists' tv vars e = do
   results <- executeLocally (TC.enterQuantified tv vars) [] [] evalWithDomains
   return $ BoolValue (any isTrue results)
   where
@@ -535,8 +542,7 @@ type Constraints = Map Id Interval
 domains :: Expression -> [Id] -> Execution [Domain]
 domains boolExpr vars = do
   initC <- foldM initConstraints M.empty vars
-  tc <- gets envTypeContext
-  finalC <- inferConstraints (negationNF (TC.exprType tc) boolExpr) initC 
+  finalC <- inferConstraints boolExpr initC 
   forM vars (domain finalC)
   where
     initConstraints c var = do
@@ -571,7 +577,8 @@ inferConstraints boolExpr constraints = do
       return $ M.insert id (meet (c ! id) int) c 
 
 -- | Infer an interval for variable x, outside which boolean expression booExpr is always false, 
--- | assuming all other quantified variables satisfy constraints.
+-- | assuming all other quantified variables satisfy constraints;
+-- | boolExpr has to be in negation-prenex normal form.
 inferInterval :: Expression -> Constraints -> Id -> Execution Interval
 inferInterval boolExpr constraints x = (case contents boolExpr of
   FF -> return bot
@@ -591,7 +598,7 @@ inferInterval boolExpr constraints x = (case contents boolExpr of
   BinaryExpression Ls ae1 ae2 -> inferInterval (ae1 |<=| (ae2 |-| num 1)) constraints x
   BinaryExpression Geq ae1 ae2 -> inferInterval (ae2 |<=| ae1) constraints x
   BinaryExpression Gt ae1 ae2 -> inferInterval (ae2 |<=| (ae1 |-| num 1)) constraints x
-  -- ToDo: inner quantification
+  -- Quantifier can only occur here if it is alternating with the enclosing one, hence no domain can be inferred 
   _ -> return top
   ) `catchError` handleNotLinear
   where      

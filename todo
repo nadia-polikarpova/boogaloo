@@ -4,12 +4,7 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- Quantified expressions:
-		- Nested quantified expressions currently cannot contribute to the constraints on outer variables. Alternatives:
-			- Take into account the expression of the inner quantification, while keeping the constraints for inner variables at top
-				Will help for (forall i: int :: (forall j: int :: 0 <= i && i < 10 && 0 <= j && j < i ==> f(i, j)))
-			- Join inner and outer quantifiers and look for common constraints
-				Will help for (forall j: int :: (forall i: int :: 0 <= i && i < 10 && 0 <= j && j < i ==> f(i, j)))
+	- In negationNF, when entering inside a quantifier, bound vars have to introduced into the type context, otherwise normalizing equality breaks
 	- Refactor types context: get rid of global/local variable distinction, use state?
 	- First take on exhaustive/random testing (randomness/backtracking only in the outermost call)
 	- Create package and some doc (+ examples: sum_max, sorting/binary_search)

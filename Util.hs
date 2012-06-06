@@ -70,7 +70,7 @@ boundUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= leng
       else Nothing
     where
       -- typeSubst of bound variables of m2 with fresh names
-      replacedBV = typeSubst (M.fromList (zip bv2 (map idType freshBVNames)))
+      replacedBV = typeSubst (M.fromList (zip bv2 (map nullaryType freshBVNames)))
       -- fresh names for bound variables of m2: with non-identifier chanarcter prepended 
       freshBVNames = map (nonIdChar:) bv2
       -- does a type correspond to one of the fresh bound variables of m2?
@@ -165,14 +165,49 @@ negationNF typing boolExpr = case contents boolExpr of
     _ -> boolExpr
   BinaryExpression Implies e1 e2 -> negationNF typing (enot e1) ||| negationNF typing e2
   BinaryExpression Equiv e1 e2 -> (negationNF typing (enot e1) ||| negationNF typing e2) |&| (negationNF typing e1 ||| negationNF typing (enot e2))
-  BinaryExpression op e1 e2 | op == And || op == Or -> gen $ BinaryExpression op (negationNF typing e1) (negationNF typing e2)
   BinaryExpression Eq e1 e2 -> case typing e1 of
     BoolType -> negationNF typing (e1 |<=>| e2)
     _ -> boolExpr
   BinaryExpression Neq e1 e2 -> case typing e1 of
     BoolType -> negationNF typing (enot (e1 |<=>| e2))
     _ -> boolExpr
+  BinaryExpression op e1 e2 | op == And || op == Or -> gen $ BinaryExpression op (negationNF typing e1) (negationNF typing e2)    
+  Quantified qop tv vars e -> gen $ Quantified qop tv vars (negationNF typing e) 
   _ -> boolExpr
+
+-- | Prenex normal form of a Boolean expression:
+-- | all quantifiers are pushed to the outside and any two quantifiers of the same kind in a row are glued together.
+-- | Requires expression to be in the negation normal form.  
+prenex :: Expression -> Expression
+prenex boolExpr = (glue . rawPrenex) boolExpr
+  where
+    -- | Push all quantifiers to the front
+    rawPrenex boolExpr = case contents boolExpr of
+      -- We only ahve to consider && and || because boolExpr is in negation normal form
+      BinaryExpression op e1 e2 | op == And || op == Or -> merge (++ "1") (++ "2") op (rawPrenex e1) (rawPrenex e2)
+      _ -> boolExpr
+    merge r1 r2 op e1 e2 = attachPos (position e1) (merge' r1 r2 op e1 e2)
+    merge' r1 r2 op (Pos _ (Quantified qop tv vars e)) e2 = case renameBound r1 (Quantified qop tv vars e) of
+      Quantified qop tv' vars' e' -> Quantified qop tv' vars' (merge r1 r2 op e' e2)
+    merge' r1 r2 op e1 (Pos _ (Quantified qop tv vars e)) = case renameBound r2 (Quantified qop tv vars e) of
+      Quantified qop tv' vars' e' -> Quantified qop tv' vars' (merge r1 r2 op e1 e')
+    merge' _ _ op e1 e2 = BinaryExpression op e1 e2
+    -- | Rename all bound variables and type variables in a quantified expression with a renaming function r
+    renameBound r (Quantified qop tv vars e) = Quantified qop (map r tv) (map (renameVar r tv) vars) (exprSubst (varBinding r (map fst vars)) e)
+    varBinding r ids = M.fromList $ zip ids (map (Var . r) ids)
+    typeBinding r tv = M.fromList $ zip tv (map (nullaryType . r) tv)
+    renameVar r tv (id, t) = (r id, typeSubst (typeBinding r tv) t)
+    -- | Glue together any two quantifiers of the same kind in a row
+    glue boolExpr = attachPos (position boolExpr) (glue' (contents boolExpr))
+    glue' boolExpr = case boolExpr of
+      Quantified qop tv vars e -> case contents e of
+        Quantified qop' tv' vars' e' | qop == qop' -> glue' (Quantified qop (tv ++ tv') (vars ++ vars') e')
+                                     | otherwise -> Quantified qop tv vars (glue e)
+        _ -> boolExpr
+      _ -> boolExpr
+
+-- | Negation and prenex normal form of a Boolean expression      
+normalize typing boolExpr = prenex $ negationNF typing boolExpr
 
 {- Specs -}
 

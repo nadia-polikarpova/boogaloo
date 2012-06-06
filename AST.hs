@@ -17,10 +17,10 @@ data Type = BoolType | IntType | {-BitVectorType Int |-}
   Instance Id [Type]
 
 -- | Type denoted by id without arguments
-idType id = Instance id []
+nullaryType id = Instance id []
 
 -- | Dummy type used during type checking to denote error
-noType = idType "NoType"
+noType = nullaryType "NoType"
 
 {- Expressions -}
 

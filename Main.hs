@@ -2,6 +2,7 @@ module Main where
 
 import Text.ParserCombinators.Parsec
 import AST
+import Util
 import Position
 import Parser
 import TypeChecker
@@ -12,6 +13,7 @@ import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Identity
 import Control.Monad.Error
+import Control.Applicative
 
 -- | Name of the entry point procedure in a Boogie program
 entryPoint = "main"
