@@ -4,17 +4,16 @@
 	- Do not throw away attributes and triggers
 
 - Interpreter
-	- In negationNF, when entering inside a quantifier, bound vars have to introduced into the type context, otherwise normalizing equality breaks
 	- Refactor types context: get rid of global/local variable distinction, use state?
 	- First take on exhaustive/random testing (randomness/backtracking only in the outermost call)
 	- Create package and some doc (+ examples: sum_max, sorting/binary_search)
 -> Release 0.1
 	- Turn source positions into spans; use the end of the span to report postcondition violations
-	- Make Value/Execution types generic (or at least eval and exec?). This will allow support for abstract interpretation and symbolic execution.
 	- Extract function and constant definitions/constraints from axioms
 	- User-defined types
 	- Extends ordering
 	- Backtracking (logicT monad?)
+	- Make Value/Execution types generic (or at least eval and exec?). This will allow support for abstract interpretation and symbolic execution.	
 	- Constraint solving
 	- What to do with call forall?
 	- User interface

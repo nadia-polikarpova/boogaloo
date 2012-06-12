@@ -6,11 +6,11 @@ import Util
 import Intervals
 import Position
 import PrettyPrinter
-import qualified TypeChecker as TC
+import TypeChecker hiding (checkWhere)
+import NormalForm
 import BasicBlocks
 import Data.List
 import Data.Map (Map, (!))
-import Data.Ratio
 import qualified Data.Map as M
 import Control.Monad.Error hiding (join)
 import Control.Applicative hiding (empty)
@@ -22,7 +22,7 @@ import Text.PrettyPrint
 -- | Execute program p with type context tc (produced by the type checker) and entry point main, 
 -- | and return the values of global variables;
 -- | main must have no arguments
-executeProgram :: Program -> TypeContext -> Id -> Either RuntimeError (Map Id Value)
+executeProgram :: Program -> Context -> Id -> Either RuntimeError (Map Id Value)
 executeProgram p tc main = envGlobals <$> finalEnvironment
   where
     initEnvironment = emptyEnv { envTypeContext = tc }
@@ -63,8 +63,6 @@ valueDoc (CustomValue n) = text "custom_" <> integer n
 
 instance Show Value where
   show v = show (valueDoc v)
-  
-type TypeContext = TC.Context
 
 data Environment = Environment
   {
@@ -74,7 +72,7 @@ data Environment = Environment
     envConstants :: Map Id Expression,  -- Constant names to expressions
     envFunctions :: Map Id FDef,        -- Function names to definitions
     envProcedures :: Map Id [PDef],     -- Procedure names to definitions
-    envTypeContext :: TypeContext       -- Type context (see TypeChecker)
+    envTypeContext :: Context           -- Type context (see TypeChecker)
   }
    
 emptyEnv = Environment
@@ -85,7 +83,7 @@ emptyEnv = Environment
     envConstants = M.empty,
     envFunctions = M.empty,
     envProcedures = M.empty,
-    envTypeContext = TC.emptyContext
+    envTypeContext = emptyContext
   }
 
 setGlobal id val env = env { envGlobals = M.insert id val (envGlobals env) }    
@@ -111,7 +109,7 @@ type Execution a = ErrorT RuntimeError (State Environment) a
 setV :: Id -> Value -> Execution ()    
 setV id val = do
   tc <- gets envTypeContext
-  if M.member id (TC.localScope tc)
+  if M.member id (localScope tc)
     then modify $ setLocal id val
     else modify $ setGlobal id val      
     
@@ -126,19 +124,32 @@ old execution = do
   put env { envGlobals = envOld env }
   res <- execution
   put env
-  return res  
+  return res
 
--- | Enter local scope (apply localTC to the type context, assign actuals to formals, save globals in the old state),
+-- | Save current values of global variables in the "old" environment, return the previous "old" environment
+saveOld :: Execution (Map Id Value)  
+saveOld = do
+  env <- get
+  put env { envOld = envGlobals env }
+  return $ envOld env
+
+-- | Set the "old" environment to olds  
+restoreOld :: Map Id Value -> Execution ()  
+restoreOld olds = do
+  env <- get
+  put env { envOld = olds }
+
+-- | Enter local scope (apply localTC to the type context and assign actuals to formals),
 -- | execute computation,
--- | then restore type context, local variables and the old state to their initial values
-executeLocally :: (TypeContext -> TypeContext) -> [Id] -> [Value] -> Execution a -> Execution a
+-- | then restore type context and local variables to their initial values
+executeLocally :: (Context -> Context) -> [Id] -> [Value] -> Execution a -> Execution a
 executeLocally localTC formals actuals computation = do
   env <- get
-  put env { envTypeContext = localTC (envTypeContext env), envOld = envGlobals env }
+  put env { envTypeContext = localTC (envTypeContext env) }
   setAll formals actuals
   res <- computation
   env' <- get
-  put env' { envTypeContext = envTypeContext env, envLocals = envLocals env, envOld = envOld env }
+  put env' { envTypeContext = envTypeContext env, envLocals = envLocals env }
   return res
   
 {- Nondeterminism -}  
@@ -289,11 +300,11 @@ eval expr = case contents expr of
   
 evalVar id pos = do
   tc <- gets envTypeContext
-  case M.lookup id (TC.localScope tc) of
+  case M.lookup id (localScope tc) of
     Just t -> lookup envLocals setLocal t
-    Nothing -> case M.lookup id (TC.ctxGlobals tc) of
+    Nothing -> case M.lookup id (ctxGlobals tc) of
       Just t -> lookup envGlobals setGlobal t
-      Nothing -> case M.lookup id (TC.ctxConstants tc) of
+      Nothing -> case M.lookup id (ctxConstants tc) of
         Just t -> do
           constants <- gets envConstants
           case M.lookup id constants of
@@ -315,8 +326,8 @@ evalApplication name args pos = do
       argsV <- mapM eval args
       evalBody formals argsV body `catchError` addStackFrame frame
   where
-    evalBody formals actuals body = executeLocally (TC.enterFunction name formals args) formals actuals (eval body)
-    returnType tc = TC.exprType tc (gen $ Application name args)
+    evalBody formals actuals body = executeLocally (enterFunction name formals args) formals actuals (eval body)
+    returnType tc = exprType tc (gen $ Application name args)
     frame = StackFrame pos name
     
 evalMapSelection m args pos = do 
@@ -332,8 +343,8 @@ evalMapSelection m args pos = do
         -- Just v -> generateValue (rangeType tc) (cache v map argsV) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause and cache the value
       Just v -> return v
   where
-    rangeType tc = TC.exprType tc (gen $ MapSelection m args)
-    mapVariable tc (Var v) = if M.member v (TC.allVars tc)
+    rangeType tc = exprType tc (gen $ MapSelection m args)
+    mapVariable tc (Var v) = if M.member v (allVars tc)
       then Just v
       else Nothing
     mapVariable tc (MapUpdate m _ _) = mapVariable tc (contents m)
@@ -361,12 +372,12 @@ type Domain = [Value]
 evalExists :: [Id] -> [IdType] -> Expression -> SourcePos -> Execution Value      
 evalExists tv vars e pos = do
   tc <- gets envTypeContext
-  case contents $ normalize (TC.exprType tc) (attachPos pos $ Quantified Exists tv vars e) of
+  case contents $ normalize tc (attachPos pos $ Quantified Exists tv vars e) of
     Quantified Exists tv' vars' e' -> evalExists' tv' vars' e'
 
 evalExists' :: [Id] -> [IdType] -> Expression -> Execution Value    
 evalExists' tv vars e = do
-  results <- executeLocally (TC.enterQuantified tv vars) [] [] evalWithDomains
+  results <- executeLocally (enterQuantified tv vars) [] [] evalWithDomains
   return $ BoolValue (any isTrue results)
   where
     evalWithDomains = do
@@ -412,16 +423,16 @@ execHavoc ids pos = do
   tc <- gets envTypeContext
   mapM_ (havoc tc) ids 
   where
-    havoc tc id = generateValue (TC.exprType tc . gen . Var $ id) (setV id) (checkWhere id pos) 
+    havoc tc id = generateValue (exprType tc . gen . Var $ id) (setV id) (checkWhere id pos) 
     
 execAssign lhss rhss = do
   rVals <- mapM eval rhss'
   setAll lhss' rVals
   where
-    lhss' = map fst (zipWith normalize lhss rhss)
-    rhss' = map snd (zipWith normalize lhss rhss)
-    normalize (id, []) rhs = (id, rhs)
-    normalize (id, argss) rhs = (id, mapUpdate (gen $ Var id) argss rhs)
+    lhss' = map fst (zipWith simplifyLeft lhss rhss)
+    rhss' = map snd (zipWith simplifyLeft lhss rhss)
+    simplifyLeft (id, []) rhs = (id, rhs)
+    simplifyLeft (id, argss) rhs = (id, mapUpdate (gen $ Var id) argss rhs)
     mapUpdate e [args] rhs = gen $ MapUpdate e args rhs
     mapUpdate e (args1 : argss) rhs = gen $ MapUpdate e args1 (mapUpdate (gen $ MapSelection e args1) argss rhs)
     
@@ -468,26 +479,27 @@ execProcedure name def args = let
     else pos          -- A return statement inside the body
   execBody = do
     checkPreconditions name def
+    olds <- saveOld
     pos <- exitPoint <$> execBlock blocks startLabel
     checkPostonditions name def pos
+    restoreOld olds
     mapM (eval . attachPos (pdefPos def) . Var) outs
   in do
-    tc <- gets envTypeContext
     argsV <- mapM eval args
-    executeLocally (TC.enterProcedure name def args) ins argsV execBody
+    executeLocally (enterProcedure name def args) ins argsV execBody
     
 {- Specs -}
 
 -- | Assert preconditions of definition def of procedure name
 checkPreconditions name def = do
-  s <- TC.procSig name <$> gets envTypeContext
+  s <- procSig name <$> gets envTypeContext
   mapM_ (exec . attachPos (pdefPos def) . check . subst s) (psigRequires s)
   where 
     subst s (SpecClause t f e) = SpecClause t f (paramSubst s def e)
 
 -- | Assert postconditions of definition def of procedure name at exitPoint    
 checkPostonditions name def exitPoint = do
-  s <- TC.procSig name <$> gets envTypeContext
+  s <- procSig name <$> gets envTypeContext
   mapM_ (exec . attachPos exitPoint . check . subst s) (psigEnsures s)
   where 
     subst s (SpecClause t f e) = SpecClause t f (paramSubst s def e)
@@ -495,7 +507,7 @@ checkPostonditions name def exitPoint = do
 -- | Assume where clause of variable at a program location pos
 -- | (pos will be reported as the location of the error instead of the location of the variable definition).
 checkWhere id pos = do
-  whereClauses <- TC.ctxWhere <$> gets envTypeContext
+  whereClauses <- ctxWhere <$> gets envTypeContext
   case M.lookup id whereClauses of
     Nothing -> return ()
     Just w -> (exec . attachPos pos . Assume Where) w
@@ -518,7 +530,7 @@ processFunctionBody name args body = modify $ addFunction name (FDef (map (forma
     formalName (Just n) = n
 
 processProcedureBody name pos args rets body = do
-  sig <- TC.procSig name <$> gets envTypeContext
+  sig <- procSig name <$> gets envTypeContext
   modify $ addProcedure name (PDef argNames retNames (paramsRenamed sig) (flatten body) pos) 
   where
     argNames = map fst args
@@ -547,13 +559,13 @@ domains boolExpr vars = do
   where
     initConstraints c var = do
       tc <- gets envTypeContext
-      case M.lookup var (TC.allVars tc) of
+      case M.lookup var (allVars tc) of
         Just BoolType -> return c
         Just IntType -> return $ M.insert var top c
         _ -> throwRuntimeError (UnsupportedConstruct "quantification over a map or user-defined type") (position boolExpr)
     domain c var = do
       tc <- gets envTypeContext
-      case M.lookup var (TC.allVars tc) of
+      case M.lookup var (allVars tc) of
         Just BoolType -> return $ map BoolValue [True, False]
         Just IntType -> do
           case c ! var of
