@@ -119,7 +119,7 @@ accum cx y = case cx of
   Left e -> ErrorAccum e y
   Right x -> ErrorAccum [] x    
   
--- | Trnasform an error accumulator back into a rgeular type checking result  
+-- | Transform an error accumulator back into a rgeular type checking result  
 report :: ErrorAccum a -> Checked a
 report (ErrorAccum [] x) = Right x
 report (ErrorAccum es _) = Left es  
@@ -139,7 +139,7 @@ mapAccum f def nodes = report $ mapM (acc f) nodes
   where
     acc f x  = accum (f x) def
    
--- | Apply type checking f to all nodes throring away the result,
+-- | Apply type checking f to all nodes throwing away the result,
 -- | accumulating errors from all nodes
 mapAccumA_ :: (a -> Checked ()) -> [a] -> ErrorAccum ()
 mapAccumA_ f nodes = mapM_ (acc f) nodes  
@@ -150,7 +150,7 @@ mapAccumA_ f nodes = mapM_ (acc f) nodes
 mapAccum_ :: (a -> Checked ()) -> [a] -> Checked ()
 mapAccum_ f nodes = report $ mapAccumA_ f nodes  
 
--- | Apply type checking f to all xs and ys throring away the result,
+-- | Apply type checking f to all xs and ys throwing away the result,
 -- | accumulating errors from all nodes and reporting them at the end
 zipWithAccum_ :: (a -> b -> Checked ()) -> [a] -> [b] -> Checked ()
 zipWithAccum_ f xs ys = report $ zipWithM_ (acc f) xs ys  
@@ -406,12 +406,14 @@ checkAssign c lhss rhss = do
 checkCall :: Context -> [Id] -> Id -> [Expression] -> Checked ()
 checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
   Nothing -> throwTypeError (ctxPos c) (text "Not in scope: procedure" <+> text name)
-  Just sig -> if not (null (psigModifies sig \\ ctxModifies c)) 
-    then throwTypeError (ctxPos c) (text "Call modifies a global variable that is not in the enclosing procedure's modifies clause:" <+> commaSep (map text (psigModifies sig \\ ctxModifies c)))
+  Just sig -> let illegalModifies = psigModifies sig \\ ctxModifies c in
+    if not (null illegalModifies) 
+    then throwTypeError (ctxPos c) (text "Call modifies a global variable that is not in the enclosing procedure's modifies clause:" <+> commaSep (map text illegalModifies))
     else do
       u <- pInstance c sig args 
-      checkLefts c lhss (length (psigRetTypes sig))
-      zipWithAccum_ (compareType c "call left-hand side") (map (typeSubst u) (psigRetTypes sig)) (map (attachPos (ctxPos c) . Var) lhss)
+      let retTypes = psigRetTypes sig
+      checkLefts c lhss (length retTypes)
+      zipWithAccum_ (compareType c "call left-hand side") (map (typeSubst u) retTypes) (map (attachPos (ctxPos c) . Var) lhss)
         
 checkCallForall :: Context -> Id -> [WildcardExpression] -> Checked ()
 checkCallForall c name args = case M.lookup name (ctxProcedures c) of
@@ -613,7 +615,7 @@ checkParentInfo c ids t parents = if length parents /= length (nub parents)
         then throwTypeError (ctxPos c) (text "Parent type" <+> typeDoc t' <+> text "is different from constant type" <+> typeDoc t)
         else if p `elem` ids
           then throwTypeError (ctxPos c) (text "Constant" <+> text p <+> text "is decalred to be its own parent")
-          else return ()
+          else return ()    
 
 -- | Check that axiom is a valid boolean expression    
 checkAxiom :: Context -> Expression -> Checked ()

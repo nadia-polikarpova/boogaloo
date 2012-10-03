@@ -1,29 +1,30 @@
 - Overall
-	- New syntax
-	- Bit vectors
-	- Do not throw away attributes and triggers
+  - Ask Scott to help with optimization
+  - New syntax
+  - Bit vectors
+  - Do not throw away attributes and triggers
 
 - Interpreter
-	- Refactor types context: get rid of global/local variable distinction, use state?
-	- First take on exhaustive/random testing (randomness/backtracking only in the outermost call)
-	- Create package and some doc (+ examples: sum_max, sorting/binary_search)
+  - Refactor types context: get rid of global/local variable distinction, use state?
+  - Extract function and constant definitions/constraints from axioms
+  - First take on exhaustive/random testing (randomness/backtracking only in the outermost call)
+  - Create package and some doc (+ examples: sum_max, sorting/binary_search)
 -> Release 0.1
-	- Turn source positions into spans; use the end of the span to report postcondition violations
-	- Extract function and constant definitions/constraints from axioms
-	- User-defined types
-	- Extends ordering
-	- Backtracking (logicT monad?)
-	- Make Value/Execution types generic (or at least eval and exec?). This will allow support for abstract interpretation and symbolic execution.	
-	- Constraint solving
-	- What to do with call forall?
-	- User interface
-		- allow choosing entry point and passing command line args
-		- settings for disabling checking of different specs
-		- settings for bounding domains to be checked in quantified expressions
-		- output local state with runtime error?
-	- Interactive sessions
-	
-	
+  - Turn source positions into spans; use the end of the span to report postcondition violations  
+  - User-defined types
+  - Extends ordering
+  - Backtracking (logicT monad?)
+  - Make Value/Execution types generic (or at least eval and exec?). This will allow support for abstract interpretation and symbolic execution.  
+  - Constraint solving
+  - What to do with call forall?
+  - User interface
+    - allow choosing entry point and passing command line args
+    - settings for disabling checking of different specs
+    - settings for bounding domains to be checked in quantified expressions
+    - output local state with runtime error?
+  - Interactive sessions
+  
+  
 Notes:
 - Where clauses of in-parameters: according to the manual can mention out-parameters, but actually can't
 - Breaks with labels. a: b: while(...) {break a;} is not allowed in the implementation (as is l: break l;), but seems to be allowed by the manual.

@@ -47,7 +47,7 @@ data BareExpression = FF | TT |
   Old Expression |
   UnaryExpression UnOp Expression |
   BinaryExpression BinOp Expression Expression |
-  Quantified QOp [Id] [IdType] Expression          -- Quantified quantifier type_vars bound_vars expression
+  Quantified QOp [Id] [IdType] Expression          -- Quantified quantifier type_vars bound_vars expression  
   
 mapSelectExpr target args = attachPos (position target) (MapSelection target args)  
   

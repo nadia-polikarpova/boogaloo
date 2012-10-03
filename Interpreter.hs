@@ -44,7 +44,7 @@ data Value = IntValue Integer |   -- Integer value
   MapValue (Map [Value] Value) |  -- Value of a map type
   CustomValue Integer             -- Value of a user-defined type (values with the same code are considered equal)
   deriving (Eq, Ord)
-  
+      
 -- | Default value of a type (used to initialize variables)  
 defaultValue :: Type -> Value
 defaultValue BoolType         = BoolValue False  
@@ -197,7 +197,7 @@ throwRuntimeError info pos = throwError (RuntimeError info pos [])
 -- | Push frame on the stack trace of a runtime error
 addStackFrame frame (RuntimeError info pos trace) = throwError (RuntimeError info pos (frame : trace))
 
--- | Is err an assumptionviolation?
+-- | Is err an assumption violation?
 isAssumeViolation :: RuntimeError -> Bool
 isAssumeViolation err = case rteInfo err of
   AssumeViolation _ _ -> True
@@ -264,10 +264,10 @@ binOp pos Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
 binOp pos Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
 binOp pos Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
                                                 then throwRuntimeError DivisionByZero pos
-                                                else return $ IntValue (n1 `div` n2)
+                                                else return $ IntValue (fst (n1 `euclidean` n2))
 binOp pos Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
                                                 then throwRuntimeError DivisionByZero pos
-                                                else return (IntValue (n1 `mod` n2))
+                                                else return $ IntValue (snd (n1 `euclidean` n2))
 binOp pos Leq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 <= n2)
 binOp pos Ls      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 < n2)
 binOp pos Geq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 >= n2)
@@ -279,6 +279,14 @@ binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
 binOp pos Eq      v1 v2                         = return $ BoolValue (v1 == v2)
 binOp pos Neq     v1 v2                         = return $ BoolValue (v1 /= v2)
 binOp pos Lc      v1 v2                         = throwRuntimeError (UnsupportedConstruct "orders") pos
+
+-- | Euclidean division used by Boogie for integer division and modulo
+euclidean :: Integer -> Integer -> (Integer, Integer)
+a `euclidean` b =
+  case a `quotRem` b of
+    (q, r) | r >= 0    -> (q, r)
+           | b >  0    -> (q - 1, r + b)
+           | otherwise -> (q + 1, r - b)
 
 -- | Evaluate an expression;
 -- | can have a side-effect of initializing variables that were not previously defined
@@ -332,18 +340,19 @@ evalApplication name args pos = do
     
 evalMapSelection m args pos = do 
   tc <- gets envTypeContext
+  let rangeType = exprType tc (gen $ MapSelection m args)
   mV <- eval m
   argsV <- mapM eval args
   case mV of 
     MapValue map -> case M.lookup argsV map of
-      Nothing -> case mapVariable tc (contents m) of
-        Nothing -> return $ defaultValue (rangeType tc) -- The underlying map comes from a constant or function, nothing to check
-        Just v -> generateValue (rangeType tc) (\_ -> return ()) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause
+      Nothing -> 
+        case mapVariable tc (contents m) of
+        Nothing -> return $ defaultValue rangeType -- The underlying map comes from a constant or function, nothing to check
+        Just v -> generateValue rangeType (\_ -> return ()) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause
         -- Decided not to cache map access so far, because it leads to strange effects when the map is passed as an argument and can take a lot of memory 
-        -- Just v -> generateValue (rangeType tc) (cache v map argsV) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause and cache the value
+        -- Just v -> generateValue rangeType (cache v map argsV) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause and cache the value
       Just v -> return v
   where
-    rangeType tc = exprType tc (gen $ MapSelection m args)
     mapVariable tc (Var v) = if M.member v (allVars tc)
       then Just v
       else Nothing
@@ -549,7 +558,7 @@ processAxiom expr = case contents expr of
 -- | Sets of interval constraints on integer variables
 type Constraints = Map Id Interval
             
--- | The set of domains for each variable in vars, outside which boolean expression booExpr is always false.
+-- | The set of domains for each variable in vars, outside which boolean expression boolExpr is always false.
 -- | Fails if any of the domains are infinite or cannot be found.
 domains :: Expression -> [Id] -> Execution [Domain]
 domains boolExpr vars = do

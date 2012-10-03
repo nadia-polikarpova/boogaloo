@@ -52,7 +52,7 @@ prenexNF boolExpr = (glue . rawPrenex) boolExpr
   where
     -- | Push all quantifiers to the front
     rawPrenex boolExpr = case contents boolExpr of
-      -- We only ahve to consider && and || because boolExpr is in negation normal form
+      -- We only have to consider && and || because boolExpr is in negation normal form
       BinaryExpression op e1 e2 | op == And || op == Or -> merge (++ "1") (++ "2") op (rawPrenex e1) (rawPrenex e2)
       _ -> boolExpr
     merge r1 r2 op e1 e2 = attachPos (position e1) (merge' r1 r2 op e1 e2)
