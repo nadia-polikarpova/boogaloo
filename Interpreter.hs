@@ -5,6 +5,7 @@ import AST
 import Util
 import Intervals
 import Position
+import Tokens (nonIdChar)
 import PrettyPrinter
 import TypeChecker hiding (checkWhere)
 import NormalForm
@@ -70,7 +71,7 @@ data Environment = Environment
     envGlobals :: Map Id Value,         -- Global variable names to values
     envOld :: Map Id Value,             -- Global variable names to old values (in two-state contexts)
     envConstants :: Map Id Expression,  -- Constant names to expressions
-    envFunctions :: Map Id FDef,        -- Function names to definitions
+    envFunctions :: Map Id [FDef],      -- Function names to definitions
     envProcedures :: Map Id [PDef],     -- Procedure names to definitions
     envTypeContext :: Context           -- Type context (see TypeChecker)
   }
@@ -85,16 +86,20 @@ emptyEnv = Environment
     envProcedures = M.empty,
     envTypeContext = emptyContext
   }
+  
+lookupFunction id env = case M.lookup id (envFunctions env) of
+  Nothing -> []
+  Just defs -> defs    
+  
+lookupProcedure id env = case M.lookup id (envProcedures env) of
+  Nothing -> []
+  Just defs -> defs  
 
 setGlobal id val env = env { envGlobals = M.insert id val (envGlobals env) }    
 setLocal id val env = env { envLocals = M.insert id val (envLocals env) }
-addConstant id def env = env { envConstants = M.insert id def (envConstants env) }
-addFunction id def env = env { envFunctions = M.insert id def (envFunctions env) }
-addProcedure id def env = env { envProcedures = M.insert id (def : oldDefs) (envProcedures env) } 
-  where
-    oldDefs = case M.lookup id (envProcedures env) of
-      Nothing -> []
-      Just defs -> defs
+addConstantDef id def env = env { envConstants = M.insert id def (envConstants env) }
+addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction id env ++ defs) (envFunctions env) }
+addProcedureDef id def env = env { envProcedures = M.insert id (def : (lookupProcedure id env)) (envProcedures env) } 
 
 -- | Pretty-printed mapping of variables to values
 envDoc :: Map Id Value -> Doc
@@ -326,15 +331,20 @@ evalVar id pos = do
         Nothing -> generateValue t (modify . setter id) (checkWhere id pos)
   
 evalApplication name args pos = do
-  functions <- gets envFunctions
   tc <- gets envTypeContext
-  case M.lookup name functions of
-    Nothing -> return $ defaultValue (returnType tc)
-    Just (FDef formals body) -> do
-      argsV <- mapM eval args
-      evalBody formals argsV body `catchError` addStackFrame frame
+  defs <- gets (lookupFunction name)  
+  evalDefs defs tc
   where
-    evalBody formals actuals body = executeLocally (enterFunction name formals args) formals actuals (eval body)
+    -- | If the guard of one of function definitions evaluates to true, apply that definition; otherwise return the default value
+    evalDefs :: [FDef] -> Context -> Execution Value
+    evalDefs [] tc = return $ defaultValue (returnType tc)
+    evalDefs (FDef formals guard body : defs) tc = do
+      argsV <- mapM eval args
+      applicable <- evalLocally formals argsV guard `catchError` addStackFrame frame
+      case applicable of
+        BoolValue True -> evalLocally formals argsV body `catchError` addStackFrame frame 
+        BoolValue False -> evalDefs defs tc
+    evalLocally formals actuals expr = executeLocally (enterFunction name formals args) formals actuals (eval expr)
     returnType tc = exprType tc (gen $ Application name args)
     frame = StackFrame pos name
     
@@ -447,10 +457,10 @@ execAssign lhss rhss = do
     
 execCall lhss name args pos = do
   tc <- gets envTypeContext
-  procedures <- gets envProcedures
-  case M.lookup name procedures of
-    Nothing -> execHavoc lhss pos
-    Just (def : defs) -> do
+  defs <- gets (lookupProcedure name)
+  case defs of
+    [] -> execHavoc lhss pos
+    def : _ -> do
       retsV <- execProcedure name def args `catchError` addStackFrame frame
       setAll lhss retsV
   where
@@ -533,25 +543,70 @@ collectDefinitions p = mapM_ processDecl p
     processDecl (Pos _ (AxiomDecl expr)) = processAxiom expr
     processDecl _ = return ()
   
-processFunctionBody name args body = modify $ addFunction name (FDef (map (formalName . fst) args) body) 
+processFunctionBody name args body = let
+  formals = map (formalName . fst) args
+  guard = attachPos (position body) TT
+  in
+    modify $ addFunctionDefs name [FDef formals guard body]
   where
     formalName Nothing = dummyFArg 
-    formalName (Just n) = n
+    formalName (Just n) = n    
 
 processProcedureBody name pos args rets body = do
   sig <- procSig name <$> gets envTypeContext
-  modify $ addProcedure name (PDef argNames retNames (paramsRenamed sig) (flatten body) pos) 
+  modify $ addProcedureDef name (PDef argNames retNames (paramsRenamed sig) (flatten body) pos) 
   where
     argNames = map fst args
     retNames = map fst rets
     flatten (locals, statements) = (concat locals, M.fromList (toBasicBlocks statements))
     paramsRenamed sig = map itwId (psigArgs sig ++ psigRets sig) /= (argNames ++ retNames)     
       
-processAxiom expr = case contents expr of
-  -- c == expr: remember expr as a definition for c
-  BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstant c rhs
-  -- ToDo: add axioms that (partially) define functions
+processAxiom expr = do
+  extractContantDefs expr
+  extractFunctionDefs expr []
+  
+{- Constant and function definitions -}
+
+-- | Extract constant definitions from a boolean expression bExpr
+extractContantDefs :: Expression -> Execution ()
+extractContantDefs bExpr = case contents bExpr of  
+  BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstantDef c rhs -- c == rhs: remember rhs as a definition for c
   _ -> return ()
+
+-- | Extract function definitions from a boolean expression bExpr, using guards extracted from the exclosing expression 
+extractFunctionDefs :: Expression -> [Expression] -> Execution ()
+extractFunctionDefs bExpr guards = extractFunctionDefs' (contents bExpr) guards
+
+extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) outerGuards = do -- f(...) == rhs: remember rhs as a definition for f in this case, if possible
+  c <- gets envTypeContext
+  if all (simple c) args -- Only possible if each argument is either a variables or does not involve variables
+  then do    
+    let (formals, guards) = unzip (extractArgs c)
+    let guard = foldl1 (|&|) (concat guards ++ outerGuards)
+    modify $ addFunctionDefs f [FDef formals guard rhs]
+  else return ()
+  where
+    simple _ (Pos p (Var _)) = True
+    simple c e = null $ freeVars e `intersect` M.keys (ctxIns c)
+    extractArgs c = zipWith (extractArg c) args [0..]
+    -- | Formal argument name and guards extracted from an actual argument at position i
+    extractArg :: Context -> Expression -> Integer -> (String, [Expression])
+    extractArg c (Pos p e) i = let 
+      x = freshArgName i 
+      xExpr = attachPos p $ Var x
+      in 
+        case e of
+          Var arg -> if arg `M.member` ctxIns c 
+            then (arg, []) -- Bound variable of the enclosing quantifier: use variable name as formal, no additional guards
+            else (x, [xExpr |=| Pos p e]) -- Constant: use fresh variable as formal (will only appear in the guard), add equality guard
+          _ -> (x, [xExpr |=| Pos p e])
+    freshArgName i = f ++ (nonIdChar : show i)
+extractFunctionDefs' (BinaryExpression Implies cond bExpr) outerGuards = extractFunctionDefs bExpr (cond : outerGuards)
+extractFunctionDefs' (BinaryExpression And bExpr1 bExpr2) outerGuards = do
+  extractFunctionDefs bExpr1 outerGuards
+  extractFunctionDefs bExpr2 outerGuards
+extractFunctionDefs' (Quantified Forall tv vars bExpr) outerGuards = executeLocally (enterQuantified tv vars) [] [] (extractFunctionDefs bExpr outerGuards)
+extractFunctionDefs' _ _ = return ()
    
 {- Quantification -}
 

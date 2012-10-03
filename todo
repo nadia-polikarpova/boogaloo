@@ -6,13 +6,14 @@
 
 - Interpreter
   - Refactor types context: get rid of global/local variable distinction, use state?
-  - Extract function and constant definitions/constraints from axioms
   - First take on exhaustive/random testing (randomness/backtracking only in the outermost call)
   - Create package and some doc (+ examples: sum_max, sorting/binary_search)
 -> Release 0.1
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - User-defined types
   - Extends ordering
+  - Add more pattern to function definition extraction
+  - Extract function and constant constraints from axioms
   - Backtracking (logicT monad?)
   - Make Value/Execution types generic (or at least eval and exec?). This will allow support for abstract interpretation and symbolic execution.  
   - Constraint solving

@@ -94,6 +94,9 @@ instance Eq Type where
 freeVars :: Expression -> [Id]
 freeVars e = freeVars' (contents e)
 
+freeVars' FF = []
+freeVars' TT = []
+freeVars' (Numeral _) = []
 freeVars' (Var x) = [x]
 freeVars' (Application name args) = nub $ concatMap freeVars args
 freeVars' (MapSelection m args) = nub $ concatMap freeVars (m : args)
@@ -180,8 +183,9 @@ data FSig = FSig {
   
 -- | Function definition
 data FDef = FDef {
-    fdefArgs :: [Id],       -- Argument names (in the same order as fsigArgTypes in the corresponding signature)
-    fdefBody :: Expression  -- Body 
+    fdefArgs  :: [Id],       -- Argument names (in the same order as fsigArgTypes in the corresponding signature)
+    fdefGuard :: Expression, -- Condition under which this definition applies    
+    fdefBody  :: Expression  -- Body 
   }
  
 -- | Procedure signature 
