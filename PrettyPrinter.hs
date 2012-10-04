@@ -40,6 +40,11 @@ typeDoc (MapType fv domains range) = typeArgsDoc fv <>
   typeDoc range
 typeDoc (Instance id args) = text id <+> hsep (map typeDoc args)
 
+pSigDoc :: [Type] -> [Type] -> Doc
+pSigDoc argTypes retTypes = parens(commaSep (map typeDoc argTypes)) <+> 
+  text "returns" <+> 
+  parens(commaSep (map typeDoc retTypes))
+
 {- Expressions -}
 
 -- | Binding power of an expression

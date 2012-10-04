@@ -36,7 +36,7 @@ executeProgram p tc main = envGlobals <$> finalEnvironment
       case M.lookup main procedures of
         Nothing -> throwRuntimeError (NoEntryPoint main) noPos
         Just (def : defs) -> do
-          execProcedure main def [] >> return ()
+          execProcedure main def [] [] >> return ()
       
 {- State -}
 
@@ -478,7 +478,8 @@ execCall lhss name args pos = do
   case defs of
     [] -> execHavoc lhss pos
     def : _ -> do
-      retsV <- execProcedure name def args `catchError` addStackFrame frame
+      let lhssExpr = map (attachPos (ctxPos tc) . Var) lhss
+      retsV <- execProcedure name def args lhssExpr `catchError` addStackFrame frame
       setAll lhss retsV
   where
     frame = StackFrame pos name
@@ -505,8 +506,8 @@ tryOneOf blocks (l : lbs) = execBlock blocks l `catchError` retry
       | otherwise = throwError e
   
 -- | Execute definition def of procedure name with actual arguments actuals 
-execProcedure :: Id -> PDef -> [Expression] -> Execution [Value]
-execProcedure name def args = let 
+execProcedure :: Id -> PDef -> [Expression] -> [Expression] -> Execution [Value]
+execProcedure name def args lhss = let 
   ins = pdefIns def
   outs = pdefOuts def
   blocks = snd (pdefBody def)
@@ -522,7 +523,7 @@ execProcedure name def args = let
     mapM (eval . attachPos (pdefPos def) . Var) outs
   in do
     argsV <- mapM eval args
-    executeLocally (enterProcedure name def args) ins argsV execBody
+    executeLocally (enterProcedure name def args lhss) ins argsV execBody
     
 {- Specs -}
 

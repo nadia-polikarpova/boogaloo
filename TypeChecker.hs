@@ -50,8 +50,8 @@ enterFunction name formals actuals c = c
 
 -- | Local context of procedure name with definition def and actual arguments actuals
 -- | (procedure signature has to be stored in ctxProcedures)  
-enterProcedure :: Id -> PDef -> [Expression] -> Context -> Context 
-enterProcedure name def actuals c = c 
+enterProcedure :: Id -> PDef -> [Expression] -> [Expression] -> Context -> Context 
+enterProcedure name def actuals lhss c = c 
   {
     ctxTypeVars = [],
     ctxIns = M.fromList $ zip ins inTypes,
@@ -66,7 +66,7 @@ enterProcedure name def actuals c = c
     outs = pdefOuts def
     locals = fst (pdefBody def)
     sig = procSig name c
-    inst = typeSubst (fromRight $ pInstance c sig actuals)
+    inst = typeSubst (fromRight $ pInstance c sig actuals lhss)
     inTypes = map inst (psigArgTypes sig)
     outTypes = map inst (psigRetTypes sig)
     localTypes = map (inst . itwType) locals
@@ -276,15 +276,18 @@ fInstance c sig actuals = do
       text "in the call to" <+> text (fsigName sig))
     Just u -> return u
       
--- | Instantiation of type variables in a procedure signature sig given the actual arguments actuals in a context c 
-pInstance :: Context -> PSig -> [Expression] -> Checked TypeBinding
-pInstance c sig actuals = do
+-- | Instantiation of type variables in a procedure signature sig given the actual arguments actuals and call left-hand sides lhss, in a context c 
+pInstance :: Context -> PSig -> [Expression] -> [Expression] -> Checked TypeBinding
+pInstance c sig actuals lhss = do
   actualTypes <- mapAccum (checkExpression c) noType actuals
-  case unifier (psigTypeVars sig) (psigArgTypes sig) actualTypes of
-    Nothing -> throwTypeError (ctxPos c) (text "Could not match formal argument types" <+> commaSep (map typeDoc (psigArgTypes sig)) <+>
-      text "against actual argument types" <+> commaSep (map typeDoc actualTypes) <+>
+  lhssTypes <- mapAccum (checkExpression c) noType lhss
+  case unifier (psigTypeVars sig) (psigArgTypes sig ++ psigRetTypes sig) (actualTypes ++ lhssTypes) of
+    Nothing -> throwTypeError (ctxPos c) (text "Could not match procedure signature" <+> 
+      doubleQuotes (pSigDoc (psigArgTypes sig) (psigRetTypes sig)) <+>
+      text "against actual types" <+> 
+      doubleQuotes (pSigDoc actualTypes lhssTypes) <+>
       text "in the call to" <+> text (psigName sig))
-    Just u -> return u
+    Just u -> return u    
   
 {- Expressions -}
 
@@ -418,17 +421,16 @@ checkCall c lhss name args = case M.lookup name (ctxProcedures c) of
     if not (null illegalModifies) 
     then throwTypeError (ctxPos c) (text "Call modifies a global variable that is not in the enclosing procedure's modifies clause:" <+> commaSep (map text illegalModifies))
     else do
-      u <- pInstance c sig args 
-      let retTypes = psigRetTypes sig
-      checkLefts c lhss (length retTypes)
-      zipWithAccum_ (compareType c "call left-hand side") (map (typeSubst u) retTypes) (map (attachPos (ctxPos c) . Var) lhss)
+      checkLefts c lhss (length $ psigRetTypes sig)
+      let lhssExpr = map (attachPos (ctxPos c) . Var) lhss
+      pInstance c sig args lhssExpr >> return ()      
         
 checkCallForall :: Context -> Id -> [WildcardExpression] -> Checked ()
 checkCallForall c name args = case M.lookup name (ctxProcedures c) of
   Nothing -> throwTypeError (ctxPos c) (text "Not in scope: procedure" <+> text name)
   Just sig -> if not (null (psigModifies sig)) 
     then throwTypeError (ctxPos c) (text "Call forall to a procedure with a non-empty modifies clause")
-    else pInstance c sig { psigArgs = concrete (psigArgs sig) } concreteArgs >> return ()
+    else pInstance c sig { psigArgs = concrete (psigArgs sig) } concreteArgs [] >> return ()
   where
     concreteArgs = [e | (Expr e) <- args]
     concrete at = [at !! i | i <- [0..length args - 1], isConcrete (args !! i)]
@@ -583,12 +585,12 @@ checkProcSignature c name tv args rets specs
     c' <- foldAccum checkTypeVar c tv
     foldAccum checkPArg c' (args ++ rets)
     if not (null missingTV) 
-      then throwTypeError (ctxPos c) (text "Type variable(s) must occur in procedure arguments:" <+> commaSep (map text missingTV))
+      then throwTypeError (ctxPos c) (text "Type variable(s) must occur in procedure in- our out-parameters:" <+> commaSep (map text missingTV))
       else return $ addPSig c name (PSig name tv (map resolveType args) (map resolveType rets) specs)
     where 
       checkPArg c arg = checkIdType ctxIns ctxIns setIns c (noWhere arg)
       missingTV = filter (not . freeInArgs) tv
-      freeInArgs v = any (isFree v) (map itwType args)
+      freeInArgs v = any (isFree v) (map itwType (args ++ rets))
       addPSig c name sig = c { ctxProcedures = M.insert name sig (ctxProcedures c) }
       resolveType (IdTypeWhere id t w) = IdTypeWhere id (resolve c t) w
 
@@ -668,9 +670,9 @@ checkImplementation c name tv args rets bodies = case M.lookup name (ctxProcedur
     Nothing -> throwTypeError (ctxPos c) (text "Not in scope: procedure" <+> text name)
     Just sig -> case boundUnifier [] (psigTypeVars sig) (psigArgTypes sig ++ psigRetTypes sig) tv (argTypes ++ retTypes) of
       Nothing -> throwTypeError (ctxPos c) (text "Could not match procedure signature" <+> 
-        parens (commaSep (map typeDoc (psigArgTypes sig))) <+> text "returns" <+> parens (commaSep (map typeDoc (psigRetTypes sig))) <+>
+        doubleQuotes (pSigDoc (psigArgTypes sig) (psigRetTypes sig)) <+>
         text "against implementation signature" <+>
-        parens (commaSep (map typeDoc argTypes)) <+> text "returns" <+> parens (commaSep (map typeDoc retTypes)) <+>
+        doubleQuotes (pSigDoc argTypes retTypes) <+>
         text "in the implementation of" <+> text name)
       Just _ -> do
         cArgs <- foldAccum (checkIdType localScope ctxIns setIns) c { ctxTypeVars = tv } args
