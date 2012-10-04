@@ -327,18 +327,24 @@ functionDecl = do
   many attribute
   name <- identifier
   tArgs <- typeArgs
-  args <- parens (option [] (try namedArgs <|> unnamedArgs))
-  reserved "returns"
-  ret <- parens fArg
+  args <- parens (option [] (try namedArgs <|> unnamedArgs))  
+  ret <- returns <|> returnType
   body <- (semi >> return Nothing) <|> (Just <$> braces e0)
   return $ FunctionDecl name tArgs args ret body
   where
     unnamedArgs = map (\t -> (Nothing, t))                  <$> commaSep1 type_
     namedArgs =   map (\(id, t) -> (Just id, t)) . ungroup  <$> commaSep1 idsType
+    returns = do
+      reserved "returns"
+      parens fArg
     fArg = do
       name <- optionMaybe (try (identifier <* reservedOp ":"))
       t <- type_
-      return (name, t)
+      return (name, t)      
+    returnType = do
+      reservedOp ":"
+      t <- type_
+      return (Nothing, t)
 
 axiomDecl :: Parser BareDecl
 axiomDecl = do

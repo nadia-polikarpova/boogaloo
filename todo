@@ -1,6 +1,9 @@
 - Overall
-  - Ask Scott to help with optimization
   - New syntax
+    - if-then-else expressions
+    - type clarifications
+    - lambda expressions
+  - Optimization: e.g. better data structures instead of lists
   - Bit vectors
   - Do not throw away attributes and triggers
 

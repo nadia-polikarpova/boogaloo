@@ -28,7 +28,7 @@ executeFromFile file = do
       Left errs -> print (typeErrorsDoc errs)
       Right context -> case executeProgram ast context entryPoint of
         Left err -> print err
-        Right globals -> print (envDoc globals)
+        Right globals -> print (varsDoc globals)
 
 main = executeFromFile "test.bpl" 
       
