@@ -268,6 +268,7 @@ binOpLazy :: BinOp -> Value -> Maybe Value
 binOpLazy And     (BoolValue False) = Just $ BoolValue False
 binOpLazy Or      (BoolValue True)  = Just $ BoolValue True
 binOpLazy Implies (BoolValue False) = Just $ BoolValue True
+binOpLazy Explies (BoolValue True)  = Just $ BoolValue True
 binOpLazy _ _                       = Nothing
 
 -- | Strict semantics of binary operators
@@ -288,6 +289,7 @@ binOp pos Gt      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 > n2)
 binOp pos And     (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 && b2)
 binOp pos Or      (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 || b2)
 binOp pos Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
+binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 >= b2)
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
 binOp pos Eq      v1 v2                         = return $ BoolValue (v1 == v2)
 binOp pos Neq     v1 v2                         = return $ BoolValue (v1 /= v2)

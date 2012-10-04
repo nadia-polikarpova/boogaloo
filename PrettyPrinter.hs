@@ -61,7 +61,7 @@ power (BinaryExpression op _ _)
 -- | op `elem` [Concat] = 4
   | op `elem` [Eq, Neq, Ls, Leq, Gt, Geq, Lc] = 3
   | op `elem` [And, Or] = 2
-  | op `elem` [Implies] = 1
+  | op `elem` [Implies, Explies] = 1
   | op `elem` [Equiv] = 0
 
 exprDoc :: Expression -> Doc

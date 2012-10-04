@@ -29,7 +29,7 @@ data UnOp = Neg | Not
   deriving Eq
 
 -- | Binary operators  
-data BinOp = Plus | Minus | Times | Div | Mod | And | Or | Implies | Equiv | Eq | Neq | Lc | Ls | Leq | Gt | Geq
+data BinOp = Plus | Minus | Times | Div | Mod | And | Or | Implies | Explies | Equiv | Eq | Neq | Lc | Ls | Leq | Gt | Geq
   deriving Eq
 
 -- | Quantifiers

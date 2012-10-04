@@ -358,7 +358,7 @@ checkUnaryExpression c op e
 checkBinaryExpression :: Context -> BinOp -> Expression -> Expression -> Checked Type
 checkBinaryExpression c op e1 e2
   | elem op [Plus, Minus, Times, Div, Mod] = matchTypes (\t1 t2 -> t1 == IntType && t2 == IntType) IntType
-  | elem op [And, Or, Implies, Equiv] = matchTypes (\t1 t2 -> t1 == BoolType && t2 == BoolType) BoolType
+  | elem op [And, Or, Implies, Explies, Equiv] = matchTypes (\t1 t2 -> t1 == BoolType && t2 == BoolType) BoolType
   | elem op [Ls, Leq, Gt, Geq] = matchTypes (\t1 t2 -> t1 == IntType && t2 == IntType) BoolType
   | elem op [Eq, Neq] = matchTypes (\t1 t2 -> isJust (unifier (ctxTypeVars c) [t1] [t2])) BoolType
   | op == Lc = matchTypes (==) BoolType

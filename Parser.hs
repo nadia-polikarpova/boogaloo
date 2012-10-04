@@ -177,14 +177,14 @@ table = [[unOp Neg, unOp Not],
      [binOp Eq AssocNone, binOp Neq AssocNone, binOp Ls AssocNone, binOp Leq AssocNone, binOp Gt AssocNone, binOp Geq AssocNone, binOp Lc AssocNone],
      [binOp And AssocLeft], -- ToDo: && and || on the same level but do not interassociate
      [binOp Or AssocLeft],
-     [binOp Implies AssocRight],
+     [binOp Implies AssocRight, binOp Explies AssocLeft], -- Mixing is prevented by different associativities
      [binOp Equiv AssocRight]]
   where
-    binOp node assoc = Infix (reservedOp (token node binOpTokens) >> return (\e1 e2 -> attachPos (position e1) (BinaryExpression node e1 e2))) assoc
-    unOp node = Prefix (do
+    binOp op assoc = Infix (reservedOp (token op binOpTokens) >> return (\e1 e2 -> attachPos (position e1) (BinaryExpression op e1 e2))) assoc
+    unOp op = Prefix (do
       pos <- getPosition
-      reservedOp (token node unOpTokens)
-      return (\e -> attachPos pos (UnaryExpression node e)))
+      reservedOp (token op unOpTokens)
+      return (\e -> attachPos pos (UnaryExpression op e)))
     
 wildcardExpression :: Parser WildcardExpression
 wildcardExpression = (e0 >>= return . Expr) <|> (reservedOp "*" >> return Wildcard)
