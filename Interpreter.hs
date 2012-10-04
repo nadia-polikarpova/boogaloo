@@ -102,9 +102,17 @@ addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction i
 addProcedureDef id def env = env { envProcedures = M.insert id (def : (lookupProcedure id env)) (envProcedures env) } 
 
 -- | Pretty-printed mapping of variables to values
-envDoc :: Map Id Value -> Doc
-envDoc env = vsep $ map varDoc (M.toList env)
-  where varDoc (id, val) = text id <+> text "=" <+> valueDoc val      
+varsDoc :: Map Id Value -> Doc
+varsDoc vars = vsep $ map varDoc (M.toList vars)
+  where varDoc (id, val) = text id <+> text "=" <+> valueDoc val
+  
+-- | Pretty-printed set of function definitions
+functionsDoc :: Map Id [FDef] -> Doc  
+functionsDoc funcs = vsep $ map funcDoc (M.toList funcs)
+  where 
+    funcDoc (id, defs) = vsep $ map (funcsDefDoc id) defs
+    funcsDefDoc id (FDef formals guard body) = exprDoc guard <+> text "->" <+> 
+      text id <> parens (commaSep (map text formals)) <+> text "=" <+> exprDoc body
 
 -- | Computations with Environment as state, which can result in either a or RuntimeError  
 type Execution a = ErrorT RuntimeError (State Environment) a  
@@ -573,13 +581,17 @@ extractContantDefs bExpr = case contents bExpr of
   BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstantDef c rhs -- c == rhs: remember rhs as a definition for c
   _ -> return ()
 
--- | Extract function definitions from a boolean expression bExpr, using guards extracted from the exclosing expression 
+-- | Extract function definitions from a boolean expression bExpr, using guards extracted from the exclosing expression.
+-- | bExpr of the form "(forall x :: P(x, c) ==> f(x, c) == rhs(x, c) && B) && A",
+-- | with zero or more bound variables x and zero or more constants c,
+-- | produces a definition "f(x, x') = rhs(x, x')" with a guard "P(x) && x' == c"
 extractFunctionDefs :: Expression -> [Expression] -> Execution ()
 extractFunctionDefs bExpr guards = extractFunctionDefs' (contents bExpr) guards
 
-extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) outerGuards = do -- f(...) == rhs: remember rhs as a definition for f in this case, if possible
+extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) outerGuards = do
   c <- gets envTypeContext
   if all (simple c) args -- Only possible if each argument is either a variables or does not involve variables
+    && closedRhs c       -- and there are no extra variables in rhs
   then do    
     let (formals, guards) = unzip (extractArgs c)
     let guard = foldl1 (|&|) (concat guards ++ outerGuards)
@@ -588,6 +600,7 @@ extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) oute
   where
     simple _ (Pos p (Var _)) = True
     simple c e = null $ freeVars e `intersect` M.keys (ctxIns c)
+    closedRhs c = null $ (freeVars rhs \\ concatMap freeVars args) `intersect` M.keys (ctxIns c)
     extractArgs c = zipWith (extractArg c) args [0..]
     -- | Formal argument name and guards extracted from an actual argument at position i
     extractArg :: Context -> Expression -> Integer -> (String, [Expression])

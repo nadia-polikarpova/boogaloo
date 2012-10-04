@@ -12,17 +12,16 @@
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - User-defined types
   - Extends ordering
-  - Add more pattern to function definition extraction
   - Extract function and constant constraints from axioms
   - Backtracking (logicT monad?)
+  - User interface
+    - output local state with runtime error (restricted to the variables in the failed assertion)
+    - allow choosing entry point and passing command line args
+    - settings for disabling checking of different specs
+    - settings for bounding domains to be checked in quantified expressions      
   - Make Value/Execution types generic (or at least eval and exec?). This will allow support for abstract interpretation and symbolic execution.  
   - Constraint solving
   - What to do with call forall?
-  - User interface
-    - allow choosing entry point and passing command line args
-    - settings for disabling checking of different specs
-    - settings for bounding domains to be checked in quantified expressions
-    - output local state with runtime error?
   - Interactive sessions
   
   
