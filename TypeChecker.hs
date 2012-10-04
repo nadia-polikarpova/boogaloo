@@ -303,6 +303,7 @@ checkExpression c (Pos pos e) = case e of
   Old e1 -> if ctxTwoState c
     then checkExpression c { ctxLocals = M.empty } e1
     else throwTypeError pos (text "Old expression in a single state context")
+  IfExpr cond e1 e2 -> checkIfExpression cPos cond e1 e2
   UnaryExpression op e1 -> checkUnaryExpression cPos op e1
   BinaryExpression op e1 e2 -> checkBinaryExpression cPos op e1 e2
   Quantified qop tv vars e -> checkQuantified cPos qop tv vars e
@@ -336,6 +337,13 @@ checkMapUpdate c m args val = do
   if t == actualT 
     then checkExpression c m 
     else throwTypeError (ctxPos c) (text "Update value type" <+> typeDoc actualT <+> text "different from map range type" <+> typeDoc t)
+    
+checkIfExpression :: Context -> Expression -> Expression -> Expression -> Checked Type    
+checkIfExpression c cond e1 e2 = do
+  compareType c "if-expression condition" BoolType cond
+  t <- checkExpression c e1
+  compareType c "else-part of the if-expression" t e2
+  return t
     
 checkUnaryExpression :: Context -> UnOp -> Expression -> Checked Type
 checkUnaryExpression c op e

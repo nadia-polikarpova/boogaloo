@@ -50,6 +50,7 @@ power (Numeral _) = 9
 power (Var _) = 9
 power (Application _ _) = 9
 power (Old _) = 9
+power (IfExpr _ _ _) = 9
 power (Quantified _ _ _ _) = 9
 power (MapSelection _ _) = 8
 power (MapUpdate _ _ _) = 8
@@ -78,6 +79,7 @@ exprDocAt n (Pos _ e) = condParens (n' <= n) (
     MapSelection m args -> exprDocAt n' m <> brackets (commaSep (map exprDoc args))
     MapUpdate m args val -> exprDocAt n' m <> brackets (commaSep (map exprDoc args) <+> text ":=" <+> exprDoc val)
     Old e -> text "old" <+> parens (exprDoc e)
+    IfExpr cond e1 e2 -> text "if" <+> exprDoc cond <+> text "then" <+> exprDoc e1 <+> text "else" <+> exprDoc e2
     UnaryExpression unOp e -> unOpDoc unOp <> exprDocAt n' e
     BinaryExpression binOp e1 e2 -> exprDocAt n' e1 <+> binOpDoc binOp <+> exprDocAt n' e2
     Quantified qOp fv vars e -> parens (qOpDoc qOp <+> typeArgsDoc fv <+> commaSep (map idTypeDoc vars) <+> text "::" <+> exprDoc e)

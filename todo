@@ -1,8 +1,10 @@
 - Overall
   - New syntax
-    - if-then-else expressions
-    - type clarifications
+    - explies
+    - coercions
     - lambda expressions
+    - code expression?
+    - reals, /, **, int(), real(), decimal/float litearls
   - Optimization: e.g. better data structures instead of lists
   - Bit vectors
   - Do not throw away attributes and triggers

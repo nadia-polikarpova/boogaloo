@@ -45,8 +45,9 @@ data BareExpression = FF | TT |
   MapSelection Expression [Expression] |          -- MapSelection map indexes
   MapUpdate Expression [Expression] Expression |  -- MapUpdate map indexes rhs
   Old Expression |
+  IfExpr Expression Expression Expression |
   UnaryExpression UnOp Expression |
-  BinaryExpression BinOp Expression Expression |
+  BinaryExpression BinOp Expression Expression |  
   Quantified QOp [Id] [IdType] Expression          -- Quantified quantifier type_vars bound_vars expression  
   
 mapSelectExpr target args = attachPos (position target) (MapSelection target args)  

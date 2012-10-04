@@ -25,7 +25,7 @@ program = do
 {- Lexical analysis -}
 
 opNames :: [String]
-opNames = map snd unOpTokens ++ map snd binOpTokens ++ otherOps
+opNames = map snd unOpTokens ++ (map snd binOpTokens \\ keywords) ++ otherOps
 
 opStart :: [Char]
 opStart = nub (map head opNames)
@@ -125,6 +125,7 @@ e9 = choice [
   Numeral <$> natural,
   varOrCall,
   old,
+  ifThenElse,
   contents <$> try (parens e0),
   parens quantified
   ]
@@ -135,7 +136,15 @@ e9 = choice [
     old = do
       reserved "old"
       e <- parens e0
-      return (Old  e)
+      return $ Old e
+    ifThenElse = do
+      reserved "if"
+      cond <- e0
+      reserved "then"
+      thenExpr <- e0
+      reserved "else"
+      elseExpr <- e0
+      return $ IfExpr cond thenExpr elseExpr
     quantified = do
       op <- qop
       args <- typeArgs

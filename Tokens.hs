@@ -5,10 +5,10 @@ import AST
 import Data.Maybe
 
 keywords :: [String]
-keywords = ["assert", "assume", "axiom", "bool", "break", "call", "complete", -- ToDO: bit vector keywords omitted
-    "const", "else", "ensures", "exists", "extends", "false", "forall", "free", "function",
-    "goto", "havoc", "if", "implementation", "int", "invariant", "modifies", "old",
-    "procedure", "requires", "return", "returns", "true", "type", "unique", "var",
+keywords = ["assert", "assume", "axiom", "bool", "break", "call", "complete", "const", -- ToDO: bit vector keywords omitted
+    "else", "div", "ensures", "exists", "extends", "false", "forall", "free", "function",
+    "goto", "havoc", "if", "implementation", "int", "invariant", "mod", "modifies", "old",
+    "procedure", "requires", "return", "returns", "then", "true", "type", "unique", "var",
     "where", "while"]
 
 token node table = fromJust (lookup node table)
@@ -21,8 +21,8 @@ binOpTokens :: [(BinOp, String)]
 binOpTokens = [(Plus,    "+"),
                (Minus,   "-"),
          (Times,   "*"),
-         (Div,     "/"),
-         (Mod,     "%"),
+         (Div,     "div"),
+         (Mod,     "mod"),
          --(Con,     "++"),
          (And,     "&&"),
          (Or,      "||"),

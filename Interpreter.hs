@@ -313,6 +313,7 @@ eval expr = case contents expr of
   MapSelection m args -> evalMapSelection m args (position expr)
   MapUpdate m args new -> evalMapUpdate m args new
   Old e -> old $ eval e
+  IfExpr cond e1 e2 -> evalIf cond e1 e2
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
   Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e) (position expr)
@@ -384,6 +385,12 @@ evalMapUpdate m args new = do
   newV <- eval new
   case mV of 
     MapValue map -> return $ MapValue (M.insert argsV newV map)
+  
+evalIf cond e1 e2 = do
+  v <- eval cond
+  case v of
+    BoolValue True -> eval e1    
+    BoolValue False -> eval e2    
   
 evalBinary op e1 e2 = do
   left <- eval e1
