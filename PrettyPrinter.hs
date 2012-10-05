@@ -40,6 +40,8 @@ typeDoc (MapType fv domains range) = typeArgsDoc fv <>
   typeDoc range
 typeDoc (Instance id args) = text id <+> hsep (map typeDoc args)
 
+instance Show Type where show t = show (typeDoc t)
+
 pSigDoc :: [Type] -> [Type] -> Doc
 pSigDoc argTypes retTypes = parens(commaSep (map typeDoc argTypes)) <+> 
   text "returns" <+> 
@@ -91,6 +93,8 @@ exprDocAt n (Pos _ e) = condParens (n' <= n) (
   )
   where
     n' = power e
+    
+instance Show BareExpression where show e = show (exprDoc (gen e))      
 
 {- Statements -}
 
@@ -126,6 +130,8 @@ statementDoc (Pos _ s) = case s of
     wildcardDoc Wildcard = text "*"
     wildcardDoc (Expr e) = exprDoc e
     elseDoc b = text "else" <+> bracedBlockDoc b
+    
+instance Show BareStatement where show s = show (statementDoc (gen s))   
 
 {- Blocks -}
 
@@ -169,6 +175,8 @@ declDoc (Pos pos d) = case d of
   VarDecl vars -> varDeclDoc vars
   ProcedureDecl name fv args rets specs mb -> procedureDoc name fv args rets specs mb
   ImplementationDecl name fv args rets bodies -> implementationDoc name fv args rets bodies
+  
+instance Show BareDecl where show d = show (declDoc (gen d))  
   
 typeDeclDoc ts = 
   text "type" <+> 
@@ -268,4 +276,5 @@ idTypeDoc (id, t) = text id <> text ":" <+> typeDoc t
 
 idTypeWhereDoc (IdTypeWhere id t w) = idTypeDoc (id, t) <+> case w of
   (Pos _ TT) -> empty
-  e -> text "where" <+> exprDoc e  
+  e -> text "where" <+> exprDoc e
+  

@@ -8,8 +8,6 @@
   - Bit vectors
   - Do not throw away attributes and triggers
 
-- Type Checker
-  - Rename type variables in pInstance
 - Interpreter
   - Refactor types context: get rid of global/local variable distinction, use state?
   - First take on exhaustive/random testing (randomness/backtracking only in the outermost call)

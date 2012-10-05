@@ -27,6 +27,10 @@ typeSubst binding (Instance id args) = Instance id (map (typeSubst binding) args
 typeSubst binding (MapType bv domains range) = MapType bv (map (typeSubst removeBound) domains) (typeSubst removeBound range)
   where removeBound = deleteAll bv binding
   
+-- | Type binding that replaces type variables tvs with type variables tvs'  
+fromTVNames :: [Id] -> [Id] -> TypeBinding
+fromTVNames tvs tvs' = M.fromList (zip tvs (map nullaryType tvs'))
+  
 -- | isFree x t : does x occur as a free type variable in t?
 -- x must not be a name of a type constructor.  
 isFree :: Id -> Type -> Bool
@@ -35,7 +39,7 @@ isFree x (Instance y args) = any (isFree x) args
 isFree x (MapType bv domains range) = x `notElem` bv && any (isFree x) (range:domains)
 isFree x _ = False
   
--- | unifier fv xs ys : most general unifier of xs and ys with free type variables fv   
+-- | unifier fv xs ys : most general unifier of xs and ys with shared free type variables fv   
 unifier :: [Id] -> [Type] -> [Type] -> Maybe TypeBinding
 unifier _ [] [] = Just M.empty
 unifier fv (IntType:xs) (IntType:ys) = unifier fv xs ys
@@ -57,27 +61,45 @@ unifier fv ((MapType bv1 domains1 range1):xs) ((MapType bv2 domains2 range2):ys)
     update u = map (typeSubst u)
 unifier _ _ _ = Nothing
 
--- | boundUnifier fv bv1 xs bv2 ys: most general unifier of xs and ys,
+-- | New names for type variables tvs that are disjoint from tvs'
+-- | (If tvs does not have duplicates, then result also does not have duplicates)
+removeClashesWith :: [Id] -> [Id] -> [Id]
+removeClashesWith tvs tvs' = map freshName tvs
+  where
+    -- new name for tv that does not coincide with any tvs'
+    freshName tv = if tv `elem` tvs' then replicate (level + 1) nonIdChar ++ tv else tv
+    -- maximum number of nonIdChar characters at the beginning of a tvs'; by prepending (level + 1) nonIdChar charactes to tv we make is different from all tvs'
+    level = maximum [fromJust (findIndex (\c -> c /= nonIdChar) id) | id <- tvs']
+
+-- | Most general unifier of xs and ys,
+-- | where only xs contain free variables (fv),
+-- | while ys contain rigid type variables tv, which might clash with fv    
+oneSidedUnifier :: [Id] -> [Type] -> [Id] -> [Type] -> Maybe TypeBinding    
+oneSidedUnifier fv xs tv ys = M.map old <$> unifier fv xs (map new ys)
+  where
+    freshTV = tv `removeClashesWith` fv
+    new = typeSubst (fromTVNames tv freshTV)
+    old = typeSubst (fromTVNames freshTV tv)
+
+-- | Most general unifier of xs and ys,
 -- | where bv1 are bound type variables in xs and bv2 are bound type variables in ys,
 -- | and fv are free type variables of the enclosing context
 boundUnifier :: [Id] -> [Id] -> [Type] -> [Id] -> [Type] -> Maybe TypeBinding
 boundUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= length ys 
   then Nothing
-  else case unifier (fv ++ bv1) xs (map replacedBV ys) of
+  else case unifier (fv ++ bv1) xs (map withFreshBV ys) of
     Nothing -> Nothing
     Just u -> if all isFreshBV (M.elems (bound u)) && not (any hasFreshBV (M.elems (free u)))
       then Just (free u)
       else Nothing
     where
-      -- typeSubst of bound variables of m2 with fresh names
-      replacedBV = typeSubst (M.fromList (zip bv2 (map nullaryType freshBVNames)))
-      -- fresh names for bound variables of m2: with non-identifier chanarcter prepended 
-      freshBVNames = map (nonIdChar:) bv2
+      freshBV = bv2 `removeClashesWith` bv1
+      withFreshBV = typeSubst (fromTVNames bv2 freshBV)
       -- does a type correspond to one of the fresh bound variables of m2?
-      isFreshBV (Instance id []) = id `elem` freshBVNames
+      isFreshBV (Instance id []) = id `elem` freshBV
       isFreshBV _ = False
       -- does type t contain any fresh bound variables of m2?
-      hasFreshBV t = any (flip isFree t) freshBVNames
+      hasFreshBV t = any (flip isFree t) freshBV
       -- binding restricted to free variables
       free = deleteAll bv1
       -- binding restricted to bound variables

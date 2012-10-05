@@ -270,7 +270,7 @@ resolve _ t = t
 fInstance :: Context -> FSig -> [Expression] -> Checked TypeBinding
 fInstance c sig actuals = do
   actualTypes <- mapAccum (checkExpression c) noType actuals
-  case unifier (fsigTypeVars sig) (fsigArgTypes sig) actualTypes of
+  case oneSidedUnifier (fsigTypeVars sig) (fsigArgTypes sig) (ctxTypeVars c) actualTypes of
     Nothing -> throwTypeError (ctxPos c) (text "Could not match formal argument types" <+> commaSep (map typeDoc (fsigArgTypes sig)) <+>
       text "against actual argument types" <+> commaSep (map typeDoc actualTypes) <+>
       text "in the call to" <+> text (fsigName sig))
@@ -281,7 +281,7 @@ pInstance :: Context -> PSig -> [Expression] -> [Expression] -> Checked TypeBind
 pInstance c sig actuals lhss = do
   actualTypes <- mapAccum (checkExpression c) noType actuals
   lhssTypes <- mapAccum (checkExpression c) noType lhss
-  case unifier (psigTypeVars sig) (psigArgTypes sig ++ psigRetTypes sig) (actualTypes ++ lhssTypes) of
+  case oneSidedUnifier (psigTypeVars sig) (psigArgTypes sig ++ psigRetTypes sig) (ctxTypeVars c) (actualTypes ++ lhssTypes) of
     Nothing -> throwTypeError (ctxPos c) (text "Could not match procedure signature" <+> 
       doubleQuotes (pSigDoc (psigArgTypes sig) (psigRetTypes sig)) <+>
       text "against actual types" <+> 
@@ -326,7 +326,7 @@ checkMapSelection c m args = do
   case mType of
     MapType tv domainTypes rangeType -> do
       actualTypes <- mapAccum (checkExpression c) noType args
-      case unifier tv domainTypes actualTypes of
+      case oneSidedUnifier tv domainTypes (ctxTypeVars c) actualTypes of
         Nothing -> throwTypeError (ctxPos c) (text "Could not match map domain types" <+> commaSep (map typeDoc domainTypes) <+>
           text "against map selection types" <+> commaSep (map typeDoc actualTypes) <+>
           text "for the map" <+> exprDoc m)
