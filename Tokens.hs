@@ -7,9 +7,9 @@ import Data.Maybe
 keywords :: [String]
 keywords = ["assert", "assume", "axiom", "bool", "break", "call", "complete", "const", -- ToDO: bit vector keywords omitted
     "else", "div", "ensures", "exists", "extends", "false", "forall", "free", "function",
-    "goto", "havoc", "if", "implementation", "int", "invariant", "mod", "modifies", "old",
-    "procedure", "requires", "return", "returns", "then", "true", "type", "unique", "var",
-    "where", "while"]
+    "goto", "havoc", "if", "implementation", "int", "invariant", "lambda", "mod", "modifies",
+    "old", "procedure", "requires", "return", "returns", "then", "true", "type", "unique",
+    "var", "where", "while"]
 
 token node table = fromJust (lookup node table)
     
@@ -38,8 +38,9 @@ binOpTokens = [(Plus,    "+"),
          (Geq,     ">=")]
          
 qOpTokens :: [(QOp, String)]
-qOpTokens = [(Forall, "forall"),
-              (Exists, "exists")]         
+qOpTokens = [ (Forall, "forall"),
+              (Exists, "exists"),
+              (Lambda, "lambda") ]         
          
 otherOps :: [String]
 otherOps = [":", ";", "::", ":=", "="] 

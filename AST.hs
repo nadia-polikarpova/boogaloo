@@ -33,7 +33,7 @@ data BinOp = Plus | Minus | Times | Div | Mod | And | Or | Implies | Explies | E
   deriving Eq
 
 -- | Quantifiers
-data QOp = Forall | Exists
+data QOp = Forall | Exists | Lambda
   deriving Eq
   
 type Expression = Pos BareExpression
@@ -48,7 +48,7 @@ data BareExpression = FF | TT |
   IfExpr Expression Expression Expression |
   UnaryExpression UnOp Expression |
   BinaryExpression BinOp Expression Expression |  
-  Quantified QOp [Id] [IdType] Expression          -- Quantified quantifier type_vars bound_vars expression  
+  Quantified QOp [Id] [IdType] Expression          -- Quantified quantifier type_vars bound_vars expression
   
 mapSelectExpr target args = attachPos (position target) (MapSelection target args)  
   

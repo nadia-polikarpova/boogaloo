@@ -318,6 +318,7 @@ eval expr = case contents expr of
   IfExpr cond e1 e2 -> evalIf cond e1 e2
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
+  Quantified Lambda _ _ _ -> throwRuntimeError (UnsupportedConstruct "lambda expressions") (position expr)
   Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e) (position expr)
     where vnot (BoolValue b) = BoolValue (not b)
   Quantified Exists tv vars e -> evalExists tv vars e (position expr)

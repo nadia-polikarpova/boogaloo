@@ -116,7 +116,7 @@ type_ = choice [
 {- Expressions -}
 
 qop :: Parser QOp
-qop = (reserved "forall" >> return Forall) <|> (reserved "exists" >> return Exists)
+qop = (reserved "forall" >> return Forall) <|> (reserved "exists" >> return Exists) <|> (reserved "lambda" >> return Lambda)
   
 e9 :: Parser BareExpression
 e9 = choice [
@@ -150,7 +150,9 @@ e9 = choice [
       args <- typeArgs
       vars <- commaSep1 idsType
       reservedOp "::" 
-      many trigAttr
+      case op of
+        Lambda -> return []
+        _ -> many trigAttr      
       e <- e0
       return $ Quantified op args (ungroup vars) e
 

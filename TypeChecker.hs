@@ -373,19 +373,22 @@ checkBinaryExpression c op e1 e2
     errorMsg t1 t2 op = text "Invalid argument types" <+> typeDoc t1 <+> text "and" <+> typeDoc t2 <+> text "to binary operator" <+> binOpDoc op
     
 checkQuantified :: Context -> QOp -> [Id] -> [IdType] -> Expression -> Checked Type
-checkQuantified c _ tv vars e = do
+checkQuantified c qop tv vars e = do
   c' <- foldAccum checkTypeVar c tv
   quantifiedScope <- foldAccum (checkIdType localScope ctxIns setIns) c' vars
   if not (null missingTV)
-    then throwTypeError (ctxPos c) (text "Type variable(s) must occur in the bound variables of the quantification:" <+> commaSep (map text missingTV)) 
-    else do
-      t <- checkExpression quantifiedScope e
-      case t of
-        BoolType -> return BoolType
-        _ -> throwTypeError (ctxPos c) (text "Quantified expression type" <+> typeDoc t <+> text "different from" <+> typeDoc BoolType)
+    then throwTypeError (ctxPos c) (text "Type variable(s) must occur among the types of bound variables:" <+> commaSep (map text missingTV)) 
+    else case qop of
+      Lambda -> do
+        rangeType <- checkExpression quantifiedScope e
+        return $ MapType tv varTypes rangeType
+      _ -> do
+        compareType quantifiedScope "quantified expression" BoolType e
+        return BoolType
   where
-    missingTV = filter (not . freeInVars) tv
-    freeInVars v = any (isFree v) (map snd vars)
+    varTypes = map snd vars
+    missingTV = filter (not . freeInVars) tv    
+    freeInVars v = any (isFree v) varTypes
     
 {- Statements -}
 
@@ -690,7 +693,7 @@ compareType c msg t e = do
   t' <- checkExpression c e
   if t == t' 
     then return ()
-    else throwTypeError (ctxPos c) (text "Type of" <+> text msg <+> parens (typeDoc t') <+> text "is different from" <+> typeDoc t)
+    else throwTypeError (ctxPos c) (text "Type of" <+> text msg <+> doubleQuotes (typeDoc t') <+> text "is different from" <+> doubleQuotes (typeDoc t))
     
 -- | checkLefts c ids n: check that there are n ids, all ids are unique and denote mutable variables
 checkLefts :: Context -> [Id] -> Int -> Checked ()

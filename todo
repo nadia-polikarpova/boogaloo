@@ -1,7 +1,6 @@
 - Overall
   - New syntax
     - coercions
-    - lambda expressions
     - code expression?
     - reals, /, **, int(), real(), decimal/float litearls
   - Optimization: e.g. better data structures instead of lists
@@ -25,6 +24,9 @@
     - settings for bounding domains to be checked in quantified expressions      
   - Make Value/Execution types generic (or at least eval and exec?). This will allow support for abstract interpretation and symbolic execution.  
   - Constraint solving
+  - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses);
+      forces to have "shalow" Eq, Ord on types and expressions, so that map values can be stored as map keys
+      or to create a named function per lambda expression
   - What to do with call forall?
   - Interactive sessions
   
