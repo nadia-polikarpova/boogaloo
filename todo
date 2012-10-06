@@ -7,8 +7,8 @@
   - Do not throw away attributes and triggers
 
 - Type checker
-  - Unconstrained generic return type in function
-  - Annotate AST with expr types (this will allow full support for unconstrained generic return type in function)
+  - Type constraint solving (HM?) to allow generic return types in functions
+  - Annotate AST with expr types
   - Use state?
 - Interpreter
   - First take on exhaustive/random testing (randomness/backtracking only in the outermost call)

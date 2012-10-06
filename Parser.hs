@@ -148,7 +148,9 @@ atom = choice [
     quantified = do
       op <- qop
       args <- typeArgs
-      vars <- commaSep1 idsType
+      vars <- case args of
+        [] -> commaSep1 idsType
+        _ -> commaSep idsType      
       reservedOp "::" 
       case op of
         Lambda -> return []

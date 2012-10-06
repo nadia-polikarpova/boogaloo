@@ -379,22 +379,23 @@ checkBinaryExpression c op e1 e2
     errorMsg t1 t2 op = text "Invalid argument types" <+> typeDoc t1 <+> text "and" <+> typeDoc t2 <+> text "to binary operator" <+> binOpDoc op
     
 checkQuantified :: Context -> QOp -> [Id] -> [IdType] -> Expression -> Checked Type
-checkQuantified c qop tv vars e = do
+checkQuantified c Lambda tv vars e = do
   c' <- foldAccum checkTypeVar c tv
   quantifiedScope <- foldAccum (checkIdType localScope ctxIns setIns) c' vars
   if not (null missingTV)
-    then throwTypeError (ctxPos c) (text "Type variable(s) must occur among the types of bound variables:" <+> commaSep (map text missingTV)) 
-    else case qop of
-      Lambda -> do
-        rangeType <- checkExpression quantifiedScope e
-        return $ MapType tv varTypes rangeType
-      _ -> do
-        compareType quantifiedScope "quantified expression" BoolType e
-        return BoolType
+    then throwTypeError (ctxPos c) (text "Type variable(s) must occur among the types of lambda parameters:" <+> commaSep (map text missingTV)) 
+    else do
+      rangeType <- checkExpression quantifiedScope e
+      return $ MapType tv varTypes rangeType
   where
     varTypes = map snd vars
     missingTV = filter (not . freeInVars) tv    
-    freeInVars v = any (isFree v) varTypes
+    freeInVars v = any (isFree v) varTypes      
+checkQuantified c qop tv vars e = do
+  c' <- foldAccum checkTypeVar c tv
+  quantifiedScope <- foldAccum (checkIdType localScope ctxIns setIns) c' vars
+  compareType quantifiedScope "quantified expression" BoolType e
+  return BoolType
     
 {- Statements -}
 
