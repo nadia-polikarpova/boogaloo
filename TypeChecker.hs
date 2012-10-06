@@ -16,14 +16,14 @@ import Text.PrettyPrint
 
 {- Interface -}
 
--- | Check program p and return the type information in the global part of the context
+-- | checkProgram p: check program p and return the type information in the global part of the context
 checkProgram :: Program -> Checked Context
-checkProgram p = do
-  pass1  <- foldAccum collectTypes emptyContext p                            -- collect type names from type declarations
-  _pass2 <- mapAccum_ (checkTypeSynonyms pass1) p                            -- check values of type synonyms
-  _pass3 <- mapAccum_ (checkCycles pass1 p) (M.keys (ctxTypeSynonyms pass1)) -- check that type synonyms do not form a cycle 
-  pass4  <- foldAccum checkSignatures pass1 p                                -- check variable, constant, function and procedure signatures
-  pass5  <- foldAccum checkBodies pass4 p                                    -- check axioms, function and procedure bodies, constant parent info
+checkProgram (Program decls) = do
+  pass1  <- foldAccum collectTypes emptyContext decls                            -- collect type names from type declarations
+  _pass2 <- mapAccum_ (checkTypeSynonyms pass1) decls                            -- check values of type synonyms
+  _pass3 <- mapAccum_ (checkCycles pass1 decls) (M.keys (ctxTypeSynonyms pass1)) -- check that type synonyms do not form a cycle 
+  pass4  <- foldAccum checkSignatures pass1 decls                                -- check variable, constant, function and procedure signatures
+  pass5  <- foldAccum checkBodies pass4 decls                                    -- check axioms, function and procedure bodies, constant parent info
   return pass5
   
 -- | Type of expr in context c;
@@ -307,6 +307,7 @@ checkExpression c (Pos pos e) = case e of
     then checkExpression c { ctxLocals = M.empty } e1
     else throwTypeError pos (text "Old expression in a single state context")
   IfExpr cond e1 e2 -> checkIfExpression cPos cond e1 e2
+  Coercion e t -> checkCoercion cPos e t
   UnaryExpression op e1 -> checkUnaryExpression cPos op e1
   BinaryExpression op e1 e2 -> checkBinaryExpression cPos op e1 e2
   Quantified qop tv vars e -> checkQuantified cPos qop tv vars e
@@ -347,6 +348,11 @@ checkIfExpression c cond e1 e2 = do
   t <- checkExpression c e1
   compareType c "else-part of the if-expression" t e2
   return t
+  
+checkCoercion :: Context -> Expression -> Type -> Checked Type    
+checkCoercion c e t = do
+  compareType c "coerced expression" t e
+  return t  
     
 checkUnaryExpression :: Context -> UnOp -> Expression -> Checked Type
 checkUnaryExpression c op e

@@ -8,7 +8,7 @@ import Data.Map (Map)
 
 type Id = String
 
-type Program = [Decl]
+newtype Program = Program [Decl]
 
 {- Types -}
 
@@ -46,6 +46,7 @@ data BareExpression = FF | TT |
   MapUpdate Expression [Expression] Expression |  -- MapUpdate map indexes rhs
   Old Expression |
   IfExpr Expression Expression Expression |
+  Coercion Expression Type |
   UnaryExpression UnOp Expression |
   BinaryExpression BinOp Expression Expression |  
   Quantified QOp [Id] [IdType] Expression          -- Quantified quantifier type_vars bound_vars expression

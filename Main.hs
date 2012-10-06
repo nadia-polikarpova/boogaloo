@@ -24,9 +24,9 @@ executeFromFile file = do
   result <- parseFromFile program file
   case (result) of
     Left err -> print err
-    Right ast -> case checkProgram ast of
+    Right p -> case checkProgram p of
       Left errs -> print (typeErrorsDoc errs)
-      Right context -> case executeProgram ast context entryPoint of
+      Right context -> case executeProgram p context entryPoint of
         Left err -> print err
         Right globals -> print (varsDoc globals)
 
@@ -36,10 +36,10 @@ test = do
   result <- parseFromFile program "test.bpl" 
   case (result) of
     Left err -> print err
-    Right ast -> do
-      case parse program "test1.bpl" (show (programDoc ast)) of
+    Right p -> do
+      case parse program "test1.bpl" (show p) of
         Left err -> print err
-        Right ast' -> if show (programDoc ast) == show (programDoc ast') 
+        Right p' -> if show p == show p'
           then putStr ("Passed.\n")
           else putStr ("Failed with different ASTs.\n")
           

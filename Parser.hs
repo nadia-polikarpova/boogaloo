@@ -20,7 +20,7 @@ program = do
   whiteSpace
   p <- many decl
   eof
-  return p
+  return $ Program p
 
 {- Lexical analysis -}
 
@@ -118,32 +118,32 @@ type_ = choice [
 qop :: Parser QOp
 qop = (reserved "forall" >> return Forall) <|> (reserved "exists" >> return Exists) <|> (reserved "lambda" >> return Lambda)
   
-e9 :: Parser BareExpression
-e9 = choice [
+atom :: Parser BareExpression
+atom = choice [
   reserved "false" >> return FF,
   reserved "true" >> return TT,
   Numeral <$> natural,
   varOrCall,
   old,
   ifThenElse,
-  contents <$> try (parens e0),
+  contents <$> try (parens expression),
   parens quantified
   ]
   where
     varOrCall = do
       id <- identifier
-      (parens (commaSep e0) >>= (return . Application id)) <|> (return $ Var id)
+      (parens (commaSep expression) >>= (return . Application id)) <|> (return $ Var id)
     old = do
       reserved "old"
-      e <- parens e0
+      e <- parens expression
       return $ Old e
     ifThenElse = do
       reserved "if"
-      cond <- e0
+      cond <- expression
       reserved "then"
-      thenExpr <- e0
+      thenExpr <- expression
       reserved "else"
-      elseExpr <- e0
+      elseExpr <- expression
       return $ IfExpr cond thenExpr elseExpr
     quantified = do
       op <- qop
@@ -153,24 +153,35 @@ e9 = choice [
       case op of
         Lambda -> return []
         _ -> many trigAttr      
-      e <- e0
+      e <- expression
       return $ Quantified op args (ungroup vars) e
 
-e8 :: Parser Expression
-e8 = do
-  e <- attachPosBefore e9
+arrayExpression :: Parser Expression
+arrayExpression = do
+  e <- attachPosBefore atom
   mapOps <- many (brackets (mapOp))
   return $ foldr (.) id (reverse mapOps) e
   where
     mapOp = do
-      args <- commaSep1 e0
+      args <- commaSep1 expression
       option (inheritPos ((flip MapSelection) args)) (do 
         reservedOp ":="
-        e <- e0
+        e <- expression
         return $ inheritPos (flip ((flip MapUpdate) args) e))
+        
+coercionExpression :: Parser Expression
+coercionExpression = do
+  e <- arrayExpression
+  coercedTos <- many coercedTo
+  return $ foldr (.) id (reverse coercedTos) e
+  where
+    coercedTo = do
+      reservedOp ":"
+      t <- type_
+      return $ inheritPos ((flip Coercion) t)
     
-e0 :: Parser Expression  
-e0 = buildExpressionParser table e8 <?> "expression"
+expression :: Parser Expression  
+expression = buildExpressionParser table coercionExpression <?> "expression"
 
 table = [[unOp Neg, unOp Not],
      [binOp Times AssocLeft, binOp Div AssocLeft, binOp Mod AssocLeft],
@@ -189,21 +200,21 @@ table = [[unOp Neg, unOp Not],
       return (\e -> attachPos pos (UnaryExpression op e)))
     
 wildcardExpression :: Parser WildcardExpression
-wildcardExpression = (e0 >>= return . Expr) <|> (reservedOp "*" >> return Wildcard)
+wildcardExpression = (expression >>= return . Expr) <|> (reservedOp "*" >> return Wildcard)
     
 {- Statements -}
 
 lhs :: Parser (Id, [[Expression]])
 lhs = do
   id <- identifier
-  selects <- many (brackets (commaSep1 e0))
+  selects <- many (brackets (commaSep1 expression))
   return (id, selects)
 
 assign :: Parser BareStatement
 assign = do
   lefts <- commaSep1 lhs
   reservedOp ":="
-  rights <- commaSep1 e0
+  rights <- commaSep1 expression
   semi
   return $ Assign lefts rights
   
@@ -212,7 +223,7 @@ call = do
   reserved "call"
   lefts <- option [] (try lhss)
   id <- identifier
-  args <- parens (commaSep e0)
+  args <- parens (commaSep expression)
   semi
   return $ Call lefts id args
   where
@@ -253,14 +264,14 @@ whileStatement = do
     loopInvariant = do
       free <- hasKeyword "free"
       reserved "invariant"
-      e <- e0
+      e <- expression
       semi
       return (SpecClause LoopInvariant free e)    
 
 statement :: Parser Statement
 statement = attachPosBefore (choice [
-  do { reserved "assert"; e <- e0; semi; return $ Assert Inline e },
-  do { reserved "assume"; e <- e0; semi; return $ Assume Inline e },
+  do { reserved "assert"; e <- expression; semi; return $ Assert Inline e },
+  do { reserved "assume"; e <- expression; semi; return $ Assume Inline e },
   do { reserved "havoc"; ids <- commaSep1 identifier; semi; return $ Havoc ids },
   assign,
   try call,
@@ -340,7 +351,7 @@ functionDecl = do
   tArgs <- typeArgs
   args <- parens (option [] (try namedArgs <|> unnamedArgs))  
   ret <- returns <|> returnType
-  body <- (semi >> return Nothing) <|> (Just <$> braces e0)
+  body <- (semi >> return Nothing) <|> (Just <$> braces expression)
   return $ FunctionDecl name tArgs args ret body
   where
     unnamedArgs = map (\t -> (Nothing, t))                  <$> commaSep1 type_
@@ -361,7 +372,7 @@ axiomDecl :: Parser BareDecl
 axiomDecl = do
   reserved "axiom"
   many attribute
-  e <- e0
+  e <- expression
   semi
   return $ AxiomDecl e
 
@@ -431,7 +442,7 @@ spec = do
   choice [
     do
       reserved "requires"
-      e <- e0
+      e <- expression
       semi
       return $ Requires free e,
     do
@@ -441,7 +452,7 @@ spec = do
       return $ Modifies free ids,
     do
       reserved "ensures"
-      e <- e0
+      e <- expression
       semi
       return $ Ensures free e]
 
@@ -464,7 +475,7 @@ idsTypeWhere :: Parser ([Id], Type, Expression)
 idsTypeWhere = do
   ids <- idsType
   pos <- getPosition
-  e <- option (attachPos pos TT) (reserved "where" >> e0)
+  e <- option (attachPos pos TT) (reserved "where" >> expression)
   return ((fst ids), (snd ids), e)
 
 ungroupWhere :: [([Id], Type, Expression)] -> [IdTypeWhere]
@@ -475,12 +486,12 @@ trigAttr :: Parser ()
 trigAttr = (try trigger) <|> attribute <?> "attribute or trigger"
 
 trigger :: Parser ()
-trigger = void (braces (commaSep1 e0)) <?> "trigger"
+trigger = void (braces (commaSep1 expression)) <?> "trigger"
 
 attribute :: Parser ()
 attribute = void (braces (do
   reservedOp ":"
   identifier
-  commaSep1 (void e0 <|> void stringLiteral)
+  commaSep1 (void expression <|> void stringLiteral)
   )) <?> "attribute"
   

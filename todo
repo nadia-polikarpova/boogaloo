@@ -1,14 +1,16 @@
 - Overall
-  - New syntax
-    - coercions
+  - New syntax    
     - code expression?
     - reals, /, **, int(), real(), decimal/float litearls
   - Optimization: e.g. better data structures instead of lists
   - Bit vectors
   - Do not throw away attributes and triggers
 
+- Type checker
+  - Unconstrained generic return type in function
+  - Annotate AST with expr types (this will allow full support for unconstrained generic return type in function)
+  - Use state?
 - Interpreter
-  - Refactor types context: get rid of global/local variable distinction, use state?
   - First take on exhaustive/random testing (randomness/backtracking only in the outermost call)
   - Create package and some doc (+ examples: sum_max, sorting/binary_search)
 -> Release 0.1

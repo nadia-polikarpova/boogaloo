@@ -12,8 +12,10 @@ import Text.PrettyPrint
 {- Interface -}
 
 -- | Pretty-printed program
-programDoc :: [Decl] -> Doc
-programDoc decls = (vsep . punctuate newline . map declDoc) decls
+programDoc :: Program -> Doc
+programDoc (Program decls) = (vsep . punctuate newline . map declDoc) decls
+
+instance Show Program where show p = show (programDoc p)
 
 -- | Render document with tabs instead of spaces
 renderWithTabs = fullRender (mode style) (lineLength style) (ribbonsPerLine style) spacesToTabs ""
@@ -51,16 +53,17 @@ pSigDoc argTypes retTypes = parens(commaSep (map typeDoc argTypes)) <+>
 
 -- | Binding power of an expression
 power :: BareExpression -> Int
-power TT = 9
-power FF = 9
-power (Numeral _) = 9
-power (Var _) = 9
-power (Application _ _) = 9
-power (Old _) = 9
-power (IfExpr _ _ _) = 9
-power (Quantified _ _ _ _) = 9
-power (MapSelection _ _) = 8
-power (MapUpdate _ _ _) = 8
+power TT = 10
+power FF = 10
+power (Numeral _) = 10
+power (Var _) = 10
+power (Application _ _) = 10
+power (Old _) = 10
+power (IfExpr _ _ _) = 10
+power (Quantified _ _ _ _) = 10
+power (MapSelection _ _) = 9
+power (MapUpdate _ _ _) = 9
+power (Coercion _ _) = 8
 power (UnaryExpression _ _) = 7
 power (BinaryExpression op _ _) 
   | op `elem` [Times, Div, Mod] = 6 
@@ -87,6 +90,7 @@ exprDocAt n (Pos _ e) = condParens (n' <= n) (
     MapUpdate m args val -> exprDocAt n' m <> brackets (commaSep (map exprDoc args) <+> text ":=" <+> exprDoc val)
     Old e -> text "old" <+> parens (exprDoc e)
     IfExpr cond e1 e2 -> text "if" <+> exprDoc cond <+> text "then" <+> exprDoc e1 <+> text "else" <+> exprDoc e2
+    Coercion e t -> exprDocAt n' e <+> text ":" <+> typeDoc t
     UnaryExpression unOp e -> unOpDoc unOp <> exprDocAt n' e
     BinaryExpression binOp e1 e2 -> exprDocAt n' e1 <+> binOpDoc binOp <+> exprDocAt n' e2
     Quantified qOp fv vars e -> parens (qOpDoc qOp <+> typeArgsDoc fv <+> commaSep (map idTypeDoc vars) <+> text "::" <+> exprDoc e)

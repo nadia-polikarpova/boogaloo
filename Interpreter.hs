@@ -316,6 +316,7 @@ eval expr = case contents expr of
   MapUpdate m args new -> evalMapUpdate m args new
   Old e -> old $ eval e
   IfExpr cond e1 e2 -> evalIf cond e1 e2
+  Coercion e _ -> eval e
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
   Quantified Lambda _ _ _ -> throwRuntimeError (UnsupportedConstruct "lambda expressions") (position expr)
@@ -554,7 +555,7 @@ checkWhere id pos = do
 
 -- | Collect constant, function and procedure definitions from p
 collectDefinitions :: Program -> Execution ()
-collectDefinitions p = mapM_ processDecl p
+collectDefinitions (Program decls) = mapM_ processDecl decls
   where
     processDecl (Pos _ (FunctionDecl name _ args _ (Just body))) = processFunctionBody name args body
     processDecl (Pos pos (ProcedureDecl name _ args rets _ (Just body))) = processProcedureBody name pos (map noWhere args) (map noWhere rets) body
