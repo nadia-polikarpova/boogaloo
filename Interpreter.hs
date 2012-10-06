@@ -32,11 +32,12 @@ executeProgram p tc main = envGlobals <$> finalEnvironment
       (_, env)      -> Right env            
     programState = do
       collectDefinitions p
-      procedures <- gets envProcedures
-      case M.lookup main procedures of
-        Nothing -> throwRuntimeError (NoEntryPoint main) noPos
-        Just (def : defs) -> do
-          execProcedure main def [] [] >> return ()
+      env <- get
+      case lookupProcedure main env of
+        [] -> throwRuntimeError (OtherError (text "Cannot find program entry point" <+> text main)) noPos
+        def : _ -> if (not . null. pdefIns) def || (not . null. pdefOuts) def
+          then throwRuntimeError (OtherError (text "Program entry point" <+> text main <+> text "does not have the required signature" <+> doubleQuotes (sigDoc [] []))) noPos
+          else execProcedure main def [] [] >> return ()
       
 {- State -}
 
@@ -186,9 +187,8 @@ data RuntimeErrorInfo =
   InfiniteDomain Id Interval |            -- Quantification over an infinite set
   DivisionByZero |                        -- Division by zero
   UnsupportedConstruct String |           -- Language constructs that are not yet supported (should disappear in later versions)
-  NoEntryPoint String |                   -- Procedure specified as program entry point does not exist
   InternalError InternalCode |            -- Must be cought inside the interpreter and never reach the user
-  OtherError String
+  OtherError Doc
 
 -- | Information about a procedure or function call  
 data StackFrame = StackFrame {
@@ -217,8 +217,8 @@ isAssumeViolation err = case rteInfo err of
   _ -> False
   
 instance Error RuntimeError where
-  noMsg    = RuntimeError (OtherError "Unknown error") noPos []
-  strMsg s = RuntimeError (OtherError s) noPos []
+  noMsg    = RuntimeError (OtherError (text "Unknown error")) noPos []
+  strMsg s = RuntimeError (OtherError (text s)) noPos []
   
 runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vsep (map stackFrameDoc (reverse (rteTrace err)))
   where
@@ -227,8 +227,7 @@ runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vse
   errorInfoDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
   errorInfoDoc (DivisionByZero) = text "Division by zero"
   errorInfoDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
-  errorInfoDoc (NoEntryPoint name) = text "Cannot find program entry point:" <+> text name
-  errorInfoDoc (OtherError s) = text "Unknown error type:" <+> text s
+  errorInfoDoc (OtherError doc) = doc
   
   assertClauseName Inline = "Assertion"  
   assertClauseName Precondition = "Precondition"  
@@ -311,12 +310,12 @@ eval expr = case contents expr of
   FF -> return $ BoolValue False
   Numeral n -> return $ IntValue n
   Var id -> evalVar id (position expr)
-  Application id args -> evalApplication id args (position expr)
+  Application id args -> evalApplication id args (position expr) Nothing
   MapSelection m args -> evalMapSelection m args (position expr)
   MapUpdate m args new -> evalMapUpdate m args new
   Old e -> old $ eval e
   IfExpr cond e1 e2 -> evalIf cond e1 e2
-  Coercion e _ -> eval e
+  Coercion e t -> evalCoercion e t
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
   Quantified Lambda _ _ _ -> throwRuntimeError (UnsupportedConstruct "lambda expressions") (position expr)
@@ -343,7 +342,7 @@ evalVar id pos = do
         Just val -> return val
         Nothing -> generateValue t (modify . setter id) (checkWhere id pos)
   
-evalApplication name args pos = do
+evalApplication name args pos mRetType = do
   tc <- gets envTypeContext
   defs <- gets (lookupFunction name)  
   evalDefs defs tc
@@ -357,8 +356,10 @@ evalApplication name args pos = do
       case applicable of
         BoolValue True -> evalLocally formals argsV body `catchError` addStackFrame frame 
         BoolValue False -> evalDefs defs tc
-    evalLocally formals actuals expr = executeLocally (enterFunction name formals args) formals actuals (eval expr)
-    returnType tc = exprType tc (gen $ Application name args)
+    evalLocally formals actuals expr = executeLocally (enterFunction name formals args mRetType) formals actuals (eval expr)
+    returnType tc = case mRetType of
+      Nothing -> exprType tc (gen $ Application name args)
+      Just t -> t
     frame = StackFrame pos name
     
 evalMapSelection m args pos = do 
@@ -395,6 +396,12 @@ evalIf cond e1 e2 = do
   case v of
     BoolValue True -> eval e1    
     BoolValue False -> eval e2    
+    
+evalCoercion (Pos pos (Application f args)) t = do
+  c <- gets envTypeContext
+  let t' = resolve c t
+  evalApplication f args pos (Just t') 
+evalCoercion e _ = eval e
   
 evalBinary op e1 e2 = do
   left <- eval e1

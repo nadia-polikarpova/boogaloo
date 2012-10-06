@@ -16,11 +16,11 @@ import Control.Monad.Error
 import Control.Applicative
 
 -- | Name of the entry point procedure in a Boogie program
-entryPoint = "main"
+defaultEntryPoint = "main"
 
 -- | Parse, type-check and execute a Boogie program from file
-executeFromFile :: String -> IO ()
-executeFromFile file = do 
+executeFromFile :: String -> String -> IO ()
+executeFromFile file entryPoint = do 
   result <- parseFromFile program file
   case (result) of
     Left err -> print err
@@ -28,9 +28,9 @@ executeFromFile file = do
       Left errs -> print (typeErrorsDoc errs)
       Right context -> case executeProgram p context entryPoint of
         Left err -> print err
-        Right globals -> print (varsDoc globals)
+        Right globals -> print $ varsDoc globals
 
-main = executeFromFile "test.bpl" 
+main = executeFromFile "test.bpl" "main"
       
 test = do
   result <- parseFromFile program "test.bpl" 

@@ -44,11 +44,11 @@ typeDoc (Instance id args) = text id <+> hsep (map typeDoc args)
 
 instance Show Type where show t = show (typeDoc t)
 
-pSigDoc :: [Type] -> [Type] -> Doc
-pSigDoc argTypes retTypes = parens(commaSep (map typeDoc argTypes)) <+> 
+sigDoc :: [Type] -> [Type] -> Doc
+sigDoc argTypes retTypes = parens(commaSep (map typeDoc argTypes)) <+> 
   text "returns" <+> 
   parens(commaSep (map typeDoc retTypes))
-
+  
 {- Expressions -}
 
 -- | Binding power of an expression
