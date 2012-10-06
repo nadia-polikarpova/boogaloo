@@ -1,43 +1,36 @@
 - Overall
-  - New syntax    
-    - code expression?
+  - Create package and some doc (+ examples: sum_max, sorting/binary_search)
+  - Unsupported syntax    
+    - bit vectors    
     - reals, /, **, int(), real(), decimal/float litearls
-  - Optimization: e.g. better data structures instead of lists
-  - Bit vectors
+    - call * := Q(x, y);
+    - empty map domains x: []int    
+    - code expression
+  - Optimization: e.g. better data structures instead of lists  
   - Do not throw away attributes and triggers
 
 - Type checker
   - Type constraint solving (HM?) to allow generic return types in functions
   - Annotate AST with expr types
   - Use state?
+  
 - Interpreter
-  - First take on exhaustive/random testing (randomness/backtracking only in the outermost call)
-  - Create package and some doc (+ examples: sum_max, sorting/binary_search)
--> Release 0.1
+  - First take on exhaustive/random testing (randomness/backtracking only in the outermost call)  
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - User-defined types
   - Extends ordering
   - Extract function and constant constraints from axioms
-  - Backtracking (logicT monad?)
-  - User interface
-    - output local state with runtime error (restricted to the variables in the failed assertion)
-    - allow entry points with in- and out-parameters
-    - settings for disabling checking of different specs
-    - settings for bounding domains to be checked in quantified expressions      
-  - Make Value/Execution types generic (or at least eval and exec?). This will allow support for abstract interpretation and symbolic execution.  
+  - Backtracking (logicT monad?)  
   - Constraint solving
   - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses);
       forces to have "shalow" Eq, Ord on types and expressions, so that map values can be stored as map keys
       or to create a named function per lambda expression
-  - What to do with call forall?
-  - Interactive sessions
+  - Call forall
+  - Make Value/Execution types generic (or at least eval and exec?). This will allow support for abstract interpretation and symbolic execution.    
   
-  
-Notes:
-- Where clauses of in-parameters: according to the manual can mention out-parameters, but actually can't
-- Breaks with labels. a: b: while(...) {break a;} is not allowed in the implementation (as is l: break l;), but seems to be allowed by the manual.
-- The syntax of WhereClause is missing in the boogie manual
-
-Unsupported syntax:
-- call * := Q(x, y);
-- empty map domains x: []int
+- User interface
+  - output local state with runtime error (restricted to the variables in the failed assertion)
+  - allow entry points with in- and out-parameters
+  - settings for disabling checking of different specs
+  - settings for bounding domains to be checked in quantified expressions
+  - interactive sessions  
