@@ -64,22 +64,22 @@ testImplementation sig def = do
   let localNames = map ((\suffix -> [nonIdChar] ++ suffix) . show) [1..length ins + length outs]
   let localTypes = map itwType (ins ++ outs)
   let typeInputs = generateInputTypes tc { ctxTypeVars = psigTypeVars sig} localTypes
-  concat <$> mapM (typeTestCase tc (assumePreconditions sig) (length ins) localNames) typeInputs
+  concat <$> mapM (typeTestCase (length ins) localNames) typeInputs
   where
-    typeTestCase :: Context -> PSig -> Int -> [Id] -> [Type] -> Execution [TestCase]
-    typeTestCase tc sig nIns localNames actualTypes = do
+    typeTestCase :: Int -> [Id] -> [Type] -> Execution [TestCase]
+    typeTestCase nIns localNames actualTypes = do
+      modify $ modifyTypeContext (`setLocals` (M.fromList $ zip localNames actualTypes))      
       let (inNames, outNames) = splitAt nIns localNames
       let (inTypes, _) = splitAt nIns actualTypes
-      let inputs = forM inTypes (generateInputValue tc)
-      modify $ \env -> env { envTypeContext = setLocals tc (M.fromList $ zip localNames actualTypes) }
-      -- mapM (testCase sig inNames outNames) inputs 
-      mapM (\vals -> TestCase (psigName sig) vals <$> (testCase sig inNames outNames vals)) inputs
-    testCase :: PSig -> [Id] -> [Id] -> [Value] -> Execution Outcome
-    testCase sig inNames outNames vals = do
+      tc <- gets envTypeContext
+      let inputs = forM inTypes (generateInputValue tc)      
+      mapM (\input -> TestCase (psigName sig) input <$> testCase inNames outNames input) inputs
+    testCase :: [Id] -> [Id] -> [Value] -> Execution Outcome
+    testCase inNames outNames vals = do
       setAll inNames vals
       let inExpr = map (gen . Var) inNames
       let outExpr = map (gen . Var) outNames
-      (execProcedure sig def inExpr outExpr >> return Pass) `catchError` failureReport vals               
+      (execProcedure (assumePreconditions sig) def inExpr outExpr >> return Pass) `catchError` failureReport vals               
     failureReport vals err = case rteInfo err of
       AssumeViolation _ _ -> return $ Invalid err
       _ -> return $ Fail err

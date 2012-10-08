@@ -96,6 +96,7 @@ setLocal id val env = env { envLocals = M.insert id val (envLocals env) }
 addConstantDef id def env = env { envConstants = M.insert id def (envConstants env) }
 addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction id env ++ defs) (envFunctions env) }
 addProcedureDef id def env = env { envProcedures = M.insert id (def : (lookupProcedure id env)) (envProcedures env) } 
+modifyTypeContext f env = env { envTypeContext = f (envTypeContext env) }
 
 -- | Pretty-printed mapping of variables to values
 varsDoc :: Map Id Value -> Doc
