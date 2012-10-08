@@ -18,11 +18,11 @@
   - First take on exhaustive/random testing (randomness/backtracking only in the outermost call)  
     - Filter invalid test cases (not re-check the precondition?)
     - Set relevant global variables
-    - Handle polymorphic maps
     - Better test reports
     - Code duplication between testProgram and executeProgram
     - Can we do without creating new variables?
     - Random testing
+    - Always use one type for generic procedures? 
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - User-defined types
   - Extends ordering

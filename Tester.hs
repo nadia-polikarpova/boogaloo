@@ -45,7 +45,7 @@ testProcedure name def = do
     typeTestCase tc nIns localNames actualTypes = do
       let (inNames, outNames) = splitAt nIns localNames
       let (inTypes, _) = splitAt nIns actualTypes
-      let inputs = forM inTypes generateInputValue
+      let inputs = forM inTypes (generateInputValue tc)
       modify $ \env -> env { envTypeContext = setLocals tc (M.fromList $ zip localNames actualTypes) }
       mapM (testCase inNames outNames) inputs 
     testCase :: [Id] -> [Id] -> [Value] -> Execution String
@@ -60,16 +60,20 @@ failureReport vals err = return $ "Execution with " ++ show (commaSep (map value
     
 intRange = [-1..1]
     
-generateInputValue :: Type -> [Value]
-generateInputValue BoolType = map BoolValue [False, True]
-generateInputValue IntType = map IntValue intRange
-generateInputValue (MapType [] domains range) = do -- ToDo: polymorphic maps
-  let args = forM domains generateInputValue
-  r <- replicateM (length args) (generateInputValue range)
-  return $ MapValue (M.fromList (zip args r))
-generateInputValue (Instance _ _) = map CustomValue intRange
+generateInputValue :: Context -> Type -> [Value]
+generateInputValue _ BoolType = map BoolValue [False, True]
+generateInputValue _ IntType = map IntValue intRange
+generateInputValue c (MapType tv domains range) = let polyTypes = generateInputTypes c { ctxTypeVars = tv } (range : domains) in
+  -- A polymorphic map is a union of monomorphic maps with all possible instantiations for type variables
+  map MapValue (M.unions <$> mapM monomorphicMap polyTypes)
+  where 
+    monomorphicMap (range : domains) = do  
+      let args = forM domains (generateInputValue c)
+      r <- replicateM (length args) (generateInputValue c range)
+      return $ M.fromList (zip args r)
+generateInputValue _ (Instance _ _) = map CustomValue intRange
 
-typeVarRange c = [IntType]
+typeVarRange c = [IntType, BoolType]
 -- typeVarRange c = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors c))]
 
 generateInputTypes :: Context -> [Type] -> [[Type]]
