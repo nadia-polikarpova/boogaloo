@@ -1,40 +1,49 @@
 module Main where
 
-import Text.ParserCombinators.Parsec
+import Text.ParserCombinators.Parsec (parse, parseFromFile)
 import AST
 import Util
 import Position
-import Parser
+import Parser (program)
 import TypeChecker
 import PrettyPrinter
 import Interpreter
 import Tester
+import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Identity
 import Control.Monad.Error
 import Control.Applicative
+import Text.PrettyPrint
 
-main = testFromFile "test.bpl" "search"
+main = testFromFile "test.bpl" ["sum_max"]
 -- main = executeFromFile "test.bpl" "main"
 
 -- | Execute procedure entryPoint from file
--- | and output either errors or the final values of global variables;
--- | entryPoint must have no in- or out- parameters
+-- | and output either errors or the final values of global variables
 executeFromFile :: String -> String -> IO ()
 executeFromFile file entryPoint = runOnFile printFinalState file
   where
-    printFinalState p context = case executeProgram p context entryPoint of
-      Left err -> print err
-      Right env -> (print . varsDoc . envGlobals) env
+    printFinalState p context = case M.lookup entryPoint (ctxProcedures context) of
+      Nothing -> print (text "Cannot find program entry point" <+> text entryPoint)
+      Just sig -> if not (goodEntryPoint sig)
+        then print (text "Program entry point" <+> text entryPoint <+> text "does not have the required signature" <+> doubleQuotes (sigDoc [] []))
+        else case executeProgram p context entryPoint of
+          Left err -> print err
+          Right env -> (print . varsDoc . envGlobals) env
+    goodEntryPoint sig = null (psigTypeVars sig) && null (psigArgTypes sig) && null (psigRetTypes sig)
 
 -- | Test procedure entryPoint from file on a number of inputs
 -- | and output the test outcomes
-testFromFile :: String -> String -> IO ()
-testFromFile file entryPoint = runOnFile printTestOutcomes file
+testFromFile :: String -> [String] -> IO ()
+testFromFile file procNames = runOnFile printTestOutcomes file
   where
-    printTestOutcomes p context = mapM_ putStrLn (testProgram p context entryPoint)
-
+    printTestOutcomes p context = do
+      let (present, missing) = partition (`M.member` ctxProcedures context) procNames
+      when (not (null missing)) $ print (text "Cannot find procedures under test:" <+> commaSep (map text missing))
+      mapM_ print (testProgram p context present)
+      
 -- | Parse file, type-check the resulting program, then execute command on the resulting program and type context
 runOnFile :: (Program -> Context -> IO ()) -> String -> IO ()      
 runOnFile command file = do 

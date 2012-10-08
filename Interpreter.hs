@@ -22,23 +22,18 @@ import Text.PrettyPrint
 
 -- | Execute program p in type context tc starting from procedure entryPoint, 
 -- | and return the final environment;
--- | entryPoint must have no in- or out-parameters
+-- | requires that entryPoint have no in- or out-parameters
 executeProgram :: Program -> Context -> Id -> Either RuntimeError Environment
 executeProgram p tc entryPoint = finalEnvironment
   where
     initEnvironment = emptyEnv { envTypeContext = tc }
-    finalEnvironment = case runState (runErrorT programState) initEnvironment of
+    finalEnvironment = case runState (runErrorT programExecution) initEnvironment of
       (Left err, _) -> Left err
       (_, env)      -> Right env            
-    programState = do
+    programExecution = do
       collectDefinitions p
-      env <- get
-      case lookupProcedure entryPoint env of
-        [] -> throwRuntimeError (OtherError (text "Cannot find program entry point" <+> text entryPoint)) noPos
-        def : _ -> if (not . null. pdefIns) def || (not . null. pdefOuts) def
-          then throwRuntimeError (OtherError (text "Program entry point" <+> text entryPoint <+> text "does not have the required signature" <+> doubleQuotes (sigDoc [] []))) noPos
-          else execProcedure entryPoint def [] [] >> return ()
-      
+      execCall [] entryPoint [] noPos
+              
 {- State -}
 
 data Value = IntValue Integer |   -- Integer value
@@ -116,11 +111,10 @@ functionsDoc funcs = vsep $ map funcDoc (M.toList funcs)
       text id <> parens (commaSep (map text formals)) <+> text "=" <+> exprDoc body
 
 -- | Computations with Environment as state, which can result in either a or RuntimeError  
-type Execution a = ErrorT RuntimeError (State Environment) a  
+type Execution a = ErrorT RuntimeError (State Environment) a
         
 -- | Set value of variable id to val.
 -- | id has to be declared in the current type context.
-setV :: Id -> Value -> Execution ()    
 setV id val = do
   tc <- gets envTypeContext
   if M.member id (localScope tc)
@@ -128,7 +122,6 @@ setV id val = do
     else modify $ setGlobal id val      
     
 -- | Set values of variables ids to vals.  
-setAll :: [Id] -> [Value] -> Execution ()
 setAll ids vals = zipWithM_ setV ids vals
 
 -- | Run execution in the old environment
@@ -170,7 +163,7 @@ executeLocally localTC formals actuals computation = do
     unwind env = do
       env' <- get
       put env' { envTypeContext = envTypeContext env, envLocals = envLocals env }
-  
+        
 {- Nondeterminism -}  
   
 -- | Generate a value of type t,
@@ -187,11 +180,12 @@ generateValue t set guard = let newValue = defaultValue t in
 {- Errors -}
 
 data RuntimeErrorInfo = 
-  AssertViolation SpecType Expression |   -- Assertions violations
-  AssumeViolation SpecType Expression |   -- Assumption violations
+  AssumeViolation SpecType Expression |   -- Assumption violation
+  AssertViolation SpecType Expression |   -- Assertions violation
   InfiniteDomain Id Interval |            -- Quantification over an infinite set
   DivisionByZero |                        -- Division by zero
-  UnsupportedConstruct String |           -- Language constructs that are not yet supported (should disappear in later versions)
+  NoImplementation Id |                   -- Call to a procedure with no implementation
+  UnsupportedConstruct String |           -- Language construct is not yet supported (should disappear in later versions)
   InternalError InternalCode |            -- Must be cought inside the interpreter and never reach the user
   OtherError Doc
 
@@ -227,10 +221,11 @@ instance Error RuntimeError where
   
 runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vsep (map stackFrameDoc (reverse (rteTrace err)))
   where
-  errorInfoDoc (AssertViolation specType e) = text (assertClauseName specType) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated" 
   errorInfoDoc (AssumeViolation specType e) = text (assumeClauseName specType) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
+  errorInfoDoc (AssertViolation specType e) = text (assertClauseName specType) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated" 
   errorInfoDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
   errorInfoDoc (DivisionByZero) = text "Division by zero"
+  errorInfoDoc (NoImplementation name) = text "Procedure" <+> text name <+> text "with no implementation called"
   errorInfoDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
   errorInfoDoc (OtherError doc) = doc
   
@@ -250,7 +245,9 @@ runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vse
   defPosition _ e = text "defined" <+> posDoc (position e)
   
   stackFrameDoc f = text "in call to" <+> text (callName f) <+> posDoc (callPos f)
-  posDoc pos = text "at" <+> text (sourceName pos) <+> text "line" <+> int (sourceLine pos)
+  posDoc pos
+    | pos == noPos = text "from the environment"
+    | otherwise = text "at" <+> text (sourceName pos) <+> text "line" <+> int (sourceLine pos)
 
 instance Show RuntimeError where
   show err = show (runtimeErrorDoc err)
@@ -349,20 +346,21 @@ evalVar id pos = do
         Nothing -> generateValue t (modify . setter id) (checkWhere id pos)
   
 evalApplication name args pos mRetType = do
-  tc <- gets envTypeContext
   defs <- gets (lookupFunction name)  
-  evalDefs defs tc
+  evalDefs defs
   where
     -- | If the guard of one of function definitions evaluates to true, apply that definition; otherwise return the default value
-    evalDefs :: [FDef] -> Context -> Execution Value
-    evalDefs [] tc = return $ defaultValue (returnType tc)
-    evalDefs (FDef formals guard body : defs) tc = do
+    evalDefs :: [FDef] -> Execution Value
+    evalDefs [] = defaultValue . returnType <$> gets envTypeContext
+    evalDefs (FDef formals guard body : defs) = do
       argsV <- mapM eval args
       applicable <- evalLocally formals argsV guard `catchError` addStackFrame frame
       case applicable of
         BoolValue True -> evalLocally formals argsV body `catchError` addStackFrame frame 
-        BoolValue False -> evalDefs defs tc
-    evalLocally formals actuals expr = executeLocally (enterFunction name formals args mRetType) formals actuals (eval expr)
+        BoolValue False -> evalDefs defs
+    evalLocally formals actuals expr = do
+      sig <- funSig name <$> gets envTypeContext
+      executeLocally (enterFunction sig formals args mRetType) formals actuals (eval expr)
     returnType tc = case mRetType of
       Nothing -> exprType tc (gen $ Application name args)
       Just t -> t
@@ -491,10 +489,10 @@ execCall lhss name args pos = do
   tc <- gets envTypeContext
   defs <- gets (lookupProcedure name)
   case defs of
-    [] -> execHavoc lhss pos
+    [] -> throwRuntimeError (NoImplementation name) pos
     def : _ -> do
       let lhssExpr = map (attachPos (ctxPos tc) . Var) lhss
-      retsV <- execProcedure name def args lhssExpr `catchError` addStackFrame frame
+      retsV <- execProcedure (procSig name tc) def args lhssExpr `catchError` addStackFrame frame
       setAll lhss retsV
   where
     frame = StackFrame pos name
@@ -520,9 +518,9 @@ tryOneOf blocks (l : lbs) = execBlock blocks l `catchError` retry
       | isAssumeViolation e && not (null lbs) = tryOneOf blocks lbs
       | otherwise = throwError e
   
--- | Execute definition def of procedure name with actual arguments actuals 
-execProcedure :: Id -> PDef -> [Expression] -> [Expression] -> Execution [Value]
-execProcedure name def args lhss = let 
+-- | Execute definition def of procedure sig with actual arguments actuals and call left-hand sides lhss
+execProcedure :: PSig -> PDef -> [Expression] -> [Expression] -> Execution [Value]
+execProcedure sig def args lhss = let 
   ins = pdefIns def
   outs = pdefOuts def
   blocks = snd (pdefBody def)
@@ -530,31 +528,27 @@ execProcedure name def args lhss = let
     then pdefPos def  -- Fall off the procedure body: take the procedure definition location
     else pos          -- A return statement inside the body
   execBody = do
-    checkPreconditions name def
+    checkPreconditions sig def
     olds <- saveOld
     pos <- exitPoint <$> execBlock blocks startLabel
-    checkPostonditions name def pos
+    checkPostonditions sig def pos
     restoreOld olds
     mapM (eval . attachPos (pdefPos def) . Var) outs
   in do
     argsV <- mapM eval args
-    executeLocally (enterProcedure name def args lhss) ins argsV execBody
+    executeLocally (enterProcedure sig def args lhss) ins argsV execBody
     
 {- Specs -}
 
--- | Assert preconditions of definition def of procedure name
-checkPreconditions name def = do
-  s <- procSig name <$> gets envTypeContext
-  mapM_ (exec . attachPos (pdefPos def) . check . subst s) (psigRequires s)
+-- | Assert preconditions of definition def of procedure sig
+checkPreconditions sig def = mapM_ (exec . attachPos (pdefPos def) . check . subst sig) (psigRequires sig)
   where 
-    subst s (SpecClause t f e) = SpecClause t f (paramSubst s def e)
+    subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
 
--- | Assert postconditions of definition def of procedure name at exitPoint    
-checkPostonditions name def exitPoint = do
-  s <- procSig name <$> gets envTypeContext
-  mapM_ (exec . attachPos exitPoint . check . subst s) (psigEnsures s)
+-- | Assert postconditions of definition def of procedure sig at exitPoint    
+checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . check . subst sig) (psigEnsures sig)
   where 
-    subst s (SpecClause t f e) = SpecClause t f (paramSubst s def e)
+    subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
 
 -- | Assume where clause of variable at a program location pos
 -- | (pos will be reported as the location of the error instead of the location of the variable definition).
@@ -593,7 +587,7 @@ processProcedureBody name pos args rets body = do
     retNames = map fst rets
     flatten (locals, statements) = (concat locals, M.fromList (toBasicBlocks statements))
     paramsRenamed sig = map itwId (psigArgs sig ++ psigRets sig) /= (argNames ++ retNames)     
-      
+
 processAxiom expr = do
   extractContantDefs expr
   extractFunctionDefs expr []

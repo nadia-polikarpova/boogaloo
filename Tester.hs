@@ -9,54 +9,82 @@ import PrettyPrinter
 import Interpreter
 import Data.Map (Map, (!))
 import qualified Data.Map as M
-import Control.Monad.Identity
 import Control.Monad.Error
 import Control.Applicative
 import Control.Monad.State
-import Control.Monad.Trans.List
 import Text.PrettyPrint
+
+{- Interface -}
     
-testProgram :: Program -> Context -> Id -> [String]
-testProgram p tc main = testReports
+-- | Test all implementations of all procedures procNames from program p in type context tc;
+-- | requires that all procNames exist in context
+testProgram :: Program -> Context -> [Id] -> [TestCase]
+testProgram p tc procNames = fromRight res -- All exceptions are caught in test cases (ToDo: introduce safe execution type)
   where
     initEnvironment = emptyEnv { envTypeContext = tc }
-    testReports = case runState (runErrorT programState) initEnvironment of
-      (Left err, _) -> []
-      (Right list, env) -> list            
-    programState = do
+    (res, _) = runState (runErrorT programExecution) initEnvironment
+    programExecution = do
       collectDefinitions p
-      env <- get
-      case lookupProcedure main env of
-        [] -> throwRuntimeError (OtherError (text "Cannot find program entry point" <+> text main)) noPos
-        def : _ -> testProcedure main def
+      concat <$> forM procNames testProcedure
+    -- | Test all implementations of procedure name
+    testProcedure name = do
+      sig <- gets (procSig name . envTypeContext) 
+      defs <- gets (lookupProcedure name)
+      concat <$> forM defs (testImplementation sig)
+        
+{- Reporting results -}        
+        
+data Outcome = Pass | Fail RuntimeError | Invalid RuntimeError
 
-testProcedure :: Id -> PDef -> Execution [String] 
-testProcedure name def = do
+outcomeDoc :: Outcome -> Doc
+outcomeDoc Pass = text "passed"
+outcomeDoc (Fail err) = text "failed with: " <+> runtimeErrorDoc err
+outcomeDoc (Invalid err) = text "invalid because: " <+> runtimeErrorDoc err
+
+instance Show Outcome where show o = show (outcomeDoc o)
+
+data TestCase = TestCase {
+  tcProcedure :: Id,
+  tcInput :: [Value],
+  tcOutcome :: Outcome
+}
+
+testCaseDoc :: TestCase -> Doc
+testCaseDoc (TestCase procName input outcome) = text procName <> parens (commaSep (map valueDoc input)) <+> outcomeDoc outcome
+
+instance Show TestCase where show tc = show (testCaseDoc tc)
+
+{- Test execution -}
+
+testImplementation :: PSig -> PDef -> Execution [TestCase] 
+testImplementation sig def = do
   tc <- gets envTypeContext
-  let sig = procSig name tc
   let ins = psigArgs sig
   let outs = psigRets sig
   let localNames = map ((\suffix -> [nonIdChar] ++ suffix) . show) [1..length ins + length outs]
   let localTypes = map itwType (ins ++ outs)
   let typeInputs = generateInputTypes tc { ctxTypeVars = psigTypeVars sig} localTypes
-  concat <$> mapM (typeTestCase tc (length ins) localNames) typeInputs
+  concat <$> mapM (typeTestCase tc (assumePreconditions sig) (length ins) localNames) typeInputs
   where
-    typeTestCase :: Context -> Int -> [Id] -> [Type] -> Execution [String]
-    typeTestCase tc nIns localNames actualTypes = do
+    typeTestCase :: Context -> PSig -> Int -> [Id] -> [Type] -> Execution [TestCase]
+    typeTestCase tc sig nIns localNames actualTypes = do
       let (inNames, outNames) = splitAt nIns localNames
       let (inTypes, _) = splitAt nIns actualTypes
       let inputs = forM inTypes (generateInputValue tc)
       modify $ \env -> env { envTypeContext = setLocals tc (M.fromList $ zip localNames actualTypes) }
-      mapM (testCase inNames outNames) inputs 
-    testCase :: [Id] -> [Id] -> [Value] -> Execution String
-    testCase inNames outNames vals = do
+      -- mapM (testCase sig inNames outNames) inputs 
+      mapM (\vals -> TestCase (psigName sig) vals <$> (testCase sig inNames outNames vals)) inputs
+    testCase :: PSig -> [Id] -> [Id] -> [Value] -> Execution Outcome
+    testCase sig inNames outNames vals = do
       setAll inNames vals
       let inExpr = map (gen . Var) inNames
       let outExpr = map (gen . Var) outNames
-      (execProcedure name def inExpr outExpr >> return "Success") `catchError` failureReport vals      
-   
-failureReport :: [Value] -> RuntimeError -> Execution String   
-failureReport vals err = return $ "Execution with " ++ show (commaSep (map valueDoc vals)) ++ " resulted in error: " ++ show (runtimeErrorDoc err)
+      (execProcedure sig def inExpr outExpr >> return Pass) `catchError` failureReport vals               
+    failureReport vals err = case rteInfo err of
+      AssumeViolation _ _ -> return $ Invalid err
+      _ -> return $ Fail err
+
+{- Input generation -}
     
 intRange = [-1..1]
     

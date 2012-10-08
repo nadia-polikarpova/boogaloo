@@ -33,10 +33,10 @@ exprType c expr = case checkExpression c expr of
   Left _ -> (error . show) (text "encountered ill-typed expression during execution:" <+> exprDoc expr)
   Right t -> t
   
--- | Local context of function name with formal arguments formals and actual arguments actuals
--- | (function signature has to be stored in ctxFunctions)
-enterFunction :: Id -> [Id] -> [Expression] -> Maybe Type -> Context -> Context 
-enterFunction name formals actuals mRetType c = c 
+-- | Local context of function sig with formal arguments formals and actual arguments actuals
+-- | in a context where the return type is exprected to be mRetType (if known)
+enterFunction :: FSig -> [Id] -> [Expression] -> Maybe Type -> Context -> Context 
+enterFunction sig formals actuals mRetType c = c 
   {
     ctxTypeVars = [],
     ctxIns = M.fromList (zip formals argTypes),
@@ -46,18 +46,17 @@ enterFunction name formals actuals mRetType c = c
     ctxInLoop = False
   }
   where 
-    sig = funSig name c
     inst = case fInstance c sig actuals mRetType of
       Left _ -> (error . show) (text "encountered ill-typed function application during execution:" <+> 
-        text name <+> parens (commaSep (map text formals)) <+>
+        text (fsigName sig) <+> parens (commaSep (map text formals)) <+>
         text "to actual arguments" <+> parens (commaSep (map exprDoc actuals)))
       Right u -> typeSubst u
     argTypes = map inst (fsigArgTypes sig)
 
--- | Local context of procedure name with definition def and actual arguments actuals
--- | (procedure signature has to be stored in ctxProcedures)  
-enterProcedure :: Id -> PDef -> [Expression] -> [Expression] -> Context -> Context 
-enterProcedure name def actuals lhss c = c 
+-- | Local context of procedure sig with definition def and actual arguments actuals 
+-- | in a call with left-hand sides lhss
+enterProcedure :: PSig -> PDef -> [Expression] -> [Expression] -> Context -> Context 
+enterProcedure sig def actuals lhss c = c 
   {
     ctxTypeVars = [],
     ctxIns = M.fromList $ zip ins inTypes,
@@ -71,10 +70,9 @@ enterProcedure name def actuals lhss c = c
     ins = pdefIns def
     outs = pdefOuts def
     locals = fst (pdefBody def)
-    sig = procSig name c
     inst = case pInstance c sig actuals lhss of
       Left _ -> (error . show) (text "encountered ill-typed procedure call during execution:" <+> 
-        text name <+> text "with actual arguments" <+> parens (commaSep (map exprDoc actuals)) <+>
+        text (psigName sig) <+> text "with actual arguments" <+> parens (commaSep (map exprDoc actuals)) <+>
         text "and left-hand sides" <+> parens (commaSep (map exprDoc lhss)))
       Right u -> typeSubst u
     inTypes = map inst (psigArgTypes sig)

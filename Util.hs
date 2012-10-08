@@ -195,7 +195,14 @@ modifies :: [Contract] -> [Id]
 modifies specs = (nub . concat . catMaybes) (map extractMod specs)
   where
     extractMod (Modifies _ ids) = Just ids
-    extractMod _ = Nothing 
+    extractMod _ = Nothing
+  
+-- | Make all preconditions in contracts free  
+assumePreconditions :: PSig -> PSig
+assumePreconditions sig = sig { psigContracts = map assumePrecondition (psigContracts sig) }
+  where
+    assumePrecondition (Requires _ e) = Requires True e
+    assumePrecondition c = c
 
 {- Functions and procedures -}
 
