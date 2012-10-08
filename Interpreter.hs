@@ -587,7 +587,7 @@ processProcedureBody name pos args rets body = do
     argNames = map fst args
     retNames = map fst rets
     flatten (locals, statements) = (concat locals, M.fromList (toBasicBlocks statements))
-    paramsRenamed sig = map itwId (psigArgs sig ++ psigRets sig) /= (argNames ++ retNames)     
+    paramsRenamed sig = map itwId (psigParams sig) /= (argNames ++ retNames)     
 
 processAxiom expr = do
   extractContantDefs expr

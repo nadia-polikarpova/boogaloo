@@ -230,6 +230,7 @@ data PSig = PSig {
     psigContracts :: [Contract]   -- Contracts
   }
   
+psigParams sig = psigArgs sig ++ psigRets sig
 psigArgTypes = (map itwType) . psigArgs
 psigRetTypes = (map itwType) . psigRets
 psigModifies = modifies . psigContracts
