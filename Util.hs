@@ -31,13 +31,13 @@ typeSubst binding (MapType bv domains range) = MapType bv (map (typeSubst remove
 fromTVNames :: [Id] -> [Id] -> TypeBinding
 fromTVNames tvs tvs' = M.fromList (zip tvs (map nullaryType tvs'))
   
--- | isFree x t : does x occur as a free type variable in t?
+-- | x `isFreeIn` t : does x occur as a free type variable in t?
 -- x must not be a name of a type constructor.  
-isFree :: Id -> Type -> Bool
-isFree x (Instance y []) = x == y
-isFree x (Instance y args) = any (isFree x) args
-isFree x (MapType bv domains range) = x `notElem` bv && any (isFree x) (range:domains)
-isFree x _ = False
+isFreeIn :: Id -> Type -> Bool
+x `isFreeIn` (Instance y []) = x == y
+x `isFreeIn` (Instance y args) = any (x `isFreeIn`) args
+x `isFreeIn` (MapType bv domains range) = x `notElem` bv && any (x `isFreeIn`) (range:domains)
+_ `isFreeIn` _ = False
   
 -- | unifier fv xs ys : most general unifier of xs and ys with shared free type variables fv   
 unifier :: [Id] -> [Type] -> [Type] -> Maybe TypeBinding
@@ -46,11 +46,11 @@ unifier fv (IntType:xs) (IntType:ys) = unifier fv xs ys
 unifier fv (BoolType:xs) (BoolType:ys) = unifier fv xs ys
 unifier fv ((Instance id1 args1):xs) ((Instance id2 args2):ys) | id1 == id2 = unifier fv (args1 ++ xs) (args2 ++ ys)
 unifier fv ((Instance id []):xs) (y:ys) | id `elem` fv = 
-  if isFree id y then Nothing 
+  if id `isFreeIn` y then Nothing 
   else M.insert id y <$> unifier fv (update xs) (update ys)
     where update = map (typeSubst (M.singleton id y))
 unifier fv (x:xs) ((Instance id []):ys) | id `elem` fv = 
-  if isFree id x then Nothing 
+  if id `isFreeIn` x then Nothing 
   else M.insert id x <$> unifier fv (update xs) (update ys)
     where update = map (typeSubst (M.singleton id x))
 unifier fv ((MapType bv1 domains1 range1):xs) ((MapType bv2 domains2 range2):ys) =
@@ -99,7 +99,7 @@ boundUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= leng
       isFreshBV (Instance id []) = id `elem` freshBV
       isFreshBV _ = False
       -- does type t contain any fresh bound variables of m2?
-      hasFreshBV t = any (flip isFree t) freshBV
+      hasFreshBV t = any (`isFreeIn` t) freshBV
       -- binding restricted to free variables
       free = deleteAll bv1
       -- binding restricted to bound variables

@@ -7,37 +7,52 @@ import Position
 import Parser
 import TypeChecker
 import PrettyPrinter
-import BasicBlocks
 import Interpreter
+import Tester
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Identity
 import Control.Monad.Error
 import Control.Applicative
 
--- | Name of the entry point procedure in a Boogie program
-defaultEntryPoint = "main"
+main = testFromFile "test.bpl" "search"
+-- main = executeFromFile "test.bpl" "main"
 
--- | Parse, type-check and execute a Boogie program from file
+-- | Execute procedure entryPoint from file
+-- | and output either errors or the final values of global variables;
+-- | entryPoint must have no in- or out- parameters
 executeFromFile :: String -> String -> IO ()
-executeFromFile file entryPoint = do 
+executeFromFile file entryPoint = runOnFile printFinalState file
+  where
+    printFinalState p context = case executeProgram p context entryPoint of
+      Left err -> print err
+      Right env -> (print . varsDoc . envGlobals) env
+
+-- | Test procedure entryPoint from file on a number of inputs
+-- | and output the test outcomes
+testFromFile :: String -> String -> IO ()
+testFromFile file entryPoint = runOnFile printTestOutcomes file
+  where
+    printTestOutcomes p context = mapM_ putStrLn (testProgram p context entryPoint)
+
+-- | Parse file, type-check the resulting program, then execute command on the resulting program and type context
+runOnFile :: (Program -> Context -> IO ()) -> String -> IO ()      
+runOnFile command file = do 
+  parseResult <- parseFromFile program file
+  case parseResult of
+    Left parseErr -> print parseErr
+    Right p -> case checkProgram p of
+      Left typeErrs -> print (typeErrorsDoc typeErrs)
+      Right context -> command p context
+      
+-- | Test that print . parse == print . parse . print .parse      
+testParser :: String -> IO ()      
+testParser file = do
   result <- parseFromFile program file
   case (result) of
     Left err -> print err
-    Right p -> case checkProgram p of
-      Left errs -> print (typeErrorsDoc errs)
-      Right context -> case executeProgram p context entryPoint of
-        Left err -> print err
-        Right globals -> print $ varsDoc globals
-
-main = executeFromFile "test.bpl" "main"
-      
-test = do
-  result <- parseFromFile program "test.bpl" 
-  case (result) of
-    Left err -> print err
     Right p -> do
-      case parse program "test1.bpl" (show p) of
+      case parse program ('*' : file) (show p) of
         Left err -> print err
         Right p' -> if show p == show p'
           then putStr ("Passed.\n")

@@ -301,7 +301,7 @@ fInstance c sig actuals mRetType = case mRetType of
   where
     tvs = fsigTypeVars sig
     retOnlyTVs = filter (not . freeInArgs) tvs
-    freeInArgs tv = any (isFree tv) (fsigArgTypes sig)
+    freeInArgs tv = any (tv `isFreeIn`) (fsigArgTypes sig)
       
 -- | Instantiation of type variables in a procedure signature sig given the actual arguments actuals and call left-hand sides lhss, in a context c 
 pInstance :: Context -> PSig -> [Expression] -> [Expression] -> Checked TypeBinding
@@ -423,7 +423,7 @@ checkQuantified c Lambda tv vars e = do
   where
     varTypes = map snd vars
     missingTV = filter (not . freeInVars) tv    
-    freeInVars v = any (isFree v) varTypes      
+    freeInVars v = any (v `isFreeIn`) varTypes      
 checkQuantified c qop tv vars e = do
   c' <- foldAccum checkTypeVar c tv
   quantifiedScope <- foldAccum (checkIdType localScope ctxIns setIns) c' vars
@@ -617,7 +617,7 @@ checkFunctionSignature c name tv args ret
       checkFArg c (Just id, t) = checkIdType ctxIns ctxIns setIns c (id, t)
       checkFArg c (Nothing, t) = checkType c t >> return c
       missingTV = filter (not . freeInParams) tv
-      freeInParams v = any (isFree v) (map snd params)
+      freeInParams v = any (v `isFreeIn`) (map snd params)
       addFSig c name sig = c { ctxFunctions = M.insert name sig (ctxFunctions c) }
       argTypes = map (resolve c . snd) args
       retType = (resolve c . snd) ret
@@ -635,7 +635,7 @@ checkProcSignature c name tv args rets specs
       params = args ++ rets
       checkPArg c arg = checkIdType ctxIns ctxIns setIns c (noWhere arg)
       missingTV = filter (not . freeInParams) tv
-      freeInParams v = any (isFree v) (map itwType params)
+      freeInParams v = any (v `isFreeIn`) (map itwType params)
       addPSig c name sig = c { ctxProcedures = M.insert name sig (ctxProcedures c) }
       resolveType (IdTypeWhere id t w) = IdTypeWhere id (resolve c t) w
 

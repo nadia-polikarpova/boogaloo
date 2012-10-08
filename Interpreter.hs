@@ -20,11 +20,11 @@ import Text.PrettyPrint
 
 {- Interface -}
 
--- | Execute program p with type context tc (produced by the type checker) and entry point main, 
--- | and return the values of global variables;
--- | main must have no arguments
-executeProgram :: Program -> Context -> Id -> Either RuntimeError (Map Id Value)
-executeProgram p tc main = envGlobals <$> finalEnvironment
+-- | Execute program p in type context tc starting from procedure entryPoint, 
+-- | and return the final environment;
+-- | entryPoint must have no in- or out-parameters
+executeProgram :: Program -> Context -> Id -> Either RuntimeError Environment
+executeProgram p tc entryPoint = finalEnvironment
   where
     initEnvironment = emptyEnv { envTypeContext = tc }
     finalEnvironment = case runState (runErrorT programState) initEnvironment of
@@ -33,11 +33,11 @@ executeProgram p tc main = envGlobals <$> finalEnvironment
     programState = do
       collectDefinitions p
       env <- get
-      case lookupProcedure main env of
-        [] -> throwRuntimeError (OtherError (text "Cannot find program entry point" <+> text main)) noPos
+      case lookupProcedure entryPoint env of
+        [] -> throwRuntimeError (OtherError (text "Cannot find program entry point" <+> text entryPoint)) noPos
         def : _ -> if (not . null. pdefIns) def || (not . null. pdefOuts) def
-          then throwRuntimeError (OtherError (text "Program entry point" <+> text main <+> text "does not have the required signature" <+> doubleQuotes (sigDoc [] []))) noPos
-          else execProcedure main def [] [] >> return ()
+          then throwRuntimeError (OtherError (text "Program entry point" <+> text entryPoint <+> text "does not have the required signature" <+> doubleQuotes (sigDoc [] []))) noPos
+          else execProcedure entryPoint def [] [] >> return ()
       
 {- State -}
 
@@ -161,10 +161,15 @@ executeLocally localTC formals actuals computation = do
   env <- get
   put env { envTypeContext = localTC (envTypeContext env) }
   setAll formals actuals
-  res <- computation
+  res <- computation `catchError` (\err -> unwind env >> throwError err)
+  unwind env
   env' <- get
   put env' { envTypeContext = envTypeContext env, envLocals = envLocals env }
   return res
+  where
+    unwind env = do
+      env' <- get
+      put env' { envTypeContext = envTypeContext env, envLocals = envLocals env }
   
 {- Nondeterminism -}  
   
@@ -335,6 +340,7 @@ evalVar id pos = do
           case M.lookup id constants of
             Just e -> eval e
             Nothing -> return $ defaultValue t -- ToDo: cache constant value?
+        Nothing -> (error . show) (text "encountered unknown identifier during execution:" <+> text id) 
   where
     lookup getter setter t = do
       vars <- gets getter
