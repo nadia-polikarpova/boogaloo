@@ -31,7 +31,7 @@ executeProgram p tc entryPoint = finalEnvironment
       (Left err, _) -> Left err
       (_, env)      -> Right env            
     programExecution = do
-      collectDefinitions p
+      execUnsafely $ collectDefinitions p
       execCall [] entryPoint [] noPos
               
 {- State -}
@@ -110,10 +110,41 @@ functionsDoc funcs = vsep $ map funcDoc (M.toList funcs)
     funcDoc (id, defs) = vsep $ map (funcsDefDoc id) defs
     funcsDefDoc id (FDef formals guard body) = exprDoc guard <+> text "->" <+> 
       text id <> parens (commaSep (map text formals)) <+> text "=" <+> exprDoc body
+      
+{- Executions -}
 
 -- | Computations with Environment as state, which can result in either a or RuntimeError  
 type Execution a = ErrorT RuntimeError (State Environment) a
-        
+
+-- | Computations with Environment as state, which always result in a
+type SafeExecution a = State Environment a
+
+-- | Execute a safe computation in an unsafe environment
+execUnsafely :: SafeExecution a -> Execution a
+execUnsafely computation = ErrorT (Right <$> computation)
+
+-- | Execute an unsafe computation in a safe environment, handling errors that occur in computation with handler
+execSafely :: Execution a -> (RuntimeError -> SafeExecution a) -> SafeExecution a
+execSafely computation handler = do
+  eres <- runErrorT computation
+  either handler return eres
+  
+-- | Computations that perform a cleanup at the end
+class Monad m => Finalizer m where
+  finally :: m a -> m () -> m a
+    
+instance (Monad m) => Finalizer (StateT s m) where
+  finally main cleanup = do
+    res <- main
+    cleanup
+    return res
+
+instance (Error e, Monad m) => Finalizer (ErrorT e m) where
+  finally main cleanup = do
+    res <- main `catchError` (\err -> cleanup >> throwError err)
+    cleanup
+    return res  
+          
 -- | Set value of variable id to val.
 -- | id has to be declared in the current type context.
 setV id val = do
@@ -146,25 +177,22 @@ restoreOld :: Map Id Value -> Execution ()
 restoreOld olds = do
   env <- get
   put env { envOld = olds }
-
+  
 -- | Enter local scope (apply localTC to the type context and assign actuals to formals),
 -- | execute computation,
 -- | then restore type context and local variables to their initial values
-executeLocally :: (Context -> Context) -> [Id] -> [Value] -> Execution a -> Execution a
+-- executeLocally :: (MonadState Environment m, Finalizer m) => (Context -> Context) -> [Id] -> [Value] -> m a -> m a
 executeLocally localTC formals actuals computation = do
-  env <- get
-  put env { envTypeContext = localTC (envTypeContext env) }
+  oldEnv <- get
+  modify $ modifyTypeContext localTC
   setAll formals actuals
-  res <- computation `catchError` (\err -> unwind env >> throwError err)
-  unwind env
-  env' <- get
-  put env' { envTypeContext = envTypeContext env, envLocals = envLocals env }
-  return res
+  computation `finally` unwind oldEnv
   where
-    unwind env = do
-      env' <- get
-      put env' { envTypeContext = envTypeContext env, envLocals = envLocals env }
-        
+    -- | Restore type context and the values of local variables 
+    unwind oldEnv = do
+      env <- get
+      put env { envTypeContext = envTypeContext oldEnv, envLocals = envLocals oldEnv }
+              
 {- Nondeterminism -}  
   
 -- | Generate a value of type t,
@@ -562,7 +590,7 @@ checkWhere id pos = do
 {- Preprocessing -}
 
 -- | Collect constant, function and procedure definitions from p
-collectDefinitions :: Program -> Execution ()
+collectDefinitions :: Program -> SafeExecution ()
 collectDefinitions (Program decls) = mapM_ processDecl decls
   where
     processDecl (Pos _ (FunctionDecl name _ args _ (Just body))) = processFunctionBody name args body
@@ -596,7 +624,7 @@ processAxiom expr = do
 {- Constant and function definitions -}
 
 -- | Extract constant definitions from a boolean expression bExpr
-extractContantDefs :: Expression -> Execution ()
+extractContantDefs :: Expression -> SafeExecution ()
 extractContantDefs bExpr = case contents bExpr of  
   BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstantDef c rhs -- c == rhs: remember rhs as a definition for c
   _ -> return ()
@@ -605,7 +633,7 @@ extractContantDefs bExpr = case contents bExpr of
 -- | bExpr of the form "(forall x :: P(x, c) ==> f(x, c) == rhs(x, c) && B) && A",
 -- | with zero or more bound variables x and zero or more constants c,
 -- | produces a definition "f(x, x') = rhs(x, x')" with a guard "P(x) && x' == c"
-extractFunctionDefs :: Expression -> [Expression] -> Execution ()
+extractFunctionDefs :: Expression -> [Expression] -> SafeExecution ()
 extractFunctionDefs bExpr guards = extractFunctionDefs' (contents bExpr) guards
 
 extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) outerGuards = do

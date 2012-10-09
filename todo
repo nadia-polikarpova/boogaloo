@@ -20,7 +20,6 @@
     - Testing session summaries
     - Random testing
     - Always use one type for generic procedures?
-    - Introduce type SafeExecution for test cases (need a different type for the error when the procedure under test does not exist)
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - User-defined types
   - Extends ordering

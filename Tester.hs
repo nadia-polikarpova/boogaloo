@@ -19,10 +19,9 @@ import Text.PrettyPrint
 -- | Test all implementations of all procedures procNames from program p in type context tc;
 -- | requires that all procNames exist in context
 testProgram :: Program -> Context -> [Id] -> [TestCase]
-testProgram p tc procNames = fromRight res -- All exceptions are caught in test cases (ToDo: introduce safe execution type)
+testProgram p tc procNames = fst $ runState programExecution initEnvironment
   where
     initEnvironment = emptyEnv { envTypeContext = tc }
-    (res, _) = runState (runErrorT programExecution) initEnvironment
     programExecution = do
       collectDefinitions p
       concat <$> forM procNames testProcedure
@@ -59,7 +58,7 @@ instance Show TestCase where show tc = show (testCaseDoc tc)
 {- Test execution -}
 
 -- | Test implementation def of procedure sig on all inputs prescribed by the testing strategy
-testImplementation :: PSig -> PDef -> Execution [TestCase] 
+testImplementation :: PSig -> PDef -> SafeExecution [TestCase] 
 testImplementation sig def = do
   let paramTypes = map itwType (psigParams sig)
   tc <- gets envTypeContext
@@ -68,7 +67,7 @@ testImplementation sig def = do
   concat <$> mapM typeTestCase typeInputs
   where
     -- | Execute procedure instantiated with typeInputs on all value inputs
-    typeTestCase :: [Type] -> Execution [TestCase]
+    typeTestCase :: [Type] -> SafeExecution [TestCase]
     typeTestCase typeInputs = do
       -- fresh names for variables to be used as actual parameters:
       let localNames = map ((\suffix -> [nonIdChar] ++ suffix) . show) [1..length (psigParams sig)]
@@ -81,12 +80,12 @@ testImplementation sig def = do
       let inputs = forM inTypes (generateInputValue tc)      
       mapM (\input -> TestCase (psigName sig) input <$> testCase inNames outNames input) inputs
     -- | Execute procedure on input, with actual in-parameter variables inNames and actual out-parameter variables outNames
-    testCase :: [Id] -> [Id] -> [Value] -> Execution Outcome
+    testCase :: [Id] -> [Id] -> [Value] -> SafeExecution Outcome
     testCase inNames outNames input = do
       setAll inNames input
       let inExpr = map (gen . Var) inNames
       let outExpr = map (gen . Var) outNames
-      (execProcedure (assumePreconditions sig) def inExpr outExpr >> return Pass) `catchError` failureReport
+      execSafely (execProcedure (assumePreconditions sig) def inExpr outExpr >> return Pass) failureReport
     -- | Test case outcome in case of a runtime error err
     failureReport err = case rteInfo err of
       AssumeViolation _ _ -> return $ Invalid err
