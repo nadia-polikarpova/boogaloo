@@ -19,7 +19,7 @@
     - Set relevant global variables (needs live variable analysis)
     - Testing session summaries
     - Random testing, pass testing settings from outside
-    - Always use bool type for generic procedures (have a setting that makes it possible to use other types in case the program contains runtime type info)
+    - Use Reader to access settings?
   - Separate runtime error into error kind (error, unreachable, not executable) and error source (inline check, contract, language check)
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - User-defined types
@@ -30,6 +30,7 @@
   - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses);
       forces to have "shalow" Eq, Ord on types and expressions, so that map values can be stored as map keys
       or to create a named function per lambda expression
+  - With better non-determinism: treat maps like functions in testing, and do not generate all possible values for them explicitly?
   - Call forall
   - Make Value/Execution types generic (or at least eval and exec?). This will allow support for abstract interpretation and symbolic execution.    
   

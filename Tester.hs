@@ -18,8 +18,8 @@ import Text.PrettyPrint
     
 -- | Test all implementations of all procedures procNames from program p in type context tc;
 -- | requires that all procNames exist in context
-testProgram :: Program -> Context -> [Id] -> [TestCase]
-testProgram p tc procNames = fst $ runState programExecution initEnvironment
+testProgram :: TestSettings -> Program -> Context -> [Id] -> [TestCase]
+testProgram settings p tc procNames = evalState programExecution initEnvironment
   where
     initEnvironment = emptyEnv { envTypeContext = tc }
     programExecution = do
@@ -29,7 +29,21 @@ testProgram p tc procNames = fst $ runState programExecution initEnvironment
     testProcedure name = do
       sig <- gets (procSig name . envTypeContext) 
       defs <- gets (lookupProcedure name)
-      concat <$> forM defs (testImplementation sig)
+      concat <$> forM defs (testImplementation settings sig)
+      
+{- Testing session parameters -}
+
+data TestSettings = TestSettings {
+  tsIntRange :: [Integer],      -- Range of input values for integer variables
+  tsGenericTypeRange :: [Type], -- Range of instances for a type parameter of a generic procedure under test 
+  tsMapTypeRange :: [Type]      -- Range of instances for a type parameter of a polymorphic map
+}
+
+defaultSettings c = TestSettings {
+  tsIntRange = [-1..1],
+  tsGenericTypeRange = [BoolType],
+  tsMapTypeRange = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors c))]
+}      
         
 {- Reporting results -}        
 
@@ -58,12 +72,12 @@ instance Show TestCase where show tc = show (testCaseDoc tc)
 {- Test execution -}
 
 -- | Test implementation def of procedure sig on all inputs prescribed by the testing strategy
-testImplementation :: PSig -> PDef -> SafeExecution [TestCase] 
-testImplementation sig def = do
+testImplementation :: TestSettings -> PSig -> PDef -> SafeExecution [TestCase] 
+testImplementation settings sig def = do
   let paramTypes = map itwType (psigParams sig)
   tc <- gets envTypeContext
   -- all types the procedure signature should be instantiated with:
-  let typeInputs = generateInputTypes tc { ctxTypeVars = psigTypeVars sig } paramTypes  
+  let typeInputs = generateInputTypes (tsGenericTypeRange settings) tc { ctxTypeVars = psigTypeVars sig } paramTypes  
   concat <$> mapM typeTestCase typeInputs
   where
     -- | Execute procedure instantiated with typeInputs on all value inputs
@@ -77,7 +91,7 @@ testImplementation sig def = do
       let (inTypes, _) = splitAt nIns typeInputs
       tc <- gets envTypeContext
       -- all inputs the procedure should be tested on:
-      let inputs = forM inTypes (generateInputValue tc)      
+      let inputs = forM inTypes (generateInputValue settings tc)      
       mapM (\input -> TestCase (psigName sig) input <$> testCase inNames outNames input) inputs
     -- | Execute procedure on input, with actual in-parameter variables inNames and actual out-parameter variables outNames
     testCase :: [Id] -> [Id] -> [Value] -> SafeExecution Outcome
@@ -93,30 +107,26 @@ testImplementation sig def = do
 
 {- Input generation -}
     
-intRange = [-1..1]
-
 -- | generateInputValue c t: all values of type t in context c    
-generateInputValue :: Context -> Type -> [Value]
-generateInputValue _ BoolType = map BoolValue [False, True]
-generateInputValue _ IntType = map IntValue intRange
-generateInputValue c (MapType tv domains range) = let polyTypes = generateInputTypes c { ctxTypeVars = tv } (range : domains) in
+generateInputValue :: TestSettings -> Context -> Type -> [Value]
+generateInputValue _ _ BoolType = map BoolValue [False, True]
+generateInputValue settings _ IntType = map IntValue (tsIntRange settings)
+generateInputValue settings c (MapType tv domains range) = 
+  let polyTypes = generateInputTypes (tsMapTypeRange settings) c { ctxTypeVars = tv } (range : domains) in
   -- A polymorphic map is a union of monomorphic maps with all possible instantiations for type variables
   map MapValue (M.unions <$> mapM monomorphicMap polyTypes)
   where 
     monomorphicMap (range : domains) = do  
-      let args = forM domains (generateInputValue c)
-      r <- replicateM (length args) (generateInputValue c range)
+      let args = forM domains (generateInputValue settings c)
+      r <- replicateM (length args) (generateInputValue settings c range)
       return $ M.fromList (zip args r)
-generateInputValue _ (Instance _ _) = map CustomValue intRange
+generateInputValue settings _ (Instance _ _) = map CustomValue (tsIntRange settings)
 
-typeVarRange c = [IntType, BoolType]
--- typeVarRange c = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors c))]
-
--- | All instantiations of types ts in context c
-generateInputTypes :: Context -> [Type] -> [[Type]]
-generateInputTypes c ts = do
+-- | All instantiations of types ts in context c, with a range of instances for a single type variables range 
+generateInputTypes :: [Type] -> Context -> [Type] -> [[Type]]
+generateInputTypes range c ts = do
   let freeVars = filter (\x -> any (x `isFreeIn`) ts) (ctxTypeVars c)
-  actuals <- replicateM (length freeVars) (typeVarRange c)
+  actuals <- replicateM (length freeVars) range
   let binding = M.fromList (zip freeVars actuals)
   return $ map (typeSubst binding) ts
   

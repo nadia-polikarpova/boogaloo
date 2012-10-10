@@ -17,7 +17,7 @@ import Control.Monad.Error
 import Control.Applicative
 import Text.PrettyPrint
 
-main = testFromFile "test.bpl" ["sum_max"]
+main = testFromFile "test.bpl" ["sum_max", "main", "search", "poly"]
 -- main = executeFromFile "test.bpl" "main"
 
 -- | Execute procedure entryPoint from file
@@ -42,7 +42,7 @@ testFromFile file procNames = runOnFile printTestOutcomes file
     printTestOutcomes p context = do
       let (present, missing) = partition (`M.member` ctxProcedures context) procNames
       when (not (null missing)) $ print (text "Cannot find procedures under test:" <+> commaSep (map text missing))
-      mapM_ print (testProgram p context present)
+      mapM_ print (testProgram (defaultSettings context) p context present)
       
 -- | Parse file, type-check the resulting program, then execute command on the resulting program and type context
 runOnFile :: (Program -> Context -> IO ()) -> String -> IO ()      
