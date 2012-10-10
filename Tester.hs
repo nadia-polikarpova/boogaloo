@@ -23,7 +23,7 @@ testProgram p tc procNames = fst $ runState programExecution initEnvironment
   where
     initEnvironment = emptyEnv { envTypeContext = tc }
     programExecution = do
-      collectDefinitions p
+      collectDefinitions p      
       concat <$> forM procNames testProcedure
     -- | Test all implementations of procedure name
     testProcedure name = do
@@ -63,7 +63,7 @@ testImplementation sig def = do
   let paramTypes = map itwType (psigParams sig)
   tc <- gets envTypeContext
   -- all types the procedure signature should be instantiated with:
-  let typeInputs = generateInputTypes tc { ctxTypeVars = psigTypeVars sig } paramTypes
+  let typeInputs = generateInputTypes tc { ctxTypeVars = psigTypeVars sig } paramTypes  
   concat <$> mapM typeTestCase typeInputs
   where
     -- | Execute procedure instantiated with typeInputs on all value inputs
@@ -112,7 +112,7 @@ generateInputValue _ (Instance _ _) = map CustomValue intRange
 typeVarRange c = [IntType, BoolType]
 -- typeVarRange c = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors c))]
 
--- | All istantiations of types ts in context c
+-- | All instantiations of types ts in context c
 generateInputTypes :: Context -> [Type] -> [[Type]]
 generateInputTypes c ts = do
   let freeVars = filter (\x -> any (x `isFreeIn`) ts) (ctxTypeVars c)
