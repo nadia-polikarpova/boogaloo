@@ -12,6 +12,7 @@ import qualified Data.Map as M
 import Control.Monad.Error
 import Control.Applicative
 import Control.Monad.State
+import Control.Monad.Reader
 import Text.PrettyPrint
 
 {- Interface -}
@@ -19,20 +20,21 @@ import Text.PrettyPrint
 -- | Test all implementations of all procedures procNames from program p in type context tc;
 -- | requires that all procNames exist in context
 testProgram :: TestSettings -> Program -> Context -> [Id] -> [TestCase]
-testProgram settings p tc procNames = evalState programExecution initEnvironment
+testProgram settings p tc procNames = evalState (runReaderT programExecution settings) initEnvironment
   where
     initEnvironment = emptyEnv { envTypeContext = tc }
     programExecution = do
-      collectDefinitions p      
+      inSession $ collectDefinitions p
       concat <$> forM procNames testProcedure
     -- | Test all implementations of procedure name
     testProcedure name = do
       sig <- gets (procSig name . envTypeContext) 
       defs <- gets (lookupProcedure name)
-      concat <$> forM defs (testImplementation settings sig)
-      
+      concat <$> forM defs (testImplementation sig)
+            
 {- Testing session parameters -}
 
+-- | Settings for test input generation
 data TestSettings = TestSettings {
   tsIntRange :: [Integer],      -- Range of input values for integer variables
   tsGenericTypeRange :: [Type], -- Range of instances for a type parameter of a generic procedure under test 
@@ -43,7 +45,14 @@ defaultSettings c = TestSettings {
   tsIntRange = [-1..1],
   tsGenericTypeRange = [BoolType],
   tsMapTypeRange = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors c))]
-}      
+}
+
+-- | Executions that have access to testing session parameters
+type TestSession a = ReaderT TestSettings (State Environment) a
+
+-- | Embed a program execution into a testing session
+inSession :: SafeExecution a -> TestSession a
+inSession e = ReaderT (\_ -> e) 
         
 {- Reporting results -}        
 
@@ -72,16 +81,17 @@ instance Show TestCase where show tc = show (testCaseDoc tc)
 {- Test execution -}
 
 -- | Test implementation def of procedure sig on all inputs prescribed by the testing strategy
-testImplementation :: TestSettings -> PSig -> PDef -> SafeExecution [TestCase] 
-testImplementation settings sig def = do
+testImplementation :: PSig -> PDef -> TestSession [TestCase] 
+testImplementation sig def = do
   let paramTypes = map itwType (psigParams sig)
   tc <- gets envTypeContext
+  typeRange <- asks tsGenericTypeRange
   -- all types the procedure signature should be instantiated with:
-  let typeInputs = generateInputTypes (tsGenericTypeRange settings) tc { ctxTypeVars = psigTypeVars sig } paramTypes  
+  let typeInputs = generateInputTypes typeRange tc { ctxTypeVars = psigTypeVars sig } paramTypes  
   concat <$> mapM typeTestCase typeInputs
   where
     -- | Execute procedure instantiated with typeInputs on all value inputs
-    typeTestCase :: [Type] -> SafeExecution [TestCase]
+    typeTestCase :: [Type] -> TestSession [TestCase]
     typeTestCase typeInputs = do
       -- fresh names for variables to be used as actual parameters:
       let localNames = map ((\suffix -> [nonIdChar] ++ suffix) . show) [1..length (psigParams sig)]
@@ -90,9 +100,12 @@ testImplementation settings sig def = do
       let (inNames, outNames) = splitAt nIns localNames
       let (inTypes, _) = splitAt nIns typeInputs
       tc <- gets envTypeContext
+      settings <- ask
+      let execTestCase input = inSession $ testCase inNames outNames input
+      let reportTestCase input = TestCase (psigName sig) input <$> execTestCase input
       -- all inputs the procedure should be tested on:
       let inputs = forM inTypes (generateInputValue settings tc)      
-      mapM (\input -> TestCase (psigName sig) input <$> testCase inNames outNames input) inputs
+      mapM reportTestCase inputs
     -- | Execute procedure on input, with actual in-parameter variables inNames and actual out-parameter variables outNames
     testCase :: [Id] -> [Id] -> [Value] -> SafeExecution Outcome
     testCase inNames outNames input = do
@@ -111,7 +124,7 @@ testImplementation settings sig def = do
 generateInputValue :: TestSettings -> Context -> Type -> [Value]
 generateInputValue _ _ BoolType = map BoolValue [False, True]
 generateInputValue settings _ IntType = map IntValue (tsIntRange settings)
-generateInputValue settings c (MapType tv domains range) = 
+generateInputValue settings c (MapType tv domains range) =
   let polyTypes = generateInputTypes (tsMapTypeRange settings) c { ctxTypeVars = tv } (range : domains) in
   -- A polymorphic map is a union of monomorphic maps with all possible instantiations for type variables
   map MapValue (M.unions <$> mapM monomorphicMap polyTypes)

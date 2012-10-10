@@ -15,11 +15,10 @@
   - Use state?
   
 - Interpreter
-  - First take on exhaustive/random testing (randomness/backtracking only in the outermost call)  
+  - Testing
     - Set relevant global variables (needs live variable analysis)
     - Testing session summaries
     - Random testing, pass testing settings from outside
-    - Use Reader to access settings?
   - Separate runtime error into error kind (error, unreachable, not executable) and error source (inline check, contract, language check)
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - User-defined types
