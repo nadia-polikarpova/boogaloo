@@ -28,7 +28,7 @@ toBasicBlocks body = let
     reverse (foldl append [] tbs')
 
 -- | Label of the first block in a procedure
-startLabel = "start"    
+startLabel = "00_start"    
 
 -- | Attach a label to the first statement (with an empty label) in a non-empty list of labeled statements    
 attach :: Id -> [BareLStatement] -> [BareLStatement]

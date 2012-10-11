@@ -7,6 +7,7 @@ import TypeChecker
 import Tokens
 import PrettyPrinter
 import Interpreter
+import DataFlow
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Error
