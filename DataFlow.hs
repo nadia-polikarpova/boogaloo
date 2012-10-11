@@ -12,14 +12,14 @@ import qualified Data.Set as S
 
 {- Interface -}
 
--- | Input parameters and global names, whose initial value might be read by the procedure implementation def
+-- | Input parameters (in the order they appear in the signature) and global names, whose initial value might be read by the procedure implementation def
 liveInputVariables :: PDef -> ([Id], [Id])
 liveInputVariables def = let
   body = pdefBody def
   liveVars = liveVariables (snd body)
-  liveLocals = liveVars `intersect` map itwId (fst body)
-  liveIns = liveVars `intersect` pdefIns def
-  liveOuts = liveVars `intersect` pdefOuts def
+  liveLocals = filter (`elem` liveVars) (map itwId (fst body))
+  liveIns = filter (`elem` liveVars) (pdefIns def)
+  liveOuts = filter (`elem` liveVars) (pdefOuts def)
   liveGlobals = liveVars \\ (liveLocals ++ liveIns ++ liveOuts)
   in (liveIns, liveGlobals)
 

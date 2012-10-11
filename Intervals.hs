@@ -1,7 +1,7 @@
 {- Lattice of integer intervals -}
 module Intervals where
 
-import Ratio
+import Data.Ratio
 import Data.Maybe
 
 -- | Lattice type class 
