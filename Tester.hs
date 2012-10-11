@@ -8,6 +8,8 @@ import Tokens
 import PrettyPrinter
 import Interpreter
 import DataFlow
+import Data.Maybe
+import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Error
@@ -69,13 +71,19 @@ instance Show Outcome where show o = show (outcomeDoc o)
 
 -- | Description of a test case
 data TestCase = TestCase {
-  tcProcedure :: Id,    -- Procedure under test
-  tcInput :: [Value],   -- Values for in-parameters
-  tcOutcome :: Outcome  -- Outcome
+  tcProcedure :: Id,      -- Procedure under test
+  tcLiveIns :: [Id],      -- Input parameters for which an input value was generated
+  tcLiveGlobals :: [Id],  -- Global variables for which an input value was generated
+  tcInput :: [Value],     -- Values for in-parameters
+  tcOutcome :: Outcome    -- Outcome
 }
 
 testCaseDoc :: TestCase -> Doc
-testCaseDoc (TestCase procName input outcome) = text procName <> parens (commaSep (map valueDoc input)) <+> outcomeDoc outcome
+testCaseDoc (TestCase procName liveIns liveGlobals input outcome) = text procName <> 
+  parens (commaSep (zipWith argDoc (liveIns ++ (map ("var " ++) liveGlobals)) input)) <+>
+  outcomeDoc outcome
+  where
+    argDoc name val = text name <+> text "=" <+> valueDoc val
 
 instance Show TestCase where show tc = show (testCaseDoc tc)
 
@@ -94,16 +102,29 @@ testImplementation sig def = do
     -- | Execute procedure instantiated with typeInputs on all value inputs
     typeTestCase :: [Type] -> TestSession [TestCase]
     typeTestCase typeInputs = do
-      -- fresh names for variables to be used as actual parameters:
-      let localNames = map ((\suffix -> [nonIdChar] ++ suffix) . show) [1..length (psigParams sig)]
-      modify $ modifyTypeContext (`setLocals` (M.fromList $ zip localNames typeInputs))      
-      let nIns = length (psigArgs sig)
-      let (inNames, outNames) = splitAt nIns localNames
-      let (inTypes, _) = splitAt nIns typeInputs
+      -- fresh name for a parameter at position index; to be used as actual parameter
+      let localName index = [nonIdChar] ++ show index
+      let localNames = map localName [0..length (psigParams sig) - 1]
+      -- declare local variables localNames with appropriate types:
+      modify $ modifyTypeContext (`setLocals` (M.fromList $ zip localNames typeInputs))
       tc <- gets envTypeContext
-      settings <- ask
+      
+      -- names of actual in-parameters
+      let (liveIns, liveGlobals) = liveInputVariables def
+      let liveAcualIns = map (localName . fromJust . (`elemIndex` pdefIns def)) liveIns
+      let liveGlobalVars = filter (`M.member` ctxGlobals tc) liveGlobals
+      let inNames = liveAcualIns ++ liveGlobalVars
+      
+      -- names of actual out-parameters
+      let nIns = length (psigArgs sig)
+      let outNames = drop nIns localNames
+      
+      -- types of actual in-parameters
+      let inTypes = take nIns typeInputs ++ map (ctxGlobals tc !) liveGlobalVars      
+      
       let execTestCase input = inSession $ testCase inNames outNames input
-      let reportTestCase input = TestCase (psigName sig) input <$> execTestCase input
+      let reportTestCase input = TestCase (psigName sig) liveIns liveGlobalVars input <$> execTestCase input
+      settings <- ask
       -- all inputs the procedure should be tested on:
       let inputs = forM inTypes (generateInputValue settings tc)      
       mapM reportTestCase inputs

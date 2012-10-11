@@ -16,7 +16,6 @@
   
 - Interpreter
   - Testing
-    - Set relevant global variables (needs live variable analysis)
     - Testing session summaries
     - Random testing, pass testing settings from outside
   - Separate runtime error into error kind (error, unreachable, not executable) and error source (inline check, contract, language check)

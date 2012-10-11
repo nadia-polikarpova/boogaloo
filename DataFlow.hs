@@ -1,15 +1,27 @@
-module DataFlow (liveVariables) where
+module DataFlow (liveVariables, liveInputVariables) where
 
 import AST
 import Util
 import Position hiding (gen)
 import BasicBlocks
+import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Data.Set (Set)
 import qualified Data.Set as S
 
 {- Interface -}
+
+-- | Input parameters and global names, whose initial value might be read by the procedure implementation def
+liveInputVariables :: PDef -> ([Id], [Id])
+liveInputVariables def = let
+  body = pdefBody def
+  liveVars = liveVariables (snd body)
+  liveLocals = liveVars `intersect` map itwId (fst body)
+  liveIns = liveVars `intersect` pdefIns def
+  liveOuts = liveVars `intersect` pdefOuts def
+  liveGlobals = liveVars \\ (liveLocals ++ liveIns ++ liveOuts)
+  in (liveIns, liveGlobals)
 
 -- | Identifiers whose initial value might be read in body
 liveVariables :: Map Id [Statement] -> [Id]

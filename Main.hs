@@ -17,7 +17,8 @@ import Control.Monad.Error
 import Control.Applicative
 import Text.PrettyPrint
 
-main = testFromFile "test.bpl" ["sum_max", "main", "search", "poly"]
+-- main = testFromFile "test.bpl" ["sum_max", "main", "search", "poly"]
+main = testFromFile "test.bpl" ["sum_max"]
 -- main = executeFromFile "test.bpl" "main"
 
 -- | Execute procedure entryPoint from file
