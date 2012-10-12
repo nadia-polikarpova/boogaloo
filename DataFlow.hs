@@ -75,8 +75,10 @@ gen :: Statement -> Set Id
 gen st = case contents st of
   Assume _ e -> S.fromList (freeVars e)
   Assert _ e -> S.fromList (freeVars e)
-  Assign lhss rhss -> let allIndexes = concat $ concatMap snd lhss in
-    S.unions (map (S.fromList . freeVars) rhss) <+> S.unions (map (S.fromList . freeVars) allIndexes)
+  Assign lhss rhss -> let 
+    allSubscipts = concat $ concatMap snd lhss
+    subsciptedLhss = [fst lhs | lhs <- lhss, not (null (snd lhs))] -- Left-hand sides with a subscript are also read (consider desugaring)
+    in S.unions (map (S.fromList . freeVars) (rhss ++ allSubscipts)) <+> S.fromList subsciptedLhss
   Call _ _ args -> S.unions (map (S.fromList . freeVars) args)
   CallForall _ args -> S.unions (map (S.fromList . freeVars') args)
   otherwise -> S.empty

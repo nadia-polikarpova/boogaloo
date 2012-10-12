@@ -112,26 +112,28 @@ testImplementation sig def = do
       -- names of actual in- and out-parameters
       let (inParams, outParams) = splitAt (length (psigArgs sig)) localNames      
       
-      -- names of variables for which input values are generated
+      -- names of input variables (variables for which input values are generated);
+      -- input variables can be either in-parameters or global variables 
       let (liveIns, liveGlobals) = liveInputVariables def
       let livePositions = map (fromJust . (`elemIndex` pdefIns def)) liveIns 
       let liveActualIns = map localName livePositions
       let liveGlobalVars = filter (`M.member` ctxGlobals tc) liveGlobals
-      let inNames = liveActualIns ++ liveGlobalVars
+      let inputVars = liveActualIns ++ liveGlobalVars
             
-      -- types of actual in-parameters
+      -- types of input variables
       let inTypes = map (typeInputs !!) livePositions ++ map (ctxGlobals tc !) liveGlobalVars      
       
-      let execTestCase input = inSession $ testCase inParams outParams inNames input
+      let execTestCase input = inSession $ testCase inParams outParams inputVars input
       let reportTestCase input = TestCase (psigName sig) liveIns liveGlobalVars input <$> execTestCase input
       settings <- ask
       -- all inputs the procedure should be tested on:
       let inputs = forM inTypes (generateInputValue settings tc)      
       mapM reportTestCase inputs
-    -- | Assign input to inputNames, and execute procedure with actual in-parameter variables inParams and actual out-parameter variables outParams
+    -- | Assign inputVals to inputVars, and execute procedure with actual in-parameter variables inParams and actual out-parameter variables outParams;
+    -- | inputVars contain some inParams and some globals variables
     testCase :: [Id] -> [Id] -> [Id] -> [Value] -> SafeExecution Outcome
-    testCase inParams outParams inputNames input = do
-      setAll inputNames input
+    testCase inParams outParams inputVars inputVals = do
+      setAll inputVars inputVals
       let inExpr = map (gen . Var) inParams
       let outExpr = map (gen . Var) outParams
       execSafely (execProcedure (assumePreconditions sig) def inExpr outExpr >> return Pass) failureReport
