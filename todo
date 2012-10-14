@@ -34,7 +34,6 @@
   
 - User interface
   - output local state with runtime error (restricted to the variables in the failed assertion)
-  - allow entry points with in- and out-parameters
   - settings for disabling checking of different specs
   - settings for bounding domains to be checked in quantified expressions
   - interactive sessions  

@@ -26,7 +26,7 @@ liveInputVariables def = let
 -- | Identifiers whose initial value might be read in body
 liveVariables :: Map Id [Statement] -> [Id]
 liveVariables body = let
-    empty = M.map (\_ -> S.empty) body
+    empty = M.map (const S.empty) body
     insertExitBlock i = M.insert i (transition (body ! i) S.empty)
     entry0 = S.foldr insertExitBlock empty (exitBlocks body)
     changed0 = M.keysSet body <-> exitBlocks body

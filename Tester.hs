@@ -15,7 +15,6 @@ import qualified Data.Map as M
 import Control.Monad.Error
 import Control.Applicative
 import Control.Monad.State
-import Control.Monad.Reader
 import Text.PrettyPrint
 
 {- Interface -}
@@ -23,16 +22,16 @@ import Text.PrettyPrint
 -- | Test all implementations of all procedures procNames from program p in type context tc;
 -- | requires that all procNames exist in context
 testProgram :: TestSettings -> Program -> Context -> [Id] -> [TestCase]
-testProgram settings p tc procNames = evalState (runReaderT programExecution settings) initEnvironment
+testProgram settings p tc procNames = evalState testExecution (settings, initEnvironment)
   where
     initEnvironment = emptyEnv { envTypeContext = tc }
-    programExecution = do
-      inSession $ collectDefinitions p
+    testExecution = do
+      changeState snd (mapSnd . const) $ collectDefinitions p
       concat <$> forM procNames testProcedure
     -- | Test all implementations of procedure name
     testProcedure name = do
-      sig <- gets (procSig name . envTypeContext) 
-      defs <- gets (lookupProcedure name)
+      sig <- gets (procSig name . envTypeContext . snd) 
+      defs <- gets (lookupProcedure name . snd)
       concat <$> forM defs (testImplementation sig)
             
 {- Testing session parameters -}
@@ -51,11 +50,7 @@ defaultSettings c = TestSettings {
 }
 
 -- | Executions that have access to testing session parameters
-type TestSession a = ReaderT TestSettings (State Environment) a
-
--- | Embed a program execution into a testing session
-inSession :: SafeExecution a -> TestSession a
-inSession e = ReaderT (\_ -> e) 
+type TestSession a = State (TestSettings, Environment) a
         
 {- Reporting results -}        
 
@@ -93,8 +88,8 @@ instance Show TestCase where show tc = show (testCaseDoc tc)
 testImplementation :: PSig -> PDef -> TestSession [TestCase] 
 testImplementation sig def = do
   let paramTypes = map itwType (psigParams sig)
-  tc <- gets envTypeContext
-  typeRange <- asks tsGenericTypeRange
+  tc <- gets (envTypeContext . snd)
+  typeRange <- gets (tsGenericTypeRange . fst)
   -- all types the procedure signature should be instantiated with:
   let typeInputs = generateInputTypes typeRange tc { ctxTypeVars = psigTypeVars sig } paramTypes  
   concat <$> mapM typeTestCase typeInputs
@@ -106,8 +101,8 @@ testImplementation sig def = do
       let localName index = [nonIdChar] ++ show index
       let localNames = map localName [0..length (psigParams sig) - 1]
       -- declare local variables localNames with appropriate types:
-      modify $ modifyTypeContext (`setLocals` (M.fromList $ zip localNames typeInputs))
-      tc <- gets envTypeContext
+      modify $ mapSnd (modifyTypeContext (`setLocals` (M.fromList $ zip localNames typeInputs)))
+      tc <- gets (envTypeContext . snd)
       
       -- names of actual in- and out-parameters
       let (inParams, outParams) = splitAt (length (psigArgs sig)) localNames      
@@ -123,11 +118,10 @@ testImplementation sig def = do
       -- types of input variables
       let inTypes = map (typeInputs !!) livePositions ++ map (ctxGlobals tc !) liveGlobalVars      
       
-      let execTestCase input = inSession $ testCase inParams outParams inputVars input
+      let execTestCase input = changeState snd (mapSnd . const) $ testCase inParams outParams inputVars input
       let reportTestCase input = TestCase (psigName sig) liveIns liveGlobalVars input <$> execTestCase input
-      settings <- ask
       -- all inputs the procedure should be tested on:
-      let inputs = forM inTypes (generateInputValue settings tc)      
+      inputs <- changeState fst (mapFst . const) $ listMapM (generateInputValueM tc) inTypes
       mapM reportTestCase inputs
     -- | Assign inputVals to inputVars, and execute procedure with actual in-parameter variables inParams and actual out-parameter variables outParams;
     -- | inputVars contain some inParams and some globals variables
@@ -144,20 +138,42 @@ testImplementation sig def = do
 
 {- Input generation -}
     
--- | generateInputValue c t: all values of type t in context c    
-generateInputValue :: TestSettings -> Context -> Type -> [Value]
-generateInputValue _ _ BoolType = map BoolValue [False, True]
-generateInputValue settings _ IntType = map IntValue (tsIntRange settings)
-generateInputValue settings c (MapType tv domains range) =
-  let polyTypes = generateInputTypes (tsMapTypeRange settings) c { ctxTypeVars = tv } (range : domains) in
+-- | The version was not using state, but was using the list monad:
+-- generateInputValue :: TestSettings -> Context -> Type -> [Value]
+-- generateInputValue _ _ BoolType = map BoolValue [False, True]
+-- generateInputValue settings _ IntType = map IntValue (tsIntRange settings)
+-- generateInputValue settings c (MapType tv domains range) =
+  -- let polyTypes = generateInputTypes (tsMapTypeRange settings) c { ctxTypeVars = tv } (range : domains) in
+  -- -- A polymorphic map is a union of monomorphic maps with all possible instantiations for type variables
+  -- map MapValue (M.unions <$> mapM monomorphicMap polyTypes)
+  -- where 
+    -- monomorphicMap (range : domains) = do  
+      -- let args = forM domains (generateInputValue settings c)
+      -- r <- replicateM (length args) (generateInputValue settings c range)
+      -- return $ M.fromList (zip args r)
+-- generateInputValue settings _ (Instance _ _) = map CustomValue (tsIntRange settings)
+
+-- | generateInputValue c t: all values of type t in context c          
+generateInputValueM :: Context -> Type -> State TestSettings [Value]
+generateInputValueM _ BoolType = return $ map BoolValue [False, True]
+generateInputValueM _ IntType = do
+  settings <- get
+  return $ map IntValue (tsIntRange settings)
+generateInputValueM c (MapType tv domains range) = do
+  typeRange <- gets tsMapTypeRange
+  let polyTypes = generateInputTypes typeRange c { ctxTypeVars = tv } (range : domains)
   -- A polymorphic map is a union of monomorphic maps with all possible instantiations for type variables
-  map MapValue (M.unions <$> mapM monomorphicMap polyTypes)
-  where 
-    monomorphicMap (range : domains) = do  
-      let args = forM domains (generateInputValue settings c)
-      r <- replicateM (length args) (generateInputValue settings c range)
-      return $ M.fromList (zip args r)
-generateInputValue settings _ (Instance _ _) = map CustomValue (tsIntRange settings)
+  maps <- listMapM monomorphicMap polyTypes
+  return $ map (MapValue . M.unions) maps
+  where
+    monomorphicMap :: [Type] -> State TestSettings [Map [Value] Value]
+    monomorphicMap (range : domains) = do 
+      args <- listMapM (generateInputValueM c) domains
+      rets <- listMapM (generateInputValueM c) (replicate (length args) range)
+      return $ map (\r -> M.fromList (zip args r)) rets
+generateInputValueM _ (Instance _ _) = do
+  settings <- get
+  return $ map IntValue (tsIntRange settings)
 
 -- | All instantiations of types ts in context c, with a range of instances for a single type variables range 
 generateInputTypes :: [Type] -> Context -> [Type] -> [[Type]]
