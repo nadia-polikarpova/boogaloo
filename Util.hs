@@ -282,14 +282,6 @@ deleteAll keys m = foldr M.delete m keys
 mapFst f (x, y) = (f x, y)
 mapSnd f (x, y) = (x, f y)
 
--- | mapM of a List monad combined with another monad
-listMapM :: Monad m => (a -> m [b]) -> [a] -> m [[b]]
-listMapM f [] = return [[]]
-listMapM f (x : xs) = do
-  l <- f x
-  ls <- listMapM f xs
-  return $ concatMap (\v -> map (v :) ls) l
-
 -- | Execute a computation with state of type t inside a computation with state of type s  
 changeState :: (s -> t) -> (t -> s -> s) -> State t a -> State s a
 changeState getter modifier e = do

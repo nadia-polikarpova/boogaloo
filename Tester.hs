@@ -121,7 +121,8 @@ testImplementation sig def = do
       let execTestCase input = changeState snd (mapSnd . const) $ testCase inParams outParams inputVars input
       let reportTestCase input = TestCase (psigName sig) liveIns liveGlobalVars input <$> execTestCase input
       -- all inputs the procedure should be tested on:
-      inputs <- changeState fst (mapFst . const) $ listMapM (generateInputValueM tc) inTypes
+      let genInputs = sequence <$> mapM (generateInputValueM tc) inTypes
+      inputs <- changeState fst (mapFst . const) genInputs 
       mapM reportTestCase inputs
     -- | Assign inputVals to inputVars, and execute procedure with actual in-parameter variables inParams and actual out-parameter variables outParams;
     -- | inputVars contain some inParams and some globals variables
@@ -138,21 +139,6 @@ testImplementation sig def = do
 
 {- Input generation -}
     
--- | The version was not using state, but was using the list monad:
--- generateInputValue :: TestSettings -> Context -> Type -> [Value]
--- generateInputValue _ _ BoolType = map BoolValue [False, True]
--- generateInputValue settings _ IntType = map IntValue (tsIntRange settings)
--- generateInputValue settings c (MapType tv domains range) =
-  -- let polyTypes = generateInputTypes (tsMapTypeRange settings) c { ctxTypeVars = tv } (range : domains) in
-  -- -- A polymorphic map is a union of monomorphic maps with all possible instantiations for type variables
-  -- map MapValue (M.unions <$> mapM monomorphicMap polyTypes)
-  -- where 
-    -- monomorphicMap (range : domains) = do  
-      -- let args = forM domains (generateInputValue settings c)
-      -- r <- replicateM (length args) (generateInputValue settings c range)
-      -- return $ M.fromList (zip args r)
--- generateInputValue settings _ (Instance _ _) = map CustomValue (tsIntRange settings)
-
 -- | generateInputValue c t: all values of type t in context c          
 generateInputValueM :: Context -> Type -> State TestSettings [Value]
 generateInputValueM _ BoolType = return $ map BoolValue [False, True]
@@ -163,13 +149,13 @@ generateInputValueM c (MapType tv domains range) = do
   typeRange <- gets tsMapTypeRange
   let polyTypes = generateInputTypes typeRange c { ctxTypeVars = tv } (range : domains)
   -- A polymorphic map is a union of monomorphic maps with all possible instantiations for type variables
-  maps <- listMapM monomorphicMap polyTypes
+  maps <- sequence <$> mapM monomorphicMap polyTypes
   return $ map (MapValue . M.unions) maps
   where
     monomorphicMap :: [Type] -> State TestSettings [Map [Value] Value]
     monomorphicMap (range : domains) = do 
-      args <- listMapM (generateInputValueM c) domains
-      rets <- listMapM (generateInputValueM c) (replicate (length args) range)
+      args <- sequence <$> mapM (generateInputValueM c) domains
+      rets <- sequence <$> mapM (generateInputValueM c) (replicate (length args) range)
       return $ map (\r -> M.fromList (zip args r)) rets
 generateInputValueM _ (Instance _ _) = do
   settings <- get
