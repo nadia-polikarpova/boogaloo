@@ -113,23 +113,26 @@ instance Eq Type where
 
 {- Expressions -}
 
--- | Free variables in an expression
-freeVars :: Expression -> [Id]
-freeVars e = freeVars' (contents e)
+-- | Free variables in an expression, referred to in current state and old state
+freeVarsTwoState :: Expression -> ([Id], [Id])
+freeVarsTwoState e = freeVarsTwoState' (contents e)
 
-freeVars' FF = []
-freeVars' TT = []
-freeVars' (Numeral _) = []
-freeVars' (Var x) = [x]
-freeVars' (Application name args) = nub $ concatMap freeVars args
-freeVars' (MapSelection m args) = nub $ concatMap freeVars (m : args)
-freeVars' (MapUpdate m args val) = nub $ concatMap freeVars (val : m : args)
-freeVars' (Old e) = freeVars e
-freeVars' (IfExpr cond e1 e2) = nub $ freeVars cond ++ freeVars e1 ++ freeVars e2
-freeVars' (Coercion e _) = freeVars e
-freeVars' (UnaryExpression _ e) = freeVars e
-freeVars' (BinaryExpression _ e1 e2) = nub $ freeVars e1 ++ freeVars e2
-freeVars' (Quantified _ _ boundVars e) = freeVars e \\ map fst boundVars
+freeVarsTwoState' FF = ([], [])
+freeVarsTwoState' TT = ([], [])
+freeVarsTwoState' (Numeral _) = ([], [])
+freeVarsTwoState' (Var x) = ([x], [])
+freeVarsTwoState' (Application name args) = mapBoth (nub . concat) (unzip (map freeVarsTwoState args))
+freeVarsTwoState' (MapSelection m args) =  mapBoth (nub . concat) (unzip (map freeVarsTwoState (m : args)))
+freeVarsTwoState' (MapUpdate m args val) =  mapBoth (nub . concat) (unzip (map freeVarsTwoState (val : m : args)))
+freeVarsTwoState' (Old e) = let (state, old) = freeVarsTwoState e in ([], state ++ old)
+freeVarsTwoState' (IfExpr cond e1 e2) = mapBoth (nub . concat) (unzip [freeVarsTwoState cond, freeVarsTwoState e1, freeVarsTwoState e2])
+freeVarsTwoState' (Coercion e _) = freeVarsTwoState e
+freeVarsTwoState' (UnaryExpression _ e) = freeVarsTwoState e
+freeVarsTwoState' (BinaryExpression _ e1 e2) = mapBoth (nub . concat) (unzip [freeVarsTwoState e1, freeVarsTwoState e2])
+freeVarsTwoState' (Quantified _ _ boundVars e) = let (state, old) = freeVarsTwoState e in (state \\ map fst boundVars, old)
+
+freeVars = fst . freeVarsTwoState
+freeOldVars = snd . freeVarsTwoState
 
 -- | Mapping from variables to expressions
 type VarBinding = Map Id BareExpression
@@ -281,6 +284,7 @@ deleteAll keys m = foldr M.delete m keys
 
 mapFst f (x, y) = (f x, y)
 mapSnd f (x, y) = (x, f y)
+mapBoth f (x, y) = (f x, f y)
 
 -- | Execute a computation with state of type t inside a computation with state of type s  
 changeState :: (s -> t) -> (t -> s -> s) -> State t a -> State s a

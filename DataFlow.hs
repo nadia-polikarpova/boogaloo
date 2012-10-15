@@ -31,7 +31,8 @@ liveVariables body = let
     insertExitBlock i = M.insert i (transition (body ! i) S.empty)
     entry0 = S.foldr insertExitBlock empty (exitBlocks body)
     changed0 = M.keysSet body <-> exitBlocks body
-  in S.toList (analyse body entry0 empty changed0 ! startLabel)
+    oldVariables = S.unions (map (\block -> S.unions (map genOld block)) (M.elems body))
+  in S.toList (oldVariables `S.union` (analyse body entry0 empty changed0 ! startLabel))
 
 {- Implementation -}
 
@@ -71,22 +72,30 @@ kill st = case contents st of
   Call lhss _ _ -> S.fromList lhss
   otherwise -> S.empty
 
--- | Variables that become live as a result of st  
+-- | Variables that become live as a result of st
 gen :: Statement -> Set Id
-gen st = case contents st of
-  Assume _ e -> S.fromList (freeVars e)
-  Assert _ e -> S.fromList (freeVars e)
+gen st = genTwoState fst st
+
+-- | Variables whose pre-state is mentioned in st
+genOld :: Statement -> Set Id
+genOld st = genTwoState snd st
+  
+-- | Variables mentioned in st in either current state or old state
+genTwoState :: (([Id], [Id]) -> [Id]) -> Statement -> Set Id
+genTwoState select st = case contents st of
+  Assume _ e -> (S.fromList . select . freeVarsTwoState) e
+  Assert _ e -> (S.fromList . select . freeVarsTwoState) e
   Assign lhss rhss -> let 
     allSubscipts = concat $ concatMap snd lhss
     subsciptedLhss = [fst lhs | lhs <- lhss, not (null (snd lhs))] -- Left-hand sides with a subscript are also read (consider desugaring)
-    in S.unions (map (S.fromList . freeVars) (rhss ++ allSubscipts)) <+> S.fromList subsciptedLhss
-  Call _ _ args -> S.unions (map (S.fromList . freeVars) args)
-  CallForall _ args -> S.unions (map (S.fromList . freeVars') args)
+    in S.unions (map (S.fromList . select . freeVarsTwoState) (rhss ++ allSubscipts)) <+> S.fromList subsciptedLhss
+  Call _ _ args -> S.unions (map (S.fromList . select . freeVarsTwoState) args)
+  CallForall _ args -> S.unions (map (S.fromList . select . freeVarsTwoState') args)
   otherwise -> S.empty
   where 
-    freeVars' Wildcard = []
-    freeVars' (Expr e) = freeVars e
-
+    freeVarsTwoState' Wildcard = ([], [])
+    freeVarsTwoState' (Expr e) = freeVarsTwoState e
+    
 -- | Blocks in body that end with a return statement
 exitBlocks :: Map Id [Statement] -> Set Id
 exitBlocks body = M.keysSet $ M.filter isExit body
