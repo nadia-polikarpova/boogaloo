@@ -1,4 +1,5 @@
 - Overall
+  - Command-line args
   - Create package and some doc (+ examples: sum_max, sorting/binary_search)
   - Unsupported syntax    
     - bit vectors    
@@ -16,8 +17,9 @@
   
 - Interpreter
   - Testing
+    - In random testing: do not use all combinations of per-variable inputs
     - Testing session summaries
-    - Random testing, pass testing settings from outside
+    - Include free vars of contracts into live vars of an implementation
   - Separate runtime error into error kind (error, unreachable, not executable) and error source (inline check, contract, language check)
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - User-defined types

@@ -8,6 +8,7 @@ import Tokens
 import PrettyPrinter
 import Interpreter
 import DataFlow
+import System.Random
 import Data.Maybe
 import Data.List
 import Data.Map (Map, (!))
@@ -38,13 +39,22 @@ testProgram settings p tc procNames = evalState testExecution (settings, initEnv
 
 -- | Settings for test input generation
 data TestSettings = TestSettings {
-  tsIntRange :: [Integer],      -- Range of input values for integer variables
-  tsGenericTypeRange :: [Type], -- Range of instances for a type parameter of a generic procedure under test 
-  tsMapTypeRange :: [Type]      -- Range of instances for a type parameter of a polymorphic map
+  tsMaxTestCaseCount :: Maybe Int,    -- Maximum number of test cases to be generated or Nothing if unlimites
+  tsRandomGen :: Maybe StdGen,        -- Stores the random number generator in case of random testing or Nothing in case of exhaustive testing
+  tsIntLimits :: (Integer, Integer),  -- Lower and upper bound for integer inputs
+  tsInputCount :: Int,                -- Number of inputs to be generated per variable (ignored in case of exhaustive testing)
+  tsGenericTypeRange :: [Type],       -- Range of instances for a type parameter of a generic procedure under test 
+  tsMapTypeRange :: [Type]            -- Range of instances for a type parameter of a polymorphic map
 }
 
-defaultSettings c = TestSettings {
-  tsIntRange = [-1..1],
+getRandomGen ts = fromJust (tsRandomGen ts)
+setRandomGen ts gen = ts { tsRandomGen = Just gen }
+
+defaultSettings c mRandomGen = TestSettings {
+  tsMaxTestCaseCount = Nothing,
+  tsRandomGen = mRandomGen,
+  tsIntLimits = if isNothing mRandomGen then (-1, 1) else (-32, 32),
+  tsInputCount = 3,
   tsGenericTypeRange = [BoolType],
   tsMapTypeRange = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors c))]
 }
@@ -92,7 +102,11 @@ testImplementation sig def = do
   typeRange <- gets (tsGenericTypeRange . fst)
   -- all types the procedure signature should be instantiated with:
   let typeInputs = generateInputTypes typeRange tc { ctxTypeVars = psigTypeVars sig } paramTypes  
-  concat <$> mapM typeTestCase typeInputs
+  let execAll = concat <$> mapM typeTestCase typeInputs
+  mCutoff <- gets (tsMaxTestCaseCount . fst)
+  case mCutoff of
+    Nothing -> execAll
+    Just n -> take n <$> execAll
   where
     -- | Execute procedure instantiated with typeInputs on all value inputs
     typeTestCase :: [Type] -> TestSession [TestCase]
@@ -121,7 +135,7 @@ testImplementation sig def = do
       let execTestCase input = changeState snd (mapSnd . const) $ testCase inParams outParams inputVars input
       let reportTestCase input = TestCase (psigName sig) liveIns liveGlobalVars input <$> execTestCase input
       -- all inputs the procedure should be tested on:
-      let genInputs = sequence <$> mapM (generateInputValueM tc) inTypes
+      let genInputs = sequence <$> mapM (generateInputValue tc) inTypes
       inputs <- changeState fst (mapFst . const) genInputs 
       mapM reportTestCase inputs
     -- | Assign inputVals to inputVars, and execute procedure with actual in-parameter variables inParams and actual out-parameter variables outParams;
@@ -136,30 +150,35 @@ testImplementation sig def = do
     failureReport err = case rteInfo err of
       AssumeViolation _ _ -> return $ Invalid err
       _ -> return $ Fail err
-
+      
 {- Input generation -}
+
+-- | Generate all input values for an integer variable
+generateIntInput :: State TestSettings [Integer]
+generateIntInput = do
+  random <- gets tsRandomGen
+  limits <- gets tsIntLimits
+  n <- gets tsInputCount
+  if isNothing random
+    then return [fst limits .. snd limits]
+    else changeState getRandomGen (flip setRandomGen) $ replicateM n (state (randomR limits))
     
--- | generateInputValue c t: all values of type t in context c          
-generateInputValueM :: Context -> Type -> State TestSettings [Value]
-generateInputValueM _ BoolType = return $ map BoolValue [False, True]
-generateInputValueM _ IntType = do
-  settings <- get
-  return $ map IntValue (tsIntRange settings)
-generateInputValueM c (MapType tv domains range) = do
+-- | generateInputValue c t: generate all values of type t in context c          
+generateInputValue :: Context -> Type -> State TestSettings [Value]
+generateInputValue _ BoolType = return $ map BoolValue [False, True]
+generateInputValue _ IntType = map IntValue <$> generateIntInput
+generateInputValue c (MapType tv domains range) = do
   typeRange <- gets tsMapTypeRange
   let polyTypes = generateInputTypes typeRange c { ctxTypeVars = tv } (range : domains)
   -- A polymorphic map is a union of monomorphic maps with all possible instantiations for type variables
   maps <- sequence <$> mapM monomorphicMap polyTypes
   return $ map (MapValue . M.unions) maps
   where
-    monomorphicMap :: [Type] -> State TestSettings [Map [Value] Value]
     monomorphicMap (range : domains) = do 
-      args <- sequence <$> mapM (generateInputValueM c) domains
-      rets <- sequence <$> mapM (generateInputValueM c) (replicate (length args) range)
+      args <- sequence <$> mapM (generateInputValue c) domains
+      rets <- sequence <$> mapM (generateInputValue c) (replicate (length args) range)
       return $ map (\r -> M.fromList (zip args r)) rets
-generateInputValueM _ (Instance _ _) = do
-  settings <- get
-  return $ map IntValue (tsIntRange settings)
+generateInputValue _ (Instance _ _) = map CustomValue <$> generateIntInput
 
 -- | All instantiations of types ts in context c, with a range of instances for a single type variables range 
 generateInputTypes :: [Type] -> Context -> [Type] -> [[Type]]
