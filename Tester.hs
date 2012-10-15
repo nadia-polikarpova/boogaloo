@@ -123,7 +123,7 @@ testImplementation sig def = do
       
       -- names of input variables (variables for which input values are generated);
       -- input variables can be either in-parameters or global variables 
-      let (liveIns, liveGlobals) = liveInputVariables def
+      let (liveIns, liveGlobals) = liveInputVariables sig def
       let livePositions = map (fromJust . (`elemIndex` pdefIns def)) liveIns 
       let liveActualIns = map localName livePositions
       let liveGlobalVars = filter (`M.member` ctxGlobals tc) liveGlobals

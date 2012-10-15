@@ -12,17 +12,18 @@ import qualified Data.Set as S
 
 {- Interface -}
 
--- | Input parameters (in the order they appear in the signature) and global names, whose initial value might be read by the procedure implementation def
-liveInputVariables :: PDef -> ([Id], [Id])
-liveInputVariables def = let
+-- | Input parameters (in the order they appear in the signature) and global names, 
+-- | whose initial value might be read by the procedure implementation def
+liveInputVariables :: PSig -> PDef -> ([Id], [Id])
+liveInputVariables sig def = let
   body = pdefBody def
-  liveVars = liveVariables (snd body)
+  liveVars = liveVariables (attachContractChecks sig def)
   liveLocals = filter (`elem` liveVars) (map itwId (fst body))
   liveIns = filter (`elem` liveVars) (pdefIns def)
   liveOuts = filter (`elem` liveVars) (pdefOuts def)
   liveGlobals = liveVars \\ (liveLocals ++ liveIns ++ liveOuts)
   in (liveIns, liveGlobals)
-
+  
 -- | Identifiers whose initial value might be read in body
 liveVariables :: Map Id [Statement] -> [Id]
 liveVariables body = let
@@ -107,4 +108,18 @@ successors :: Map Id [Statement] -> Id -> Set Id
 successors body label = case contents (last (body ! label)) of
   Goto lbs -> S.fromList lbs
   _ -> S.empty
+  
+-- | Body of the implementation def of procedure sig with pre- and postcondition checks embedded;
+-- | (used to extract live variables from contracts)
+attachContractChecks :: PSig -> PDef -> Map Id [Statement]
+attachContractChecks sig def = let
+  preChecks = map (attachPos (pdefPos def) . check . subst sig) (psigRequires sig)
+  postChecks = map (attachPos (pdefPos def) . check . subst sig) (psigEnsures sig)
+  subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
+  attachPreChecks = M.adjust (preChecks ++) startLabel (snd (pdefBody def))
+  attachPostChecks block = let jump = last block
+    in case contents jump of
+      Return -> init block ++ postChecks ++ [jump]
+      _ -> block
+  in M.map attachPostChecks attachPreChecks  
       
