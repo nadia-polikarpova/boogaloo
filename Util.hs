@@ -274,6 +274,9 @@ e1 |<=>|  e2 = inheritPos2 (BinaryExpression Equiv) e1 e2
   
 {- Misc -}
 
+-- | Interval from lo to hi
+interval (lo, hi) = [lo..hi]
+
 -- | Extracts the element out of a Right and throws an error if its argument is Left 
 fromRight :: Either a b -> b
 fromRight (Right x) = x
@@ -295,9 +298,5 @@ changeState getter modifier e = do
   return res  
 
 -- | Execute e in current state modified by localState, and then restore current state
-withLocalState :: (s -> s) -> State s a -> State s a
-withLocalState localState e = do
-  s <- get
-  res <- withState localState e
-  put s
-  return res
+withLocalState :: (s -> t) -> State t a -> State s a
+withLocalState localState e = changeState localState (flip const) e

@@ -29,7 +29,7 @@ harness file = runOnFile printOutcome file
     printOutcome p context = do
       -- let env = execState (collectDefinitions p) emptyEnv { envTypeContext = context }
       randomGen <- getStdGen
-      let res = evalState (combineInputs (generateInputValue context) (replicate 3 IntType)) (defaultSettings context (Just randomGen))
+      let res = evalState (combineInputs (generateInputValue context) (replicate 3 IntType)) (defaultRandomSettings context randomGen)
       -- let res = genInputsExhaustive (-3, 3) [IntType, IntType]
       print $ res    
 
@@ -56,7 +56,7 @@ testFromFile file procNames = runOnFile printTestOutcomes file
       let (present, missing) = partition (`M.member` ctxProcedures context) procNames
       when (not (null missing)) $ print (text "Cannot find procedures under test:" <+> commaSep (map text missing))
       randomGen <- getStdGen
-      mapM_ print (testProgram (defaultSettings context (Just randomGen)) p context present)
+      mapM_ print (testProgram (defaultRandomSettings context randomGen) p context present)
       
 -- | Parse file, type-check the resulting program, then execute command on the resulting program and type context
 runOnFile :: (Program -> Context -> IO ()) -> String -> IO ()      
