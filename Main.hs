@@ -9,7 +9,6 @@ import TypeChecker
 import PrettyPrinter
 import Interpreter
 import Tester
-import DataFlow
 import System.Random
 import Data.List
 import Data.Map (Map, (!))
@@ -20,17 +19,19 @@ import Control.Monad.State
 import Control.Applicative
 import Text.PrettyPrint
 
--- main = testFromFile "test.bpl" ["sum_max", "main", "search", "poly"]
-main = harness "test.bpl" "random_test"
+main = testFromFile "test.bpl" ["sum_max", "main", "search", "poly"]
+-- main = harness "test.bpl"
 -- main = executeFromFile "test.bpl" "main"
 
 -- | Harness for testing various internal functions
-harness :: String -> String -> IO ()
-harness file procName = runOnFile printOutcome file
+harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
-      let env = execState (collectDefinitions p) emptyEnv { envTypeContext = context }
-      print $ liveInputVariables (procSig procName context) (head (lookupProcedure procName env))
+      -- let env = execState (collectDefinitions p) emptyEnv { envTypeContext = context }
+      randomGen <- getStdGen
+      let res = evalState (combineInputs (generateInputValue context) (replicate 3 IntType)) (defaultSettings context (Just randomGen))
+      -- let res = genInputsExhaustive (-3, 3) [IntType, IntType]
+      print $ res    
 
 -- | Execute procedure entryPoint from file
 -- | and output either errors or the final values of global variables

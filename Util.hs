@@ -293,4 +293,11 @@ changeState getter modifier e = do
   let (res, st') = runState e st
   modify $ modifier st'
   return res  
-  
+
+-- | Execute e in current state modified by localState, and then restore current state
+withLocalState :: (s -> s) -> State s a -> State s a
+withLocalState localState e = do
+  s <- get
+  res <- withState localState e
+  put s
+  return res

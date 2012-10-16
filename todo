@@ -17,7 +17,7 @@
   
 - Interpreter
   - Testing
-    - In random testing: do not use all combinations of per-variable inputs
+    - TestSettings should be a type class?
     - Testing session summaries
   - Separate runtime error into error kind (error, unreachable, not executable) and error source (inline check, contract, language check)
   - Turn source positions into spans; use the end of the span to report postcondition violations  

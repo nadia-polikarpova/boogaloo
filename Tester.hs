@@ -39,9 +39,10 @@ testProgram settings p tc procNames = evalState testExecution (settings, initEnv
 
 -- | Settings for test input generation
 data TestSettings = TestSettings {
-  tsMaxTestCaseCount :: Maybe Int,    -- Maximum number of test cases to be generated or Nothing if unlimites
+  tsMaxTestCaseCount :: Maybe Int,    -- Maximum number of test cases to be generated or Nothing if unlimited
   tsRandomGen :: Maybe StdGen,        -- Stores the random number generator in case of random testing or Nothing in case of exhaustive testing
   tsIntLimits :: (Integer, Integer),  -- Lower and upper bound for integer inputs
+  tsIntMapDomainSize :: Integer,      -- Size of integer map domains (they are generated deterministically in a continious interval [0..tsIntMapDomainSize - 1])
   tsInputCount :: Int,                -- Number of inputs to be generated per variable (ignored in case of exhaustive testing)
   tsGenericTypeRange :: [Type],       -- Range of instances for a type parameter of a generic procedure under test 
   tsMapTypeRange :: [Type]            -- Range of instances for a type parameter of a polymorphic map
@@ -54,7 +55,8 @@ defaultSettings c mRandomGen = TestSettings {
   tsMaxTestCaseCount = Nothing,
   tsRandomGen = mRandomGen,
   tsIntLimits = if isNothing mRandomGen then (-1, 1) else (-32, 32),
-  tsInputCount = 3,
+  tsIntMapDomainSize = 3,
+  tsInputCount = if isNothing mRandomGen then 3 else 10,
   tsGenericTypeRange = [BoolType],
   tsMapTypeRange = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors c))]
 }
@@ -135,7 +137,7 @@ testImplementation sig def = do
       let execTestCase input = changeState snd (mapSnd . const) $ testCase inParams outParams inputVars input
       let reportTestCase input = TestCase (psigName sig) liveIns liveGlobalVars input <$> execTestCase input
       -- all inputs the procedure should be tested on:
-      let genInputs = sequence <$> mapM (generateInputValue tc) inTypes
+      let genInputs = combineInputs (generateInputValue tc) inTypes
       inputs <- changeState fst (mapFst . const) genInputs 
       mapM reportTestCase inputs
     -- | Assign inputVals to inputVars, and execute procedure with actual in-parameter variables inParams and actual out-parameter variables outParams;
@@ -150,33 +152,52 @@ testImplementation sig def = do
     failureReport err = case rteInfo err of
       AssumeViolation _ _ -> return $ Invalid err
       _ -> return $ Fail err
-      
+            
 {- Input generation -}
 
 -- | Generate all input values for an integer variable
 generateIntInput :: State TestSettings [Integer]
 generateIntInput = do
-  random <- gets tsRandomGen
+  mRandom <- gets tsRandomGen
   limits <- gets tsIntLimits
   n <- gets tsInputCount
-  if isNothing random
+  if isNothing mRandom
     then return [fst limits .. snd limits]
     else changeState getRandomGen (flip setRandomGen) $ replicateM n (state (randomR limits))
+
+-- | Generate all input values for a boolean variable    
+generateBoolInput :: State TestSettings [Bool]
+generateBoolInput = do
+  mRandom <- gets tsRandomGen
+  limits <- gets tsIntLimits
+  n <- gets tsInputCount
+  if isNothing mRandom
+    then return [False, True]
+    else changeState getRandomGen (flip setRandomGen) $ replicateM n (state random)    
+  
+-- | Combine input values for several variables  
+combineInputs :: (a -> State TestSettings [b]) -> [a] -> State TestSettings [[b]]
+combineInputs genOne args = do
+  random <- gets tsRandomGen
+  if isNothing random
+    then sequence <$> mapM genOne args
+    else transpose <$> mapM genOne args    
     
 -- | generateInputValue c t: generate all values of type t in context c          
 generateInputValue :: Context -> Type -> State TestSettings [Value]
-generateInputValue _ BoolType = return $ map BoolValue [False, True]
+generateInputValue _ BoolType = map BoolValue <$> generateBoolInput
 generateInputValue _ IntType = map IntValue <$> generateIntInput
 generateInputValue c (MapType tv domains range) = do
   typeRange <- gets tsMapTypeRange
   let polyTypes = generateInputTypes typeRange c { ctxTypeVars = tv } (range : domains)
-  -- A polymorphic map is a union of monomorphic maps with all possible instantiations for type variables
-  maps <- sequence <$> mapM monomorphicMap polyTypes
+  -- A polymorphic map is a union of monomorphic maps with all possible instantiations for type variables:
+  maps <- combineInputs monomorphicMap polyTypes
   return $ map (MapValue . M.unions) maps
   where
     monomorphicMap (range : domains) = do 
-      args <- sequence <$> mapM (generateInputValue c) domains
-      rets <- sequence <$> mapM (generateInputValue c) (replicate (length args) range)
+      -- Domain is always generated deterministically: 
+      args <- withLocalState (\s -> s { tsIntLimits = (0, tsIntMapDomainSize s - 1), tsRandomGen = Nothing }) (combineInputs (generateInputValue c) domains)
+      rets <- combineInputs (generateInputValue c) (replicate (length args) range)
       return $ map (\r -> M.fromList (zip args r)) rets
 generateInputValue _ (Instance _ _) = map CustomValue <$> generateIntInput
 
