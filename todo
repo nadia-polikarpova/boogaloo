@@ -17,14 +17,13 @@
   
 - Interpreter
   - Testing
-    - TestSettings should be a type class?
     - Testing session summaries
   - Separate runtime error into error kind (error, unreachable, not executable) and error source (inline check, contract, language check)
   - Turn source positions into spans; use the end of the span to report postcondition violations  
+  - Backtracking (logicT monad?)  
   - User-defined types
   - Extends ordering
   - Extract function and constant constraints from axioms
-  - Backtracking (logicT monad?)  
   - Constraint solving
   - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses);
       forces to have "shalow" Eq, Ord on types and expressions, so that map values can be stored as map keys

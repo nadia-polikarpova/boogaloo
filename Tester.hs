@@ -55,25 +55,25 @@ class TestSettings s where
   
 data ExhaustiveSettings = ExhaustiveSettings {
   esMaxTestCaseCount :: Maybe Int,    -- Maximum number of test cases to be generated or Nothing if unlimited
-  esIntLimits :: (Integer, Integer),  -- Lower and upper bound for integer inputs
-  esIntMapDomainSize :: Integer,      -- Size of integer map domains
+  esIntRange :: [Integer],            -- Input range for an integer variable
+  esIntMapDomainRange :: [Integer],   -- Input range for an integer map domain
   esGenericTypeRange :: [Type],       -- Range of instances for a type parameter of a generic procedure under test 
   esMapTypeRange :: [Type]            -- Range of instances for a type parameter of a polymorphic map
 }
 
 instance TestSettings ExhaustiveSettings where
-  generateIntInput = interval <$> gets esIntLimits                         -- Return all integers within limits  
-  generateBoolInput = return [False, True]                                 -- Return both booleans      
-  combineInputs genOne args = sequence <$> mapM genOne args                -- Use all combinations of inputs for each variable   
-  mapDomainSettings s = s { esIntLimits = (0, esIntMapDomainSize s - 1) }  -- Integer map domains are intervals [0..esIntMapDomainSize s - 1]  
+  generateIntInput = gets esIntRange                            -- Return all integers within limits  
+  generateBoolInput = return [False, True]                      -- Return both booleans      
+  combineInputs genOne args = sequence <$> mapM genOne args     -- Use all combinations of inputs for each variable   
+  mapDomainSettings s = s { esIntRange = esIntMapDomainRange s }  
   maxTestCaseCount = esMaxTestCaseCount  
   genericTypeRange = esGenericTypeRange
   mapTypeRange = esMapTypeRange
   
 defaultExhaustiveSettings c = ExhaustiveSettings {
   esMaxTestCaseCount = Nothing,
-  esIntLimits = (-1, 1),
-  esIntMapDomainSize = 3,
+  esIntRange = [-1..1],
+  esIntMapDomainRange = [0..2],
   esGenericTypeRange = [BoolType],
   esMapTypeRange = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors c))]
 }
@@ -82,7 +82,7 @@ data RandomSettings = RandomSettings {
   rsMaxTestCaseCount :: Maybe Int,    -- Maximum number of test cases to be generated or Nothing if unlimited
   rsRandomGen :: StdGen,              -- Random number generator
   rsIntLimits :: (Integer, Integer),  -- Lower and upper bound for integer inputs
-  rsIntMapDomainSize :: Integer,      -- Size of integer map domains
+  rsIntMapDomainRange :: [Integer],   -- Input range for an integer map domain
   rsInputCount :: Int,                -- Number of inputs to be generated per variable
   rsGenericTypeRange :: [Type],       -- Range of instances for a type parameter of a generic procedure under test 
   rsMapTypeRange :: [Type]            -- Range of instances for a type parameter of a polymorphic map
@@ -110,8 +110,8 @@ instance TestSettings RandomSettings where
   -- | Integer map domains are intervals [0..rsIntMapDomainSize s - 1]  
   mapDomainSettings s = ExhaustiveSettings { 
     esMaxTestCaseCount = rsMaxTestCaseCount s,
-    esIntLimits = (0, rsIntMapDomainSize s - 1),
-    esIntMapDomainSize = rsIntMapDomainSize s,
+    esIntRange = rsIntMapDomainRange s,
+    esIntMapDomainRange = rsIntMapDomainRange s,
     esGenericTypeRange = rsGenericTypeRange s,
     esMapTypeRange = rsMapTypeRange s
     }  
@@ -124,14 +124,14 @@ defaultRandomSettings c randomGen = RandomSettings {
   rsMaxTestCaseCount = Nothing,
   rsRandomGen = randomGen,
   rsIntLimits = (-32, 32),
-  rsIntMapDomainSize = 3,
+  rsIntMapDomainRange = [0..3],
   rsInputCount = 10,
   rsGenericTypeRange = [BoolType],
   rsMapTypeRange = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors c))]
 }
 
 -- | Executions that have access to testing session parameters
-type TestSession s a = TestSettings s => State (s, Environment) a
+type TestSession s a = State (s, Environment) a
         
 {- Reporting results -}        
 
