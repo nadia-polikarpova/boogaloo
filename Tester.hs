@@ -50,11 +50,8 @@ class TestSettings s where
   genericTypeRange :: s -> [Type]
   -- | Range of instances for a type parameter of a polymorphic map
   mapTypeRange :: s -> [Type]
-  -- | Maximum number of test cases to be generated or Nothing if unlimited
-  maxTestCaseCount :: s -> Maybe Int
   
 data ExhaustiveSettings = ExhaustiveSettings {
-  esMaxTestCaseCount :: Maybe Int,    -- Maximum number of test cases to be generated or Nothing if unlimited
   esIntRange :: [Integer],            -- Input range for an integer variable
   esIntMapDomainRange :: [Integer],   -- Input range for an integer map domain
   esGenericTypeRange :: [Type],       -- Range of instances for a type parameter of a generic procedure under test 
@@ -66,12 +63,10 @@ instance TestSettings ExhaustiveSettings where
   generateBoolInput = return [False, True]                      -- Return both booleans      
   combineInputs genOne args = sequence <$> mapM genOne args     -- Use all combinations of inputs for each variable   
   mapDomainSettings s = s { esIntRange = esIntMapDomainRange s }  
-  maxTestCaseCount = esMaxTestCaseCount  
   genericTypeRange = esGenericTypeRange
   mapTypeRange = esMapTypeRange
   
 defaultExhaustiveSettings c = ExhaustiveSettings {
-  esMaxTestCaseCount = Nothing,
   esIntRange = [-1..1],
   esIntMapDomainRange = [0..2],
   esGenericTypeRange = [BoolType],
@@ -79,11 +74,10 @@ defaultExhaustiveSettings c = ExhaustiveSettings {
 }
 
 data RandomSettings = RandomSettings {
-  rsMaxTestCaseCount :: Maybe Int,    -- Maximum number of test cases to be generated or Nothing if unlimited
   rsRandomGen :: StdGen,              -- Random number generator
+  rsCount :: Int,                     -- Number of test cases to be generated (currently per type in rsGenericTypeRange, if the procedure under test is generic)
   rsIntLimits :: (Integer, Integer),  -- Lower and upper bound for integer inputs
   rsIntMapDomainRange :: [Integer],   -- Input range for an integer map domain
-  rsInputCount :: Int,                -- Number of inputs to be generated per variable
   rsGenericTypeRange :: [Type],       -- Range of instances for a type parameter of a generic procedure under test 
   rsMapTypeRange :: [Type]            -- Range of instances for a type parameter of a polymorphic map
 }
@@ -91,41 +85,38 @@ data RandomSettings = RandomSettings {
 setRandomGen gen rs = rs { rsRandomGen = gen }
 
 instance TestSettings RandomSettings where
-  -- | Generate rsInputCount random values within limits
+  -- | Generate rsCount random values within limits
   generateIntInput = do
     randomGen <- gets rsRandomGen
     limits <- gets rsIntLimits
-    n <- gets rsInputCount
+    n <- gets rsCount
     changeState rsRandomGen setRandomGen $ replicateM n (state (randomR limits))
     
-  -- | Generate rsInputCount random values within limits  
+  -- | Generate rsCount random values within limits  
   generateBoolInput = do
     randomGen <- gets rsRandomGen
-    n <- gets rsInputCount
+    n <- gets rsCount
     changeState rsRandomGen setRandomGen $ replicateM n (state random)    
   
-  -- | Generate rsInputCount random tuples of values
+  -- | Generate rsCount random tuples of values
   combineInputs genOne args = transpose <$> mapM genOne args
   
   -- | Integer map domains are intervals [0..rsIntMapDomainSize s - 1]  
   mapDomainSettings s = ExhaustiveSettings { 
-    esMaxTestCaseCount = rsMaxTestCaseCount s,
     esIntRange = rsIntMapDomainRange s,
     esIntMapDomainRange = rsIntMapDomainRange s,
     esGenericTypeRange = rsGenericTypeRange s,
     esMapTypeRange = rsMapTypeRange s
     }  
       
-  maxTestCaseCount = rsMaxTestCaseCount  
   genericTypeRange = rsGenericTypeRange
   mapTypeRange = rsMapTypeRange
   
 defaultRandomSettings c randomGen = RandomSettings {
-  rsMaxTestCaseCount = Nothing,
   rsRandomGen = randomGen,
+  rsCount = 10,
   rsIntLimits = (-32, 32),
   rsIntMapDomainRange = [0..3],
-  rsInputCount = 10,
   rsGenericTypeRange = [BoolType],
   rsMapTypeRange = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors c))]
 }
@@ -173,11 +164,7 @@ testImplementation sig def = do
   typeRange <- gets (genericTypeRange . fst)
   -- all types the procedure signature should be instantiated with:
   let typeInputs = generateInputTypes typeRange tc { ctxTypeVars = psigTypeVars sig } paramTypes  
-  let execAll = concat <$> mapM typeTestCase typeInputs
-  mCutoff <- gets (maxTestCaseCount . fst)
-  case mCutoff of
-    Nothing -> execAll
-    Just n -> take n <$> execAll
+  concat <$> mapM typeTestCase typeInputs
   where
     -- | Execute procedure instantiated with typeInputs on all value inputs
     typeTestCase :: TestSettings s => [Type] -> TestSession s [TestCase]

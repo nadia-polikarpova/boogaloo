@@ -56,6 +56,7 @@ testFromFile file procNames = runOnFile printTestOutcomes file
       let (present, missing) = partition (`M.member` ctxProcedures context) procNames
       when (not (null missing)) $ print (text "Cannot find procedures under test:" <+> commaSep (map text missing))
       randomGen <- getStdGen
+      -- mapM_ print (testProgram (defaultExhaustiveSettings context) p context present)
       mapM_ print (testProgram (defaultRandomSettings context randomGen) p context present)
       
 -- | Parse file, type-check the resulting program, then execute command on the resulting program and type context
