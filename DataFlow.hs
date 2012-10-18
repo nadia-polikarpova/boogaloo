@@ -83,8 +83,7 @@ genOld st = genTwoState snd st
 -- | Variables mentioned in st in either current state or old state
 genTwoState :: (([Id], [Id]) -> [Id]) -> Statement -> Set Id
 genTwoState select st = case contents st of
-  Assume _ e -> (S.fromList . select . freeVarsTwoState) e
-  Assert _ e -> (S.fromList . select . freeVarsTwoState) e
+  Predicate (SpecClause _ _ e) -> (S.fromList . select . freeVarsTwoState) e
   Assign lhss rhss -> let 
     allSubscipts = concat $ concatMap snd lhss
     subsciptedLhss = [fst lhs | lhs <- lhss, not (null (snd lhs))] -- Left-hand sides with a subscript are also read (consider desugaring)
@@ -122,8 +121,8 @@ successors body label = case contents (last (body ! label)) of
 -- | (used to extract live variables from contracts)
 attachContractChecks :: PSig -> PDef -> Map Id [Statement]
 attachContractChecks sig def = let
-  preChecks = map (attachPos (pdefPos def) . check . subst sig) (psigRequires sig)
-  postChecks = map (attachPos (pdefPos def) . check . subst sig) (psigEnsures sig)
+  preChecks = map (attachPos (pdefPos def) . Predicate . subst sig) (psigRequires sig)
+  postChecks = map (attachPos (pdefPos def) . Predicate . subst sig) (psigEnsures sig)
   subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
   attachPreChecks = M.adjust (preChecks ++) startLabel (snd (pdefBody def))
   attachPostChecks block = let jump = last block

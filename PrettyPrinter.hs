@@ -104,8 +104,7 @@ instance Show BareExpression where show e = show (exprDoc (gen e))
 
 statementDoc :: Statement -> Doc
 statementDoc (Pos _ s) = case s of
-  Assert _ e -> text "assert" <+> exprDoc e <> semi
-  Assume _ e -> text "assume" <+> exprDoc e <> semi
+  Predicate (SpecClause _ isAssume e) -> (if isAssume then text "assume" else text "assert") <+> exprDoc e <> semi
   Havoc vars -> text "havoc" <+> commaSep (map text vars) <> semi
   Assign lhss rhss -> commaSep (map lhsDoc lhss) <+> 
     text ":=" <+> commaSep (map exprDoc rhss) <> semi

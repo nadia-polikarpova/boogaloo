@@ -272,8 +272,8 @@ whileStatement = do
 
 statement :: Parser Statement
 statement = attachPosBefore (choice [
-  do { reserved "assert"; e <- expression; semi; return $ Assert Inline e },
-  do { reserved "assume"; e <- expression; semi; return $ Assume Inline e },
+  do { reserved "assert"; e <- expression; semi; return $ Predicate (SpecClause Inline False e) },
+  do { reserved "assume"; e <- expression; semi; return $ Predicate (SpecClause Inline True e) },
   do { reserved "havoc"; ids <- commaSep1 identifier; semi; return $ Havoc ids },
   assign,
   try call,

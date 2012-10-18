@@ -63,8 +63,7 @@ data WildcardExpression = Wildcard | Expr Expression
 
 type Statement = Pos BareStatement
 
-data BareStatement = Assert SpecType Expression |
-  Assume SpecType Expression |
+data BareStatement = Predicate SpecClause |      -- Predicate statement (assume or assert)
   Havoc [Id] |                                   -- Havoc var_names
   Assign [(Id , [[Expression]])] [Expression] |  -- Assign var_map_selects rhss
   Call [Id] Id [Expression] |                    -- Call call_lhss proc_name args

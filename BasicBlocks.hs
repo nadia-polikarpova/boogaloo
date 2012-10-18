@@ -88,8 +88,8 @@ transform m ([], Pos p stmt) = case stmt of
         [justLabel lDone]
       Expr e -> return $
         [justBareStatement $ Goto [lThen, lElse]] ++
-        [([lThen], inheritPos (Assume Inline) e)] ++ t1 ++ [justBareStatement $ Goto [lDone]] ++
-        [([lElse], inheritPos (Assume Inline) (enot e))] ++ t2 ++ [justBareStatement $ Goto [lDone]] ++
+        [([lThen], assume e)] ++ t1 ++ [justBareStatement $ Goto [lDone]] ++
+        [([lElse], assume (enot e))] ++ t2 ++ [justBareStatement $ Goto [lDone]] ++
         [justLabel lDone]      
   While Wildcard invs body -> do
     lHead <- state $ genFreshLabel "head"
@@ -110,10 +110,10 @@ transform m ([], Pos p stmt) = case stmt of
     return $
       [justBareStatement $ Goto [lHead]] ++
       attach lHead (map checkInvariant invs ++ [justBareStatement $ Goto [lBody, lGDone]]) ++
-      [([lBody], inheritPos (Assume Inline) e)] ++ t ++ [justBareStatement $ Goto [lHead]] ++
-      [([lGDone], inheritPos (Assume Inline) (enot e))] ++ [justBareStatement $ Goto [lDone]] ++
+      [([lBody], assume e)] ++ t ++ [justBareStatement $ Goto [lHead]] ++
+      [([lGDone], assume (enot e))] ++ [justBareStatement $ Goto [lDone]] ++
       [justLabel lDone]    
   _ -> return [justStatement p stmt]  
   where
     transBlock m b = concat <$> mapM (transform m) (map contents b)
-    checkInvariant inv = justStatement (position (specExpr inv)) (check inv)
+    checkInvariant inv = justStatement (position (specExpr inv)) (Predicate inv)

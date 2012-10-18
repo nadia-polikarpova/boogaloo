@@ -176,12 +176,6 @@ paramSubst sig def = if not (pdefParamsRenamed def)
 
 {- Specs -}
 
--- | Statement that checks specification clause c at runtime
-check :: SpecClause -> BareStatement 
-check c = if specFree c 
-  then Assume (specType c) (specExpr c) 
-  else Assert (specType c) (specExpr c)
-
 -- | All precondition clauses in specs  
 preconditions :: [Contract] -> [SpecClause]
 preconditions specs = catMaybes (map extractPre specs)
@@ -273,6 +267,7 @@ e1 |&|    e2 = inheritPos2 (BinaryExpression And) e1 e2
 e1 |||    e2 = inheritPos2 (BinaryExpression Or) e1 e2
 e1 |=>|   e2 = inheritPos2 (BinaryExpression Implies) e1 e2
 e1 |<=>|  e2 = inheritPos2 (BinaryExpression Equiv) e1 e2
+assume e = attachPos (position e) (Predicate (SpecClause Inline True e))
   
 {- Misc -}
 

@@ -480,24 +480,18 @@ evalExists' tv vars e = do
 -- | Execute a simple statement
 exec :: Statement -> Execution ()
 exec stmt = case contents stmt of
-  Assert specType e -> execAssert specType e (position stmt)
-  Assume specType e -> execAssume specType e (position stmt)
+  Predicate specClause -> execPredicate specClause (position stmt)
   Havoc ids -> execHavoc ids (position stmt)
   Assign lhss rhss -> execAssign lhss rhss
   Call lhss name args -> execCall lhss name args (position stmt)
   CallForall name args -> return () -- ToDo: assume (forall args :: pre ==> post)?
-
-execAssert specType e pos = do
+  
+execPredicate (SpecClause specType isAssume e) pos = do
   b <- eval e
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwRuntimeError (AssertViolation specType e) pos
-    
-execAssume specType e pos = do
-  b <- eval e
-  case b of 
-    BoolValue True -> return ()
-    BoolValue False -> throwRuntimeError (AssumeViolation specType e) pos
+    BoolValue False -> throwRuntimeError (violation specType e) pos
+  where violation = if isAssume then AssumeViolation else AssertViolation
     
 execHavoc ids pos = do
   tc <- gets envTypeContext
@@ -572,12 +566,12 @@ execProcedure sig def args lhss = let
 {- Specs -}
 
 -- | Assert preconditions of definition def of procedure sig
-checkPreconditions sig def = mapM_ (exec . attachPos (pdefPos def) . check . subst sig) (psigRequires sig)
+checkPreconditions sig def = mapM_ (exec . attachPos (pdefPos def) . Predicate . subst sig) (psigRequires sig)
   where 
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
 
 -- | Assert postconditions of definition def of procedure sig at exitPoint    
-checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . check . subst sig) (psigEnsures sig)
+checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predicate . subst sig) (psigEnsures sig)
   where 
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
 
@@ -587,7 +581,7 @@ checkWhere id pos = do
   whereClauses <- ctxWhere <$> gets envTypeContext
   case M.lookup id whereClauses of
     Nothing -> return ()
-    Just w -> (exec . attachPos pos . Assume Where) w
+    Just w -> (exec . attachPos pos . Predicate . SpecClause Where True) w
 
 {- Preprocessing -}
 
