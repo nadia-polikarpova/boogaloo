@@ -23,7 +23,7 @@ import Text.PrettyPrint
 -- | Execute program p in type context tc starting from procedure entryPoint, 
 -- | and return the final environment;
 -- | requires that entryPoint have no in- or out-parameters
-executeProgram :: Program -> Context -> Id -> Either RuntimeError Environment
+executeProgram :: Program -> Context -> Id -> Either RuntimeFailure Environment
 executeProgram p tc entryPoint = finalEnvironment
   where
     initEnvironment = emptyEnv { envTypeContext = tc }
@@ -113,8 +113,8 @@ functionsDoc funcs = vsep $ map funcDoc (M.toList funcs)
       
 {- Executions -}
 
--- | Computations with Environment as state, which can result in either a or RuntimeError  
-type Execution a = ErrorT RuntimeError (State Environment) a
+-- | Computations with Environment as state, which can result in either a or RuntimeFailure  
+type Execution a = ErrorT RuntimeFailure (State Environment) a
 
 -- | Computations with Environment as state, which always result in a
 type SafeExecution a = State Environment a
@@ -124,7 +124,7 @@ execUnsafely :: SafeExecution a -> Execution a
 execUnsafely computation = ErrorT (Right <$> computation)
 
 -- | Execute an unsafe computation in a safe environment, handling errors that occur in computation with handler
-execSafely :: Execution a -> (RuntimeError -> SafeExecution a) -> SafeExecution a
+execSafely :: Execution a -> (RuntimeFailure -> SafeExecution a) -> SafeExecution a
 execSafely computation handler = do
   eres <- runErrorT computation
   either handler return eres
@@ -206,16 +206,15 @@ generateValue t set guard = let newValue = defaultValue t in
     guard
     return newValue  
   
-{- Errors -}
+{- Runtime failures -}
 
-data RuntimeErrorInfo = 
+data FailureSource = 
   SpecViolation SpecClause |    -- Violation of user-defined specification
-  InfiniteDomain Id Interval |  -- Quantification over an infinite set
-  DivisionByZero |              -- Division by zero
-  NoImplementation Id |         -- Call to a procedure with no implementation
+  DivisionByZero |              -- Division by zero  
   UnsupportedConstruct String | -- Language construct is not yet supported (should disappear in later versions)
-  InternalError InternalCode |  -- Must be cought inside the interpreter and never reach the user
-  OtherError Doc
+  InfiniteDomain Id Interval |  -- Quantification over an infinite set
+  NoImplementation Id |         -- Call to a procedure with no implementation
+  InternalFailure InternalCode    -- Must be cought inside the interpreter and never reach the user
   deriving Eq
 
 -- | Information about a procedure or function call  
@@ -226,36 +225,42 @@ data StackFrame = StackFrame {
 
 type StackTrace = [StackFrame]
 
-data RuntimeError = RuntimeError {
-  rteInfo :: RuntimeErrorInfo,  -- Type of error and additional information
-  rtePos :: SourcePos,          -- Location where the error occurred
-  rteTrace :: StackTrace        -- Stack trace from the program entry point to the procedure where the error occurred
+data RuntimeFailure = RuntimeFailure {
+  rtfSource :: FailureSource,   -- Source of the failure
+  rtfPos :: SourcePos,          -- Location where the failure occurred
+  rtfTrace :: StackTrace        -- Stack trace from the program entry point to the procedure where the failure occurred
 } deriving Eq
 
--- | Throw a runtime error
-throwRuntimeError info pos = throwError (RuntimeError info pos [])
+-- | Throw a runtime failure
+throwRuntimeFailure source pos = throwError (RuntimeFailure source pos [])
 
--- | Push frame on the stack trace of a runtime error
-addStackFrame frame (RuntimeError info pos trace) = throwError (RuntimeError info pos (frame : trace))
+-- | Push frame on the stack trace of a runtime failure
+addStackFrame frame (RuntimeFailure source pos trace) = throwError (RuntimeFailure source pos (frame : trace))
 
--- | Is err an assumption violation?
-isAssumeViolation :: RuntimeError -> Bool
-isAssumeViolation err = case rteInfo err of
-  SpecViolation (SpecClause _ True _) -> True
-  _ -> False
+-- | Kind of failure
+data FailureKind = Error | -- Error state reached (assertion violation)
+  Unreachable | -- Unreachable state reached (assumption violation)
+  Nonexecutable -- The state is OK in Boogie semantics, but the execution cannot continue due to the limitations of the interpreter
+  deriving Eq
+
+failureKind :: RuntimeFailure -> FailureKind
+failureKind err = case rtfSource err of
+  SpecViolation (SpecClause _ True _) -> Unreachable
+  SpecViolation (SpecClause _ False _) -> Error
+  DivisionByZero -> Error
+  _ -> Nonexecutable
   
-instance Error RuntimeError where
-  noMsg    = RuntimeError (OtherError (text "Unknown error")) noPos []
-  strMsg s = RuntimeError (OtherError (text s)) noPos []
+instance Error RuntimeFailure where
+  noMsg    = RuntimeFailure (UnsupportedConstruct "unknown") noPos []
+  strMsg s = RuntimeFailure (UnsupportedConstruct s) noPos []
   
-runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vsep (map stackFrameDoc (reverse (rteTrace err)))
+runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) $+$ vsep (map stackFrameDoc (reverse (rtfTrace err)))
   where
-  errorInfoDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
-  errorInfoDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
-  errorInfoDoc (DivisionByZero) = text "Division by zero"
-  errorInfoDoc (NoImplementation name) = text "Procedure" <+> text name <+> text "with no implementation called"
-  errorInfoDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
-  errorInfoDoc (OtherError doc) = doc
+  failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
+  failureSourceDoc (DivisionByZero) = text "Division by zero"
+  failureSourceDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
+  failureSourceDoc (NoImplementation name) = text "Procedure" <+> text name <+> text "with no implementation called"
+  failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
   
   clauseName Inline isFree = if isFree then "Assumption" else "Assertion"  
   clauseName Precondition isFree = if isFree then "Free precondition" else "Precondition"  
@@ -272,13 +277,13 @@ runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vse
     | pos == noPos = text "from the environment"
     | otherwise = text "at" <+> text (sourceName pos) <+> text "line" <+> int (sourceLine pos)
 
-instance Show RuntimeError where
-  show err = show (runtimeErrorDoc err)
+instance Show RuntimeFailure where
+  show err = show (runtimeFailureDoc err)
   
 data InternalCode = NotLinear
   deriving Eq
 
-throwInternalError code = throwRuntimeError (InternalError code) noPos
+throwInternalFailure code = throwRuntimeFailure (InternalFailure code) noPos
 
 {- Expressions -}
 
@@ -302,10 +307,10 @@ binOp pos Plus    (IntValue n1) (IntValue n2)   = return $ IntValue (n1 + n2)
 binOp pos Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
 binOp pos Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
 binOp pos Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then throwRuntimeError DivisionByZero pos
+                                                then throwRuntimeFailure DivisionByZero pos
                                                 else return $ IntValue (fst (n1 `euclidean` n2))
 binOp pos Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then throwRuntimeError DivisionByZero pos
+                                                then throwRuntimeFailure DivisionByZero pos
                                                 else return $ IntValue (snd (n1 `euclidean` n2))
 binOp pos Leq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 <= n2)
 binOp pos Ls      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 < n2)
@@ -318,7 +323,7 @@ binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 >= b2)
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
 binOp pos Eq      v1 v2                         = return $ BoolValue (v1 == v2)
 binOp pos Neq     v1 v2                         = return $ BoolValue (v1 /= v2)
-binOp pos Lc      v1 v2                         = throwRuntimeError (UnsupportedConstruct "orders") pos
+binOp pos Lc      v1 v2                         = throwRuntimeFailure (UnsupportedConstruct "orders") pos
 
 -- | Euclidean division used by Boogie for integer division and modulo
 euclidean :: Integer -> Integer -> (Integer, Integer)
@@ -344,7 +349,7 @@ eval expr = case contents expr of
   Coercion e t -> evalCoercion e t
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
-  Quantified Lambda _ _ _ -> throwRuntimeError (UnsupportedConstruct "lambda expressions") (position expr)
+  Quantified Lambda _ _ _ -> throwRuntimeFailure (UnsupportedConstruct "lambda expressions") (position expr)
   Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e) (position expr)
     where vnot (BoolValue b) = BoolValue (not b)
   Quantified Exists tv vars e -> evalExists tv vars e (position expr)
@@ -483,7 +488,7 @@ execPredicate specClause pos = do
   b <- eval $ specExpr specClause
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwRuntimeError (SpecViolation specClause) pos
+    BoolValue False -> throwRuntimeFailure (SpecViolation specClause) pos
     
 execHavoc ids pos = do
   tc <- gets envTypeContext
@@ -506,7 +511,7 @@ execCall lhss name args pos = do
   tc <- gets envTypeContext
   defs <- gets (lookupProcedure name)
   case defs of
-    [] -> throwRuntimeError (NoImplementation name) pos
+    [] -> throwRuntimeFailure (NoImplementation name) pos
     def : _ -> do
       let lhssExpr = map (attachPos (ctxPos tc) . Var) lhss
       retsV <- execProcedure (procSig name tc) def args lhssExpr `catchError` addStackFrame frame
@@ -531,9 +536,9 @@ execBlock blocks label = let
 tryOneOf :: Map Id [Statement] -> [Id] -> Execution SourcePos        
 tryOneOf blocks (l : lbs) = execBlock blocks l `catchError` retry
   where
-    retry e 
-      | isAssumeViolation e && not (null lbs) = tryOneOf blocks lbs
-      | otherwise = throwError e
+    retry err 
+      | failureKind err == Unreachable && not (null lbs) = tryOneOf blocks lbs
+      | otherwise = throwError err
   
 -- | Execute definition def of procedure sig with actual arguments actuals and call left-hand sides lhss
 execProcedure :: PSig -> PDef -> [Expression] -> [Expression] -> Execution [Value]
@@ -568,7 +573,7 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
 
 -- | Assume where clause of variable at a program location pos
--- | (pos will be reported as the location of the error instead of the location of the variable definition).
+-- | (pos will be reported as the location of the failure instead of the location of the variable definition).
 checkWhere id pos = do
   whereClauses <- ctxWhere <$> gets envTypeContext
   case M.lookup id whereClauses of
@@ -675,7 +680,7 @@ domains boolExpr vars = do
       case M.lookup var (allVars tc) of
         Just BoolType -> return c
         Just IntType -> return $ M.insert var top c
-        _ -> throwRuntimeError (UnsupportedConstruct "quantification over a map or user-defined type") (position boolExpr)
+        _ -> throwRuntimeFailure (UnsupportedConstruct "quantification over a map or user-defined type") (position boolExpr)
     domain c var = do
       tc <- gets envTypeContext
       case M.lookup var (allVars tc) of
@@ -684,7 +689,7 @@ domains boolExpr vars = do
           case c ! var of
             int | isBottom int -> return []
             Interval (Finite l) (Finite u) -> return $ map IntValue [l..u]
-            int -> throwRuntimeError (InfiniteDomain var int) (position boolExpr)
+            int -> throwRuntimeFailure (InfiniteDomain var int) (position boolExpr)
 
 -- | Starting from initial constraints, refine them with the information from boolExpr,
 -- | until fixpoint is reached or the domain for one of the variables is empty.
@@ -731,8 +736,8 @@ inferInterval boolExpr constraints x = (case contents boolExpr of
                   | otherwise = Interval NegInf (upper int)
     greaterEqual int  | isBottom int = bot
                       | otherwise = Interval (lower int) Inf
-    handleNotLinear err = case rteInfo err of
-      InternalError NotLinear -> return top
+    handleNotLinear err = case rtfSource err of
+      InternalFailure NotLinear -> return top
       _ -> throwError err                      
 
 -- | Linear form (A, B) represents a set of expressions a*x + b, where a in A and b in B
@@ -750,10 +755,10 @@ toLinearForm aExpr constraints x = case contents aExpr of
       Nothing -> const aExpr
   Application name args -> if null $ M.keys constraints `intersect` freeVars aExpr
     then const aExpr
-    else throwInternalError NotLinear
+    else throwInternalFailure NotLinear
   MapSelection m args -> if null $ M.keys constraints `intersect` freeVars aExpr
     then const aExpr
-    else throwInternalError NotLinear
+    else throwInternalFailure NotLinear
   Old e -> old $ toLinearForm e constraints x
   UnaryExpression Neg e -> do
     (a, b) <- toLinearForm e constraints x
@@ -771,5 +776,5 @@ toLinearForm aExpr constraints x = case contents aExpr of
     combineBinOp Minus  (a1, b1) (a2, b2) = return (a1 - a2, b1 - b2)
     combineBinOp Times  (a, b)   (0, k)   = return (k * a, k * b)
     combineBinOp Times  (0, k)   (a, b)   = return (k * a, k * b)
-    combineBinOp _ _ _ = throwInternalError NotLinear                      
+    combineBinOp _ _ _ = throwInternalFailure NotLinear                      
   

@@ -17,7 +17,7 @@
   - Use state?
   
 - Interpreter
-  -> Separate runtime error into error kind (error, unreachable, not executable) and error source (predicate statement, contract, language built-in)
+  - Support calls to procedures with no implementation
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - Backtracking (logicT monad?)  
   - User-defined types

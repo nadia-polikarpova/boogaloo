@@ -140,13 +140,13 @@ type TestSession s a = State (s, Environment) a
 {- Reporting results -}        
 
 -- | Outcome of a test case        
-data Outcome = Pass | Fail RuntimeError | Invalid RuntimeError
+data Outcome = Pass | Fail RuntimeFailure | Invalid RuntimeFailure
   deriving Eq
 
 outcomeDoc :: Outcome -> Doc
 outcomeDoc Pass = text "passed"
-outcomeDoc (Fail err) = text "failed with: " <+> runtimeErrorDoc err
-outcomeDoc (Invalid err) = text "invalid because: " <+> runtimeErrorDoc err
+outcomeDoc (Fail err) = text "failed with: " <+> runtimeFailureDoc err
+outcomeDoc (Invalid err) = text "invalid because: " <+> runtimeFailureDoc err
 
 instance Show Outcome where show o = show (outcomeDoc o)
 
@@ -243,7 +243,7 @@ testImplementation sig def = do
       let outExpr = map (gen . Var) outParams
       execSafely (execProcedure (assumePreconditions sig) def inExpr outExpr >> return Pass) failureReport
     -- | Test case outcome in case of a runtime error err
-    failureReport err = if isAssumeViolation err
+    failureReport err = if failureKind err == Unreachable || failureKind err == Nonexecutable
       then return $ Invalid err
       else return $ Fail err
             

@@ -99,9 +99,9 @@ data SpecType = Inline | Precondition | Postcondition | LoopInvariant | Where
 
 -- | Specification clause that can be checked at runtime
 data SpecClause = SpecClause {
-    specType :: SpecType,   -- Source of the clause
-    specFree :: Bool,       -- Is it free (assumption) or checked (assertions)?
-    specExpr :: Expression  -- Boolean expression
+  specType :: SpecType,   -- Source of the clause
+  specFree :: Bool,       -- Is it free (assumption) or checked (assertions)?
+  specExpr :: Expression  -- Boolean expression
   } deriving Eq
 
 data Contract = Requires Bool Expression |  -- Requires e free 
