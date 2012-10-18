@@ -209,13 +209,12 @@ generateValue t set guard = let newValue = defaultValue t in
 {- Errors -}
 
 data RuntimeErrorInfo = 
-  AssumeViolation SpecType Expression |   -- Assumption violation
-  AssertViolation SpecType Expression |   -- Assertions violation
-  InfiniteDomain Id Interval |            -- Quantification over an infinite set
-  DivisionByZero |                        -- Division by zero
-  NoImplementation Id |                   -- Call to a procedure with no implementation
-  UnsupportedConstruct String |           -- Language construct is not yet supported (should disappear in later versions)
-  InternalError InternalCode |            -- Must be cought inside the interpreter and never reach the user
+  SpecViolation SpecClause |    -- Violation of user-defined specification
+  InfiniteDomain Id Interval |  -- Quantification over an infinite set
+  DivisionByZero |              -- Division by zero
+  NoImplementation Id |         -- Call to a procedure with no implementation
+  UnsupportedConstruct String | -- Language construct is not yet supported (should disappear in later versions)
+  InternalError InternalCode |  -- Must be cought inside the interpreter and never reach the user
   OtherError Doc
   deriving Eq
 
@@ -242,7 +241,7 @@ addStackFrame frame (RuntimeError info pos trace) = throwError (RuntimeError inf
 -- | Is err an assumption violation?
 isAssumeViolation :: RuntimeError -> Bool
 isAssumeViolation err = case rteInfo err of
-  AssumeViolation _ _ -> True
+  SpecViolation (SpecClause _ True _) -> True
   _ -> False
   
 instance Error RuntimeError where
@@ -251,24 +250,18 @@ instance Error RuntimeError where
   
 runtimeErrorDoc err = errorInfoDoc (rteInfo err) <+> posDoc (rtePos err) $+$ vsep (map stackFrameDoc (reverse (rteTrace err)))
   where
-  errorInfoDoc (AssumeViolation specType e) = text (assumeClauseName specType) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
-  errorInfoDoc (AssertViolation specType e) = text (assertClauseName specType) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated" 
+  errorInfoDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
   errorInfoDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
   errorInfoDoc (DivisionByZero) = text "Division by zero"
   errorInfoDoc (NoImplementation name) = text "Procedure" <+> text name <+> text "with no implementation called"
   errorInfoDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
   errorInfoDoc (OtherError doc) = doc
   
-  assertClauseName Inline = "Assertion"  
-  assertClauseName Precondition = "Precondition"  
-  assertClauseName Postcondition = "Postcondition"
-  assertClauseName LoopInvariant = "Loop invariant"  
-  
-  assumeClauseName Inline = "Assumption"  
-  assumeClauseName Precondition = "Free precondition"  
-  assumeClauseName Postcondition = "Free postcondition"
-  assumeClauseName LoopInvariant = "Free loop invariant"
-  assumeClauseName Where = "Where clause"
+  clauseName Inline isFree = if isFree then "Assumption" else "Assertion"  
+  clauseName Precondition isFree = if isFree then "Free precondition" else "Precondition"  
+  clauseName Postcondition isFree = if isFree then "Free postcondition" else "Postcondition"  
+  clauseName LoopInvariant isFree = if isFree then "Free loop invariant" else "Loop invariant"  
+  clauseName Where True = "Where clause"  -- where clauses cannot be non-free  
   
   defPosition Inline _ = empty
   defPosition LoopInvariant _ = empty
@@ -486,12 +479,11 @@ exec stmt = case contents stmt of
   Call lhss name args -> execCall lhss name args (position stmt)
   CallForall name args -> return () -- ToDo: assume (forall args :: pre ==> post)?
   
-execPredicate (SpecClause specType isAssume e) pos = do
-  b <- eval e
+execPredicate specClause pos = do
+  b <- eval $ specExpr specClause
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwRuntimeError (violation specType e) pos
-  where violation = if isAssume then AssumeViolation else AssertViolation
+    BoolValue False -> throwRuntimeError (SpecViolation specClause) pos
     
 execHavoc ids pos = do
   tc <- gets envTypeContext

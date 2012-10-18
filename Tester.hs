@@ -243,9 +243,9 @@ testImplementation sig def = do
       let outExpr = map (gen . Var) outParams
       execSafely (execProcedure (assumePreconditions sig) def inExpr outExpr >> return Pass) failureReport
     -- | Test case outcome in case of a runtime error err
-    failureReport err = case rteInfo err of
-      AssumeViolation _ _ -> return $ Invalid err
-      _ -> return $ Fail err
+    failureReport err = if isAssumeViolation err
+      then return $ Invalid err
+      else return $ Fail err
             
 {- Input generation -}
     
