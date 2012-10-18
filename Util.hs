@@ -1,4 +1,6 @@
 {- Various properties and transformations of Boogie program elements -}
+
+{-# LANGUAGE StandaloneDeriving #-}
 module Util where
 
 import AST
@@ -110,7 +112,18 @@ boundUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= leng
 -- | Equality of types
 instance Eq Type where
   t1 == t2 = isJust (unifier [] [t1] [t2])
-
+  
+-- Now we can derive Eq for datatypes that contain Type:  
+deriving instance Eq BareExpression
+deriving instance Eq WildcardExpression
+deriving instance Eq SpecClause
+deriving instance Eq Contract
+deriving instance Eq BareStatement
+deriving instance Eq NewType  
+deriving instance Eq IdTypeWhere
+deriving instance Eq BareDecl
+deriving instance Eq Program
+  
 {- Expressions -}
 
 -- | Free variables in an expression, referred to in current state and old state

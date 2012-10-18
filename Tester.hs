@@ -34,6 +34,19 @@ testProgram settings p tc procNames = evalState testExecution (settings, initEnv
       sig <- gets (procSig name . envTypeContext . snd) 
       defs <- gets (lookupProcedure name . snd)
       concat <$> forM defs (testImplementation sig)
+      
+-- | Summary of a set of test cases   
+testSessionSummary :: [TestCase] -> Summary
+testSessionSummary tcs = let 
+  passing = [ x | x@(TestCase _ _ _ _ Pass)         <- tcs ]
+  failing = [ x | x@(TestCase _ _ _ _ (Fail _))     <- tcs ]
+  invalid = [ x | x@(TestCase _ _ _ _ (Invalid _))  <- tcs ]
+  in Summary {
+    sPassCount = length passing,
+    sFailCount = length failing,
+    sInvalidCount = length invalid,  
+    sUniqueFailures = nubBy equivalent failing
+  }
             
 {- Testing session parameters -}
 
@@ -128,6 +141,7 @@ type TestSession s a = State (s, Environment) a
 
 -- | Outcome of a test case        
 data Outcome = Pass | Fail RuntimeError | Invalid RuntimeError
+  deriving Eq
 
 outcomeDoc :: Outcome -> Doc
 outcomeDoc Pass = text "passed"
@@ -143,7 +157,7 @@ data TestCase = TestCase {
   tcLiveGlobals :: [Id],  -- Global variables for which an input value was generated
   tcInput :: [Value],     -- Values for in-parameters
   tcOutcome :: Outcome    -- Outcome
-}
+} deriving Eq
 
 testCaseDoc :: TestCase -> Doc
 testCaseDoc (TestCase procName liveIns liveGlobals input outcome) = text procName <> 
@@ -154,6 +168,30 @@ testCaseDoc (TestCase procName liveIns liveGlobals input outcome) = text procNam
 
 instance Show TestCase where show tc = show (testCaseDoc tc)
 
+-- | Test cases are considered equivalent from a user perspective
+-- | if they are testing the same procedure and result in the same outcome
+equivalent tc1 tc2 = tcProcedure tc1 == tcProcedure tc2 && tcOutcome tc1 == tcOutcome tc2      
+
+-- | Test session summary
+data Summary = Summary {
+  sPassCount :: Int,            -- Number of passing test cases
+  sFailCount :: Int,            -- Number of failing test cases
+  sInvalidCount :: Int,         -- Number of invalid test cases
+  sUniqueFailures :: [TestCase] -- Unique failing test cases
+}
+
+totalCount s = sPassCount s + sFailCount s + sInvalidCount s
+
+summaryDoc :: Summary -> Doc
+summaryDoc summary = 
+  text "Test cases:" <+> int (totalCount summary) $+$
+  text "Passed:" <+> int (sPassCount summary) $+$
+  text "Invalid:" <+> int (sInvalidCount summary) $+$
+  text "Failed:" <+> int (sFailCount summary) <+> parens (int (length (sUniqueFailures summary)) <+> text "unique") $+$
+  vsep (map testCaseDoc (sUniqueFailures summary))
+  
+instance Show Summary where show s = show (summaryDoc s)  
+    
 {- Test execution -}
 
 -- | Test implementation def of procedure sig on all inputs prescribed by the testing strategy

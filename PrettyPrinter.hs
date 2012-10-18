@@ -282,3 +282,7 @@ idTypeWhereDoc (IdTypeWhere id t w) = idTypeDoc (id, t) <+> case w of
   (Pos _ TT) -> empty
   e -> text "where" <+> exprDoc e
   
+instance Eq Doc where
+  d1 == d2 = show d1 == show d2
+  
+  

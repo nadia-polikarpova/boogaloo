@@ -19,9 +19,10 @@ import Control.Monad.State
 import Control.Applicative
 import Text.PrettyPrint
 
-main = testFromFile "test.bpl" ["sum_max", "main", "search", "poly"]
+main = testFromFile "test.bpl" ["sum_max", "search", "poly", "random_test", "main"]
 -- main = harness "test.bpl"
 -- main = executeFromFile "test.bpl" "main"
+-- main = testParser "test.bpl"
 
 -- | Harness for testing various internal functions
 harness file = runOnFile printOutcome file
@@ -56,8 +57,9 @@ testFromFile file procNames = runOnFile printTestOutcomes file
       let (present, missing) = partition (`M.member` ctxProcedures context) procNames
       when (not (null missing)) $ print (text "Cannot find procedures under test:" <+> commaSep (map text missing))
       randomGen <- getStdGen
-      -- mapM_ print (testProgram (defaultExhaustiveSettings context) p context present)
-      mapM_ print (testProgram (defaultRandomSettings context randomGen) p context present)
+      -- let testResults = testProgram (defaultExhaustiveSettings context) p context present
+      let testResults = testProgram (defaultRandomSettings context randomGen) p context present
+      print $ testSessionSummary testResults
       
 -- | Parse file, type-check the resulting program, then execute command on the resulting program and type context
 runOnFile :: (Program -> Context -> IO ()) -> String -> IO ()      
@@ -78,7 +80,7 @@ testParser file = do
     Right p -> do
       case parse program ('*' : file) (show p) of
         Left err -> print err
-        Right p' -> if show p == show p'
+        Right p' -> if p == p'
           then putStr ("Passed.\n")
           else putStr ("Failed with different ASTs.\n")
           

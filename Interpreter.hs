@@ -217,12 +217,13 @@ data RuntimeErrorInfo =
   UnsupportedConstruct String |           -- Language construct is not yet supported (should disappear in later versions)
   InternalError InternalCode |            -- Must be cought inside the interpreter and never reach the user
   OtherError Doc
+  deriving Eq
 
 -- | Information about a procedure or function call  
 data StackFrame = StackFrame {
   callPos :: SourcePos, -- Source code position of the call
   callName :: Id        -- Name of procedure or function
-}
+} deriving Eq
 
 type StackTrace = [StackFrame]
 
@@ -230,7 +231,7 @@ data RuntimeError = RuntimeError {
   rteInfo :: RuntimeErrorInfo,  -- Type of error and additional information
   rtePos :: SourcePos,          -- Location where the error occurred
   rteTrace :: StackTrace        -- Stack trace from the program entry point to the procedure where the error occurred
-}
+} deriving Eq
 
 -- | Throw a runtime error
 throwRuntimeError info pos = throwError (RuntimeError info pos [])
@@ -282,6 +283,7 @@ instance Show RuntimeError where
   show err = show (runtimeErrorDoc err)
   
 data InternalCode = NotLinear
+  deriving Eq
 
 throwInternalError code = throwRuntimeError (InternalError code) noPos
 
