@@ -108,21 +108,10 @@ boundUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= leng
       -- binding restricted to bound variables
       bound = deleteAll (fv \\ bv1)
       -- type list updated with all free variables updated according to binding u      
-
--- | Equality of types
-instance Eq Type where
-  t1 == t2 = isJust (unifier [] [t1] [t2])
-  
--- Now we can derive Eq for datatypes that contain Type:  
-deriving instance Eq BareExpression
-deriving instance Eq WildcardExpression
-deriving instance Eq SpecClause
-deriving instance Eq Contract
-deriving instance Eq BareStatement
-deriving instance Eq NewType  
-deriving instance Eq IdTypeWhere
-deriving instance Eq BareDecl
-deriving instance Eq Program
+      
+-- | Semantic equivalence on types
+-- | (equality up to renaming of bound type variables)
+t1 <==> t2 = isJust (unifier [] [t1] [t2])       
   
 {- Expressions -}
 

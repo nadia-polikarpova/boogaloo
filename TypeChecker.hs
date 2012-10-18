@@ -365,7 +365,7 @@ checkMapUpdate :: Context -> Expression -> [Expression] -> Expression -> Checked
 checkMapUpdate c m args val = do 
   t <- checkMapSelection c m args
   actualT <- checkExpression c val
-  if t == actualT 
+  if t <==> actualT 
     then checkExpression c m 
     else throwTypeError (ctxPos c) (text "Update value type" <+> typeDoc actualT <+> text "different from map range type" <+> typeDoc t)
     
@@ -392,16 +392,16 @@ checkUnaryExpression c op e
   where 
     matchType t ret = do
       t' <- checkExpression c e
-      if t' == t then return ret else throwTypeError (ctxPos c) (errorMsg t' op)
+      if t' <==> t then return ret else throwTypeError (ctxPos c) (errorMsg t' op)
     errorMsg t op = text "Invalid argument type" <+> typeDoc t <+> text "to unary operator" <+> unOpDoc op
   
 checkBinaryExpression :: Context -> BinOp -> Expression -> Expression -> Checked Type
 checkBinaryExpression c op e1 e2
-  | elem op [Plus, Minus, Times, Div, Mod] = matchTypes (\t1 t2 -> t1 == IntType && t2 == IntType) IntType
-  | elem op [And, Or, Implies, Explies, Equiv] = matchTypes (\t1 t2 -> t1 == BoolType && t2 == BoolType) BoolType
-  | elem op [Ls, Leq, Gt, Geq] = matchTypes (\t1 t2 -> t1 == IntType && t2 == IntType) BoolType
+  | elem op [Plus, Minus, Times, Div, Mod] = matchTypes (\t1 t2 -> t1 <==> IntType && t2 <==> IntType) IntType
+  | elem op [And, Or, Implies, Explies, Equiv] = matchTypes (\t1 t2 -> t1 <==> BoolType && t2 <==> BoolType) BoolType
+  | elem op [Ls, Leq, Gt, Geq] = matchTypes (\t1 t2 -> t1 <==> IntType && t2 <==> IntType) BoolType
   | elem op [Eq, Neq] = matchTypes (\t1 t2 -> isJust (unifier (ctxTypeVars c) [t1] [t2])) BoolType
-  | op == Lc = matchTypes (==) BoolType
+  | op == Lc = matchTypes (<==>) BoolType
   where 
     matchTypes pred ret = do
       t1 <- checkExpression c e1
@@ -664,7 +664,7 @@ checkParentInfo c ids t parents = if length parents /= length (nub parents)
   where
     checkParent p = case M.lookup p (ctxConstants c) of
       Nothing -> throwTypeError (ctxPos c) (text "Not in scope: constant" <+> text p)
-      Just t' -> if t /= t'
+      Just t' -> if not (t <==> t')
         then throwTypeError (ctxPos c) (text "Parent type" <+> typeDoc t' <+> text "is different from constant type" <+> typeDoc t)
         else if p `elem` ids
           then throwTypeError (ctxPos c) (text "Constant" <+> text p <+> text "is decalred to be its own parent")
@@ -734,7 +734,7 @@ checkImplementation c name tv args rets bodies = case M.lookup name (ctxProcedur
 compareType :: Context -> String -> Type -> Expression -> Checked ()
 compareType c msg t e = do
   t' <- checkExpression c e
-  if t == t' 
+  if t <==> t' 
     then return ()
     else throwTypeError (ctxPos c) (text "Type of" <+> text msg <+> doubleQuotes (typeDoc t') <+> text "is different from" <+> doubleQuotes (typeDoc t))
     

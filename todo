@@ -1,6 +1,6 @@
 - Overall
-  - Command-line args
-  - Create package and some doc (+ examples: sum_max, sorting/binary_search)
+  -> Command-line args
+  -> Create package and some doc (+ examples: sum_max, sorting/binary_search)
   - Unsupported syntax    
     - bit vectors    
     - reals, /, **, int(), real(), decimal/float litearls
@@ -12,13 +12,12 @@
   - Dynamic assertion (loop invariant) inference (testing + statistical test)
 
 - Type checker
-  - Distinguish syntactic and semantic equality on types? (Currently only semantic equality is used)
   - Type constraint solving (HM?) to allow generic return types in functions
   - Annotate AST with expr types
   - Use state?
   
 - Interpreter
-  - Separate runtime error into error kind (error, unreachable, not executable) and error source (predicate statement, contract, language built-in)
+  -> Separate runtime error into error kind (error, unreachable, not executable) and error source (predicate statement, contract, language built-in)
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - Backtracking (logicT monad?)  
   - User-defined types

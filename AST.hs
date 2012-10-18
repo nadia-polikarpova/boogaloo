@@ -9,12 +9,14 @@ import Data.Map (Map)
 type Id = String
 
 newtype Program = Program [Decl]
+  deriving Eq
 
 {- Types -}
 
 data Type = BoolType | IntType | {-BitVectorType Int |-} 
   MapType [Id] [Type] Type |
   Instance Id [Type]
+  deriving Eq -- syntactic equality
 
 -- | Type denoted by id without arguments
 nullaryType id = Instance id []
@@ -50,10 +52,12 @@ data BareExpression = FF | TT |
   UnaryExpression UnOp Expression |
   BinaryExpression BinOp Expression Expression |  
   Quantified QOp [Id] [IdType] Expression          -- Quantified quantifier type_vars bound_vars expression
+  deriving Eq -- syntactic equality
   
 mapSelectExpr target args = attachPos (position target) (MapSelection target args)  
   
 data WildcardExpression = Wildcard | Expr Expression
+  deriving Eq
   
 {- Statements -}
 
@@ -71,6 +75,7 @@ data BareStatement = Assert SpecType Expression |
   Return |
   Goto [Id] |                                    -- Goto labels
   Skip                                           -- only used at the end of a block
+  deriving Eq -- syntactic equality
 
 -- | Statement labeled by multiple labels
 type LStatement = Pos BareLStatement
@@ -98,11 +103,12 @@ data SpecClause = SpecClause {
     specType :: SpecType,   -- Source of the clause
     specFree :: Bool,       -- Is it free (assumption) or checked (assertions)?
     specExpr :: Expression  -- Boolean expression
-  }
+  } deriving Eq
 
 data Contract = Requires Bool Expression |  -- Requires e free 
   Modifies Bool [Id] |                      -- Modifies var_names free
   Ensures Bool Expression                   -- Ensures e free
+  deriving Eq
 
 {- Declarations -}
 
@@ -116,6 +122,7 @@ data BareDecl =
   VarDecl [IdTypeWhere] |
   ProcedureDecl Id [Id] [IdTypeWhere] [IdTypeWhere] [Contract] (Maybe Body) |  -- ProcedureDecl name type_args formals rets contract body 
   ImplementationDecl Id [Id] [IdType] [IdType] [Body]                      -- ImplementationDecl name type_args formals rets body
+  deriving Eq
   
 {- Misc -}
 
@@ -123,7 +130,7 @@ data NewType = NewType {
   tId :: Id,
   tArgs :: [Id],
   tValue :: Maybe Type
-  }
+  } deriving Eq
 
 type IdType = (Id, Type)
 
@@ -131,7 +138,7 @@ data IdTypeWhere = IdTypeWhere {
   itwId :: Id, 
   itwType :: Type, 
   itwWhere :: Expression 
-  }
+  } deriving Eq
   
 noWhere itw = (itwId itw, itwType itw)  
   
