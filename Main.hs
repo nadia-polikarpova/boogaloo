@@ -71,24 +71,28 @@ mode = cmdArgsMode $ modes [execute, test_, rtest] &=
   
 -- | Set up a test method depending on command-line arguments  
 testMethod :: CommandLineArgs -> Program -> Context -> [Id] -> IO [TestCase]
-testMethod (Test _ _ limits dlimits _ ) program context procNames = return $ testProgram settings program context procNames
-  where
-    settings = (defaultExhaustiveSettings context) {
+testMethod (Test _ _ limits dlimits _ ) program context procNames = 
+  let settings = ExhaustiveSettings {
       esIntRange = interval limits,
-      esIntMapDomainRange = interval dlimits
+      esIntMapDomainRange = interval dlimits,
+      esGenericTypeRange = defaultGenericTypeRange context,
+      esMapTypeRange = defaultMapTypeRange context
     }
+  in return $ testProgram settings program context procNames
 testMethod (RTest _ _ limits dlimits tc_count seed _) program context procNames = do
   defaultGen <- getStdGen
   randomGen <- case seed of
     Nothing -> getStdGen
     Just s -> return $ mkStdGen s
-  return $ testProgram (settings randomGen) program context procNames
-  where 
-    settings randomGen = (defaultRandomSettings context randomGen) {
+  let settings = RandomSettings {
+      rsRandomGen = randomGen,
       rsCount = tc_count,
       rsIntLimits = limits,
-      rsIntMapDomainRange = interval dlimits
+      rsIntMapDomainRange = interval dlimits,
+      rsGenericTypeRange = defaultGenericTypeRange context,
+      rsMapTypeRange = defaultMapTypeRange context     
     }  
+  return $ testProgram settings program context procNames
     
 {- Interfacing internal modules -}
 
@@ -134,11 +138,8 @@ runOnFile command file = do
 harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
-      -- let env = execState (collectDefinitions p) emptyEnv { envTypeContext = context }
-      randomGen <- getStdGen
-      let res = evalState (combineInputs (generateInputValue context) (replicate 3 IntType)) (defaultRandomSettings context randomGen)
-      -- let res = genInputsExhaustive (-3, 3) [IntType, IntType]
-      print $ res      
+      let env = execState (collectDefinitions p) emptyEnv { envTypeContext = context }
+      print $ envGlobals env
       
 -- | Test that print . parse == print . parse . print .parse      
 testParser :: String -> IO ()      

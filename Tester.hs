@@ -64,6 +64,14 @@ class TestSettings s where
   -- | Range of instances for a type parameter of a polymorphic map
   mapTypeRange :: s -> [Type]
   
+-- | Default range for instantiating procedure type parameters:
+-- | using a single type bool is enough unless the program contains a function or a map that allows differentiating between types at runtime
+defaultGenericTypeRange _ = [BoolType]
+
+-- | Default range for instantiating polymorphic maps:
+-- | all nullary type contructors
+defaultMapTypeRange context = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors context))]  
+  
 data ExhaustiveSettings = ExhaustiveSettings {
   esIntRange :: [Integer],            -- Input range for an integer variable
   esIntMapDomainRange :: [Integer],   -- Input range for an integer map domain
@@ -79,13 +87,6 @@ instance TestSettings ExhaustiveSettings where
   genericTypeRange = esGenericTypeRange
   mapTypeRange = esMapTypeRange
   
-defaultExhaustiveSettings c = ExhaustiveSettings {
-  esIntRange = [-1..1],
-  esIntMapDomainRange = [0..2],
-  esGenericTypeRange = [BoolType],
-  esMapTypeRange = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors c))]
-}
-
 data RandomSettings = RandomSettings {
   rsRandomGen :: StdGen,              -- Random number generator
   rsCount :: Int,                     -- Number of test cases to be generated (currently per type in rsGenericTypeRange, if the procedure under test is generic)
@@ -124,15 +125,6 @@ instance TestSettings RandomSettings where
       
   genericTypeRange = rsGenericTypeRange
   mapTypeRange = rsMapTypeRange
-  
-defaultRandomSettings c randomGen = RandomSettings {
-  rsRandomGen = randomGen,
-  rsCount = 10,
-  rsIntLimits = (-32, 32),
-  rsIntMapDomainRange = [0..3],
-  rsGenericTypeRange = [BoolType],
-  rsMapTypeRange = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors c))]
-}
 
 -- | Executions that have access to testing session parameters
 type TestSession s a = State (s, Environment) a
