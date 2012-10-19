@@ -1,13 +1,13 @@
 {- Parsec-based parser for Boogie 2 -}
-module Parser where
+module Language.Boogie.Parser where
 
-import AST
-import Util
-import Position
-import Tokens
-import PrettyPrinter hiding (option, optionMaybe, commaSep, angles)
+import Language.Boogie.AST
+import Language.Boogie.Util
+import Language.Boogie.Position
+import Language.Boogie.Tokens
+import Language.Boogie.PrettyPrinter hiding (option, optionMaybe, commaSep, angles)
 import Data.List
-import Text.ParserCombinators.Parsec hiding (token)
+import Text.ParserCombinators.Parsec hiding (token, label)
 import qualified Text.ParserCombinators.Parsec.Token as P
 import Text.ParserCombinators.Parsec.Expr
 import Control.Monad
@@ -294,7 +294,7 @@ label = do
   
 lStatement :: Parser LStatement
 lStatement = attachPosBefore $ do
-  lbs <- many (try Parser.label)
+  lbs <- many (try label)
   s <- statement
   return (lbs, s)
 
@@ -302,7 +302,7 @@ statementList :: Parser Block
 statementList = do
   lstatements <- many (try lStatement)
   pos1 <- getPosition
-  lempty <- many (try Parser.label)
+  lempty <- many (try label)
   pos2 <- getPosition
   return $ if null lempty
     then lstatements 

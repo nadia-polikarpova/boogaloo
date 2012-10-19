@@ -1,5 +1,5 @@
 {- Utility for attaching source code positions to AST nodes -}
-module Position 
+module Language.Boogie.Position 
     (Pos (..)
     ,Line
     ,Column

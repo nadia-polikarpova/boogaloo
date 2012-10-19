@@ -1,7 +1,7 @@
 {- AST for Boogie 2 -}
-module AST where
+module Language.Boogie.AST where
 
-import Position
+import Language.Boogie.Position
 import Data.Map (Map)
 
 {- Basic -}

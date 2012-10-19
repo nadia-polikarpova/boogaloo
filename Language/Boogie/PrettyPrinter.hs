@@ -1,9 +1,9 @@
 {- Pretty printer for Boogie 2 -}
-module PrettyPrinter where
+module Language.Boogie.PrettyPrinter where
 
-import AST
-import Position
-import Tokens
+import Language.Boogie.AST
+import Language.Boogie.Position
+import Language.Boogie.Tokens
 import Data.Maybe
 import Data.Map (Map, (!))
 import qualified Data.Map as M

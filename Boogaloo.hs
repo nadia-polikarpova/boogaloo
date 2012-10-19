@@ -2,15 +2,14 @@
 
 module Main where
 
-import Text.ParserCombinators.Parsec (parse, parseFromFile)
-import AST
-import Util
-import Position
-import qualified Parser (program)
-import TypeChecker
-import PrettyPrinter
-import Interpreter
-import Tester
+import Language.Boogie.AST
+import Language.Boogie.Util
+import Language.Boogie.Position
+import qualified Language.Boogie.Parser as Parser (program)
+import Language.Boogie.TypeChecker
+import Language.Boogie.PrettyPrinter
+import Language.Boogie.Interpreter
+import Language.Boogie.Tester
 import System.Environment
 import System.Console.CmdArgs
 import System.Random
@@ -21,6 +20,7 @@ import qualified Data.Map as M
 import Control.Monad.State
 import Control.Applicative
 import Text.PrettyPrint hiding (mode)
+import Text.ParserCombinators.Parsec (parse, parseFromFile)
 
 programName = "boogaloo"
 versionName = "0.1"

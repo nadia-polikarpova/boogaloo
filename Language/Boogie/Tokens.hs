@@ -1,7 +1,7 @@
 {- Tokens used in Boogie 2 -}
-module Tokens where
+module Language.Boogie.Tokens where
 
-import AST
+import Language.Boogie.AST
 import Data.Maybe
 
 keywords :: [String]

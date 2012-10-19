@@ -1,15 +1,15 @@
 {- Interpreter for Boogie 2 -}
-module Interpreter where
+module Language.Boogie.Interpreter where
 
-import AST
-import Util
-import Intervals
-import Position
-import Tokens (nonIdChar)
-import PrettyPrinter
-import TypeChecker hiding (checkWhere)
-import NormalForm
-import BasicBlocks
+import Language.Boogie.AST
+import Language.Boogie.Util
+import Language.Boogie.Intervals
+import Language.Boogie.Position
+import Language.Boogie.Tokens (nonIdChar)
+import Language.Boogie.PrettyPrinter
+import Language.Boogie.TypeChecker hiding (checkWhere)
+import Language.Boogie.NormalForm
+import Language.Boogie.BasicBlocks
 import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M

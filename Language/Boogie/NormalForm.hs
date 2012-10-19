@@ -1,10 +1,10 @@
 {- Various normal forms of Boolean expressions -}
-module NormalForm where
+module Language.Boogie.NormalForm where
 
-import AST
-import Position
-import Util
-import TypeChecker
+import Language.Boogie.AST
+import Language.Boogie.Position
+import Language.Boogie.Util
+import Language.Boogie.TypeChecker
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 

@@ -1,9 +1,9 @@
-module DataFlow (liveVariables, liveInputVariables) where
+module Language.Boogie.DataFlow (liveVariables, liveInputVariables) where
 
-import AST
-import Util
-import Position hiding (gen)
-import BasicBlocks
+import Language.Boogie.AST
+import Language.Boogie.Util
+import Language.Boogie.Position hiding (gen)
+import Language.Boogie.BasicBlocks
 import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M

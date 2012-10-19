@@ -1,13 +1,13 @@
-module Tester where
+module Language.Boogie.Tester where
 
-import AST
-import Util
-import Position
-import TypeChecker
-import Tokens
-import PrettyPrinter
-import Interpreter
-import DataFlow
+import Language.Boogie.AST
+import Language.Boogie.Util
+import Language.Boogie.Position
+import Language.Boogie.TypeChecker
+import Language.Boogie.Tokens
+import Language.Boogie.PrettyPrinter
+import Language.Boogie.Interpreter
+import Language.Boogie.DataFlow
 import System.Random
 import Data.Maybe
 import Data.List

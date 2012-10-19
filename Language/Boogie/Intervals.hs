@@ -1,5 +1,5 @@
 {- Lattice of integer intervals -}
-module Intervals where
+module Language.Boogie.Intervals where
 
 import Data.Ratio
 import Data.Maybe

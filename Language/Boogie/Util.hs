@@ -1,10 +1,9 @@
 {- Various properties and transformations of Boogie program elements -}
+module Language.Boogie.Util where
 
-module Util where
-
-import AST
-import Position
-import Tokens
+import Language.Boogie.AST
+import Language.Boogie.Position
+import Language.Boogie.Tokens
 import Data.Maybe
 import Data.List
 import Data.Map (Map)

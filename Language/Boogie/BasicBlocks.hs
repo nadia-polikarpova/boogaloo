@@ -1,9 +1,9 @@
 {- Basic block transformation for imperative Boogie code -}
-module BasicBlocks (toBasicBlocks, startLabel) where
+module Language.Boogie.BasicBlocks (toBasicBlocks, startLabel) where
 
-import AST
-import Util
-import Position
+import Language.Boogie.AST
+import Language.Boogie.Util
+import Language.Boogie.Position
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.State

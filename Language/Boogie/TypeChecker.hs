@@ -1,10 +1,10 @@
 {- Type checker for Boogie 2 -}
-module TypeChecker where
+module Language.Boogie.TypeChecker where
 
-import AST
-import Util
-import Position
-import PrettyPrinter
+import Language.Boogie.AST
+import Language.Boogie.Util
+import Language.Boogie.Position
+import Language.Boogie.PrettyPrinter
 import Data.List
 import Data.Maybe
 import Data.Map (Map, (!))
