@@ -1,6 +1,5 @@
 {- Various properties and transformations of Boogie program elements -}
 
-{-# LANGUAGE StandaloneDeriving #-}
 module Util where
 
 import AST

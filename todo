@@ -1,5 +1,4 @@
 - Overall
-  -> Command-line args
   -> Create package and some doc (+ examples: sum_max, sorting/binary_search)
   - Unsupported syntax    
     - bit vectors    
