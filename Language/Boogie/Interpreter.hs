@@ -631,13 +631,13 @@ extractFunctionDefs bExpr guards = extractFunctionDefs' (contents bExpr) guards
 
 extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) outerGuards = do
   c <- gets envTypeContext
-  if all (simple c) args -- Only possible if each argument is either a variables or does not involve variables
-    && closedRhs c       -- and there are no extra variables in rhs
-  then do    
-    let (formals, guards) = unzip (extractArgs c)
-    let guard = foldl1 (|&|) (concat guards ++ outerGuards)
-    modify $ addFunctionDefs f [FDef formals guard rhs]
-  else return ()
+  -- Only possible if each argument is either a variables or does not involve variables and there are no extra variables in rhs:
+  if all (simple c) args && closedRhs c
+    then do    
+      let (formals, guards) = unzip (extractArgs c)
+      let guard = foldl1 (|&|) (concat guards ++ outerGuards)
+      modify $ addFunctionDefs f [FDef formals guard rhs]
+    else return ()
   where
     simple _ (Pos p (Var _)) = True
     simple c e = null $ freeVars e `intersect` M.keys (ctxIns c)
@@ -715,16 +715,17 @@ inferInterval boolExpr constraints x = (case contents boolExpr of
   BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 constraints x) (inferInterval be2 constraints x)
   BinaryExpression Or be1 be2 -> liftM2 join (inferInterval be1 constraints x) (inferInterval be2 constraints x)
   BinaryExpression Eq ae1 ae2 -> do
-    lf <- toLinearForm (ae1 |-| ae2) constraints x
-    case lf of
-      (a, b) | 0 <: a, 0 <: b -> return top
-             | otherwise -> return $ -b // a
+    (a, b) <- toLinearForm (ae1 |-| ae2) constraints x
+    if 0 <: a && 0 <: b
+      then return top
+      else return $ -b // a
   BinaryExpression Leq ae1 ae2 -> do
-    lf <- toLinearForm (ae1 |-| ae2) constraints x
-    case lf of
-      (a, b) | isBottom a || isBottom b -> return bot
-             | 0 <: a, not (isBottom (meet b nonPositives)) -> return top
-             | otherwise -> return $ join (lessEqual (-b // meet a positives)) (greaterEqual (-b // meet a negatives))
+    (a, b) <- toLinearForm (ae1 |-| ae2) constraints x
+    if isBottom a || isBottom b
+      then return bot
+      else if 0 <: a && not (isBottom (meet b nonPositives))
+        then return top
+        else return $ join (lessEqual (-b // meet a positives)) (greaterEqual (-b // meet a negatives))
   BinaryExpression Ls ae1 ae2 -> inferInterval (ae1 |<=| (ae2 |-| num 1)) constraints x
   BinaryExpression Geq ae1 ae2 -> inferInterval (ae2 |<=| ae1) constraints x
   BinaryExpression Gt ae1 ae2 -> inferInterval (ae2 |<=| (ae1 |-| num 1)) constraints x
