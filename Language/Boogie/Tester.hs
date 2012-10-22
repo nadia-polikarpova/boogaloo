@@ -129,7 +129,11 @@ instance TestSettings RandomSettings where
 -- | Executions that have access to testing session parameters
 type TestSession s a = State (s, Environment) a
         
-{- Reporting results -}        
+{- Reporting results -}
+
+instance Eq RuntimeFailure where
+  -- Runtime errors are considered equivalent if the same property failed at the same program location 
+  f == f'   =  rtfSource f == rtfSource f' && rtfPos f == rtfPos f' 
 
 -- | Outcome of a test case        
 data Outcome = Pass | Fail RuntimeFailure | Invalid RuntimeFailure
@@ -137,8 +141,8 @@ data Outcome = Pass | Fail RuntimeFailure | Invalid RuntimeFailure
 
 outcomeDoc :: Outcome -> Doc
 outcomeDoc Pass = text "passed"
-outcomeDoc (Fail err) = text "failed with: " <+> runtimeFailureDoc err
-outcomeDoc (Invalid err) = text "invalid because: " <+> runtimeFailureDoc err
+outcomeDoc (Fail err) = text "failed: " <+> runtimeFailureDoc err
+outcomeDoc (Invalid err) = text "invalid: " <+> runtimeFailureDoc err
 
 instance Show Outcome where show o = show (outcomeDoc o)
 

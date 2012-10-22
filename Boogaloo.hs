@@ -120,7 +120,7 @@ testFromFile file procNames testMethod printAll = runOnFile printTestOutcomes fi
       when (not (null missing)) $ print (text "Cannot find procedures under test:" <+> commaSep (map text missing))
       testResults <- testMethod p context present
       print $ testSessionSummary testResults
-      when printAll $ mapM_ print testResults
+      when printAll $ putStr "\n" >> mapM_ print testResults
 
 -- | Parse file, type-check the resulting program, then execute command on the resulting program and type context
 runOnFile :: (Program -> Context -> IO ()) -> String -> IO ()      

@@ -228,14 +228,17 @@ type StackTrace = [StackFrame]
 data RuntimeFailure = RuntimeFailure {
   rtfSource :: FailureSource,   -- Source of the failure
   rtfPos :: SourcePos,          -- Location where the failure occurred
+  rtfEnv :: Environment,        -- Environment at the time of failure
   rtfTrace :: StackTrace        -- Stack trace from the program entry point to the procedure where the failure occurred
-} deriving Eq
+}
 
 -- | Throw a runtime failure
-throwRuntimeFailure source pos = throwError (RuntimeFailure source pos [])
+throwRuntimeFailure source pos = do
+  env <- get
+  throwError (RuntimeFailure source pos env [])
 
 -- | Push frame on the stack trace of a runtime failure
-addStackFrame frame (RuntimeFailure source pos trace) = throwError (RuntimeFailure source pos (frame : trace))
+addStackFrame frame (RuntimeFailure source pos env trace) = throwError (RuntimeFailure source pos env (frame : trace))
 
 -- | Kind of failure
 data FailureKind = Error | -- Error state reached (assertion violation)
@@ -251,31 +254,40 @@ failureKind err = case rtfSource err of
   _ -> Nonexecutable
   
 instance Error RuntimeFailure where
-  noMsg    = RuntimeFailure (UnsupportedConstruct "unknown") noPos []
-  strMsg s = RuntimeFailure (UnsupportedConstruct s) noPos []
+  noMsg    = RuntimeFailure (UnsupportedConstruct "unknown") noPos emptyEnv []
+  strMsg s = RuntimeFailure (UnsupportedConstruct s) noPos emptyEnv []
   
-runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) $+$ vsep (map stackFrameDoc (reverse (rtfTrace err)))
+runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) $+$ 
+  text "with" <+> varsDoc revelantVars $+$
+  vsep (map stackFrameDoc (reverse (rtfTrace err)))
   where
-  failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
-  failureSourceDoc (DivisionByZero) = text "Division by zero"
-  failureSourceDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
-  failureSourceDoc (NoImplementation name) = text "Procedure" <+> text name <+> text "with no implementation called"
-  failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
-  
-  clauseName Inline isFree = if isFree then "Assumption" else "Assertion"  
-  clauseName Precondition isFree = if isFree then "Free precondition" else "Precondition"  
-  clauseName Postcondition isFree = if isFree then "Free postcondition" else "Postcondition"  
-  clauseName LoopInvariant isFree = if isFree then "Free loop invariant" else "Loop invariant"  
-  clauseName Where True = "Where clause"  -- where clauses cannot be non-free  
-  
-  defPosition Inline _ = empty
-  defPosition LoopInvariant _ = empty
-  defPosition _ e = text "defined" <+> posDoc (position e)
-  
-  stackFrameDoc f = text "in call to" <+> text (callName f) <+> posDoc (callPos f)
-  posDoc pos
-    | pos == noPos = text "from the environment"
-    | otherwise = text "at" <+> text (sourceName pos) <+> text "line" <+> int (sourceLine pos)
+    failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
+    failureSourceDoc (DivisionByZero) = text "Division by zero"
+    failureSourceDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
+    failureSourceDoc (NoImplementation name) = text "Procedure" <+> text name <+> text "with no implementation called"
+    failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
+    
+    clauseName Inline isFree = if isFree then "Assumption" else "Assertion"  
+    clauseName Precondition isFree = if isFree then "Free precondition" else "Precondition"  
+    clauseName Postcondition isFree = if isFree then "Free postcondition" else "Postcondition"  
+    clauseName LoopInvariant isFree = if isFree then "Free loop invariant" else "Loop invariant"  
+    clauseName Where True = "Where clause"  -- where clauses cannot be non-free  
+    
+    defPosition Inline _ = empty
+    defPosition LoopInvariant _ = empty
+    defPosition _ e = text "defined" <+> posDoc (position e)
+    
+    revelantVars = let env = rtfEnv err      
+      in M.filterWithKey (\k _ -> isRelevant k) (envLocals env `M.union` envGlobals env)
+      
+    isRelevant k = case rtfSource err of
+      SpecViolation (SpecClause _ _ expr) -> k `elem` freeVars expr
+      _ -> False
+    
+    stackFrameDoc f = text "in call to" <+> text (callName f) <+> posDoc (callPos f)
+    posDoc pos
+      | pos == noPos = text "from the environment"
+      | otherwise = text "at" <+> text (sourceName pos) <+> text "line" <+> int (sourceLine pos)
 
 instance Show RuntimeFailure where
   show err = show (runtimeFailureDoc err)
