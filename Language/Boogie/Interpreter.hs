@@ -697,9 +697,11 @@ domains boolExpr vars = do
 inferConstraints :: Expression -> Constraints -> Execution Constraints
 inferConstraints boolExpr constraints = do
   constraints' <- foldM refineVar constraints (M.keys constraints)
-  if constraints == constraints' || bot `elem` M.elems constraints'
-    then return constraints'
-    else inferConstraints boolExpr constraints'
+  if bot `elem` M.elems constraints'
+    then return $ M.map (const bot) constraints'  -- if boolExpr does not have a satisfying assignment to one variable, then it has none to all variables
+    else if constraints == constraints'
+      then return constraints'                    -- if a fixpoint is reached, return it
+      else inferConstraints boolExpr constraints' -- otherwise do another iteration
   where
     refineVar :: Constraints -> Id -> Execution Constraints
     refineVar c id = do
