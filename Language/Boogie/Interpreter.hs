@@ -606,7 +606,7 @@ collectDefinitions (Program decls) = mapM_ processDecl decls
   
 processFunctionBody name args body = let
   formals = map (formalName . fst) args
-  guard = attachPos (position body) TT
+  guard = gen TT
   in
     modify $ addFunctionDefs name [FDef formals guard body]
   where
@@ -623,14 +623,14 @@ processProcedureBody name pos args rets body = do
     paramsRenamed sig = map itwId (psigParams sig) /= (argNames ++ retNames)     
 
 processAxiom expr = do
-  extractContantDefs expr
+  extractConstantDefs expr
   extractFunctionDefs expr []
   
 {- Constant and function definitions -}
 
 -- | Extract constant definitions from a boolean expression bExpr
-extractContantDefs :: Expression -> SafeExecution ()
-extractContantDefs bExpr = case contents bExpr of  
+extractConstantDefs :: Expression -> SafeExecution ()
+extractConstantDefs bExpr = case contents bExpr of  
   BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstantDef c rhs -- c == rhs: remember rhs as a definition for c
   _ -> return ()
 
@@ -647,7 +647,8 @@ extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) oute
   if all (simple c) args && closedRhs c
     then do    
       let (formals, guards) = unzip (extractArgs c)
-      let guard = foldl1 (|&|) (concat guards ++ outerGuards)
+      let allGuards = concat guards ++ outerGuards
+      let guard = if null allGuards then gen TT else foldl1 (|&|) allGuards
       modify $ addFunctionDefs f [FDef formals guard rhs]
     else return ()
   where
