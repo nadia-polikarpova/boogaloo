@@ -42,7 +42,7 @@ data CommandLineArgs
       deriving (Data, Typeable, Show, Eq)
 
 execute = Exec {
-  entry = "main"  &= help "Program entry point (must not have in- or out-parameters)" &= typ "PROCEDURE",
+  entry = "Main"  &= help "Program entry point (must not have in- or out-parameters)" &= typ "PROCEDURE",
   file  = ""      &= typFile &= argPos 0
   } &= auto &= help "Execute program"
       
