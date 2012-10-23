@@ -283,8 +283,10 @@ fInstance c sig actuals mRetType = case mRetType of
       else do
         actualTypes <- mapAccum (checkExpression c) noType actuals
         case oneSidedUnifier (fsigTypeVars sig) (fsigArgTypes sig) (ctxTypeVars c) actualTypes of
-          Nothing -> throwTypeError (ctxPos c) (text "Could not match formal argument types" <+> commaSep (map typeDoc (fsigArgTypes sig)) <+>
-            text "against actual argument types" <+> commaSep (map typeDoc actualTypes) <+>
+          Nothing -> throwTypeError (ctxPos c) (text "Could not match formal argument types" <+> 
+            doubleQuotes (commaSep (map typeDoc (fsigArgTypes sig))) <+>
+            text "against actual argument types" <+> 
+            doubleQuotes (commaSep (map typeDoc actualTypes)) <+>
             text "in the call to" <+> text (fsigName sig))
           Just u -> return u
     Just retType -> do
