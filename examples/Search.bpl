@@ -1,8 +1,8 @@
 // Example inspired by: "Getting Started with Dafny: A Guide" by Jason Koenig and K. Rustan M. Leino
 
-// Run "Boogaloo Search.bpl" to invoke Main
-// Run "Boogaloo test -p LinearSearch -p BinarySearch Search.bpl" to test both search procedures exhaustively within the default range of inputs
-// Run "Boogaloo rtest -p LinearSearch -p BinarySearch Search.bpl" to test both search procedures on a default number of random inputs
+// Run "boogaloo Search.bpl" to invoke Main
+// Run "boogaloo test -p LinearSearch -p BinarySearch Search.bpl" to test both search procedures exhaustively within the default range of inputs
+// Run "boogaloo rtest -p LinearSearch -p BinarySearch Search.bpl" to test both search procedures on a default number of random inputs
 
 // Search for x in an array a of length N.
 procedure LinearSearch<T> (a: [int] T, N: int, key: T) returns (index: int)
