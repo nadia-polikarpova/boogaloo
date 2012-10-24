@@ -1,5 +1,4 @@
 - Overall
-  -> Create package and some doc (+ examples: sum_max, sorting/binary_search)
   - Unsupported syntax    
     - bit vectors    
     - reals, /, **, int(), real(), decimal/float litearls
@@ -28,7 +27,6 @@
       or to create a named function per lambda expression
   - With better non-determinism: treat maps like functions in testing, and do not generate all possible values for them explicitly?
   - Call forall
-  - Make Value/Execution types generic (or at least eval and exec?). This will allow support for abstract interpretation and symbolic execution.    
   
 - Tester
   - Which failing test cases should be considered unique in summaries? If a postcondition or inline assertion is violated it's enough to comare the error, if a precondition is violated we need the caller. Preconditions should be checked at the call site?
@@ -37,4 +35,5 @@
   - pass more information with failures other than spec violations, so that relevant variables can be determined
   - settings for disabling checking of different specs
   - settings for bounding domains to be checked in quantified expressions
-  - interactive sessions  
+  - interactive sessions
+  - debugger

@@ -24,7 +24,7 @@ import Text.ParserCombinators.Parsec (parse, parseFromFile)
 
 programName = "boogaloo"
 versionName = "0.1"
-releaseDate = fromGregorian 2012 10 19
+releaseDate = fromGregorian 2012 10 23
 
 -- | Execute or test a Boogie program, according to command-line arguments
 main = do
@@ -61,7 +61,7 @@ rtest = RTest {
   tc_count  = 10        &= help "Number of test cases to generate per procedure implementation" &= name "n" &= typ "NUM",
   seed      = Nothing   &= help "Seed for the random number generator" &= typ "NUM",
   file      = ""        &= typFile &= argPos 0,
-  verbose = False       &= help "Output all executed test cases (or only a summary)"
+  verbose = False       &= help "Output all executed test cases"
   } &= help "Test program on random inputs"
     
 mode = cmdArgsMode $ modes [execute, test_, rtest] &= 
