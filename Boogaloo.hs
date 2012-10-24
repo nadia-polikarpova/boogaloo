@@ -49,20 +49,23 @@ execute = Exec {
 test_ = Test {
   proc_   = []      &= help "Procedures to test" &= typ "PROCEDURE",
   limits  = (-3, 3) &= help "Interval of input values to try for an integer variable" &= typ "NUM, NUM",
-  dlimits = (0, 2)  &= help "Given a map with an integer domain, different range values will be tried for domain values in this interval" &= typ "NUM, NUM" ,
+  dlimits = (0, 2)  &= help dlimitsMsg &= typ "NUM, NUM" ,
   file    = ""      &= typFile &= argPos 0,
-  verbose = False   &= help "Output all executed test cases (or only a summary)"
+  verbose = False   &= help verboseMsg
   } &= help "Test program exhaustively"
   
 rtest = RTest {
   proc_     = []        &= help "Procedures to test" &= typ "PROCEDURE",
   limits    = (-32, 32) &= help "Interval of input values to draw from for an integer variable" &= typ "NUM, NUM",
-  dlimits   = (0, 2)    &= help "Given a map with an integer domain, different range values will be tried for domain values in this interval" &= typ "NUM, NUM",
+  dlimits   = (0, 2)    &= help dlimitsMsg &= typ "NUM, NUM",
   tc_count  = 10        &= help "Number of test cases to generate per procedure implementation" &= name "n" &= typ "NUM",
   seed      = Nothing   &= help "Seed for the random number generator" &= typ "NUM",
   file      = ""        &= typFile &= argPos 0,
-  verbose = False       &= help "Output all executed test cases"
+  verbose = False       &= help verboseMsg
   } &= help "Test program on random inputs"
+  
+dlimitsMsg = "Given a map with an integer domain, different range values will be tried for domain values in this interval"
+verboseMsg = "Output all executed test cases"
     
 mode = cmdArgsMode $ modes [execute, test_, rtest] &= 
   help "Boogie interpreter" &= 
