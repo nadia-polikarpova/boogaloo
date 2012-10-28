@@ -1,4 +1,6 @@
 - Overall
+  - Add test suite
+    - Adapt tests from boogie.codeplex.com
   - Unsupported syntax    
     - bit vectors    
     - reals, /, **, int(), real(), decimal/float litearls
