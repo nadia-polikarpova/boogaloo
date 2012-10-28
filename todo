@@ -1,10 +1,8 @@
 - Overall
-  - Add test suite
-    - Adapt tests from boogie.codeplex.com
   - Unsupported syntax    
     - bit vectors    
     - reals, /, **, int(), real(), decimal/float litearls
-    - call * := Q(x, y);
+    - call * := Q(x, y), call forall to a procedure with out-parameters
     - empty map domains x: []int    
     - code expression
   - Optimization: e.g. better data structures instead of lists  
@@ -12,7 +10,11 @@
   - Dynamic assertion (loop invariant) inference (testing + statistical test)
 
 - Type checker
+  - Fix where clauses:
+    - Disallow old
+    - Out-params should not be in scope
   - Type constraint solving (HM?) to allow generic return types in functions
+  - Data type for type errors (will be easier to evaluate test results)
   - Annotate AST with expr types
   - Use state?
   

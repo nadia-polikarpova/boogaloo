@@ -1,35 +1,74 @@
 module Main where
 
 import Language.Boogie.Parser
+import Language.Boogie.PrettyPrinter
 import Language.Boogie.TypeChecker
 import Language.Boogie.Interpreter
 import Data.Map (Map, (!))
 import qualified Data.Map as M
+import System.FilePath
 import Text.ParserCombinators.Parsec (parse, parseFromFile)
 import Test.HUnit
-import Distribution.TestSuite
 
 main = runTestTT allTests
 
-allTests = TestList [typeCheckerTests, interpreterTests]
+allTests = TestList [parserTests, typeCheckerTests, interpreterTests]
+
+parserTests = TestLabel "Parser" $ TestList [
+  testCase parserSuccess "AttributeParsing"
+  ]
 
 typeCheckerTests = TestLabel "TypeChecker" $ TestList [
-  TestLabel "TypeVarClash" (TestCase $ typeCheckerFailure "tests/TypeVarClash.bpl")
+  testCase (typeCheckerFailure 8)   "BadLabels",
+  testCase (typeCheckerFailure 4)   "Orderings",
+  testCase (typeCheckerFailure 2)   "WhereResolution",
+  testCase (typeCheckerFailure 35)  "Arrays",
+  testCase (typeCheckerFailure 15)  "Frame",
+  testCase (typeCheckerFailure 3)   "FunBody",
+  testCase (typeCheckerFailure 3)   "IfThenElse",
+  testCase (typeCheckerFailure 4)   "Lambda",
+  testCase (typeCheckerFailure 12)  "UpdateExprTyping",
+  testCase (typeCheckerFailure 1)   "TypeVarClash"
   ]
 
 interpreterTests = TestLabel "Interpreter" $ TestList [
-  TestLabel "NoGuards" (TestCase $ interpreterSuccess "tests/NoGuards.bpl"),
-  TestLabel "EmptyDomains" (TestCase $ interpreterSuccess "tests/EmptyDomains.bpl")
+  testCase interpreterSuccess "NoGuards",
+  testCase interpreterSuccess "EmptyDomains"
   ]
   
--- | Test that type checker fails on file  
-typeCheckerFailure file = do 
+-- | Directory with test programs  
+testDir = "tests"  
+-- | Entry point for test programs      
+entryPoint = "Test"        
+  
+testCase kind name = TestLabel name (TestCase $ kind (testDir </> name <.> "bpl")) 
+  
+-- | Test that parser fails on file  
+parserFailure file = do 
+  parseResult <- parseFromFile program file
+  case parseResult of
+    Left parseErr -> return ()
+    Right p -> assertFailure ("Undetected syntax error")  
+  
+-- | Test that parser succeeds on file, and re-parsing pretty printer code produces the same AST
+parserSuccess file = do 
+  parseResult <- parseFromFile program file
+  case parseResult of
+    Left parseErr -> assertFailure (show parseErr)
+    Right p -> case parse program ('*' : file) (show p) of
+      Left parseErr' -> assertFailure (show parseErr')
+      Right p' -> if p == p'
+        then return ()
+        else assertFailure "Re-parsing resulted in a different AST"
+  
+-- | Test that type checker reports n errors on file  
+typeCheckerFailure n file = do 
   parseResult <- parseFromFile program file
   case parseResult of
     Left parseErr -> assertFailure (show parseErr)
     Right p -> case checkProgram p of
-      Left typeErrs -> return ()
-      Right context -> assertFailure ("Undetected type error")  
+      Left typeErrs -> let m = length typeErrs in assertBool ("Expected " ++ show n ++ " type errors and got " ++ show m) (m == n)
+      Right context -> assertFailure ("Expected " ++ show n ++ " type errors and got 0")
       
 -- | Test that type checker succeeds on file
 typeCheckerSuccess file = do 
@@ -40,9 +79,6 @@ typeCheckerSuccess file = do
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
       Right context -> return ()
       
--- | Entry point for test programs      
-entryPoint = "Test"      
-
 -- | Test that interpreter succeeds (no run-time failures or crashes) on procedure entryPoint in file      
 interpreterSuccess file = do 
   parseResult <- parseFromFile program file

@@ -357,11 +357,11 @@ checkMapSelection c m args = do
     MapType tv domainTypes rangeType -> do
       actualTypes <- mapAccum (checkExpression c) noType args
       case oneSidedUnifier tv domainTypes (ctxTypeVars c) actualTypes of
-        Nothing -> throwTypeError (ctxPos c) (text "Could not match map domain types" <+> commaSep (map typeDoc domainTypes) <+>
-          text "against map selection types" <+> commaSep (map typeDoc actualTypes) <+>
+        Nothing -> throwTypeError (ctxPos c) (text "Could not match map domain types" <+> doubleQuotes (commaSep (map typeDoc domainTypes)) <+>
+          text "against map selection types" <+> doubleQuotes (commaSep (map typeDoc actualTypes)) <+>
           text "for the map" <+> exprDoc m)
         Just u -> return (typeSubst u rangeType)
-    t -> throwTypeError (ctxPos c) (text "Map selection applied to a non-map" <+> exprDoc m <+> text "of type" <+> typeDoc t)
+    t -> throwTypeError (ctxPos c) (text "Map selection applied to a non-map" <+> exprDoc m <+> text "of type" <+> doubleQuotes (typeDoc t))
   
 checkMapUpdate :: Context -> Expression -> [Expression] -> Expression -> Checked Type
 checkMapUpdate c m args val = do 
@@ -369,7 +369,7 @@ checkMapUpdate c m args val = do
   actualT <- checkExpression c val
   if t <==> actualT 
     then checkExpression c m 
-    else throwTypeError (ctxPos c) (text "Update value type" <+> typeDoc actualT <+> text "different from map range type" <+> typeDoc t)
+    else throwTypeError (ctxPos c) (text "Update value type" <+> doubleQuotes (typeDoc actualT) <+> text "different from map range type" <+> doubleQuotes (typeDoc t))
     
 checkIfExpression :: Context -> Expression -> Expression -> Expression -> Checked Type    
 checkIfExpression c cond e1 e2 = do
@@ -395,7 +395,7 @@ checkUnaryExpression c op e
     matchType t ret = do
       t' <- checkExpression c e
       if t' <==> t then return ret else throwTypeError (ctxPos c) (errorMsg t' op)
-    errorMsg t op = text "Invalid argument type" <+> typeDoc t <+> text "to unary operator" <+> unOpDoc op
+    errorMsg t op = text "Invalid argument type" <+> doubleQuotes (typeDoc t) <+> text "to unary operator" <+> unOpDoc op
   
 checkBinaryExpression :: Context -> BinOp -> Expression -> Expression -> Checked Type
 checkBinaryExpression c op e1 e2
@@ -409,7 +409,7 @@ checkBinaryExpression c op e1 e2
       t1 <- checkExpression c e1
       t2 <- checkExpression c e2
       if pred t1 t2 then return ret else throwTypeError (ctxPos c) (errorMsg t1 t2 op)
-    errorMsg t1 t2 op = text "Invalid argument types" <+> typeDoc t1 <+> text "and" <+> typeDoc t2 <+> text "to binary operator" <+> binOpDoc op
+    errorMsg t1 t2 op = text "Invalid argument types" <+> doubleQuotes (typeDoc t1) <+> text "and" <+> doubleQuotes (typeDoc t2) <+> text "to binary operator" <+> binOpDoc op
     
 checkQuantified :: Context -> QOp -> [Id] -> [IdType] -> Expression -> Checked Type
 checkQuantified c Lambda tv vars e = do
@@ -666,7 +666,7 @@ checkParentInfo c ids t parents = if length parents /= length (nub parents)
     checkParent p = case M.lookup p (ctxConstants c) of
       Nothing -> throwTypeError (ctxPos c) (text "Not in scope: constant" <+> text p)
       Just t' -> if not (t <==> t')
-        then throwTypeError (ctxPos c) (text "Parent type" <+> typeDoc t' <+> text "is different from constant type" <+> typeDoc t)
+        then throwTypeError (ctxPos c) (text "Parent type" <+> doubleQuotes (typeDoc t') <+> text "is different from constant type" <+> doubleQuotes (typeDoc t))
         else if p `elem` ids
           then throwTypeError (ctxPos c) (text "Constant" <+> text p <+> text "is decalred to be its own parent")
           else return ()    
