@@ -1,4 +1,22 @@
-module Language.Boogie.Tester where
+-- | Automated specification-based tester
+module Language.Boogie.Tester (
+  -- * Running tests
+  testProgram,
+  testSessionSummary,
+  -- * Configurng test sessions
+  TestSettings (..),
+  defaultGenericTypeRange,
+  defaultMapTypeRange,
+  ExhaustiveSettings (..),
+  RandomSettings (..),
+  -- * Testing results
+  Outcome (..),
+  outcomeDoc,
+  TestCase (..),
+  testCaseDoc,
+  Summary (..),
+  summaryDoc
+) where
 
 import Language.Boogie.AST
 import Language.Boogie.Util
@@ -20,8 +38,9 @@ import Text.PrettyPrint
 
 {- Interface -}
     
--- | Test all implementations of all procedures procNames from program p in type context tc;
--- | requires that all procNames exist in context
+-- | 'testProgram' @settings p tc procNames@ : 
+-- Test all implementations of all procedures @procNames@ from program @p@ in type context @tc@;
+-- requires that all @procNames@ exist in @tc@
 testProgram :: TestSettings s => s -> Program -> Context -> [Id] -> [TestCase]
 testProgram settings p tc procNames = evalState testExecution (settings, initEnvironment)
   where
@@ -50,12 +69,13 @@ testSessionSummary tcs = let
             
 {- Testing session parameters -}
 
+-- | Test session parameters
 class TestSettings s where
-  -- | Generate all input values for an integer variable
+  -- | How should input values for an integer variable be generated?
   generateIntInput :: State s [Integer]
-  -- | Generate all input values for a boolean variable
+  -- | How should input values for a boolean variable be generated?
   generateBoolInput :: State s [Bool]
-  -- | Combine input values for several variables  
+  -- | How should input values for several variables be combined?
   combineInputs :: (a -> State s [b]) -> [a] -> State s [[b]]
   -- | Settings for generating map domains (always exhaustive)
   mapDomainSettings :: s -> ExhaustiveSettings
@@ -65,35 +85,40 @@ class TestSettings s where
   mapTypeRange :: s -> [Type]
   
 -- | Default range for instantiating procedure type parameters:
--- | using a single type bool is enough unless the program contains a function or a map that allows differentiating between types at runtime
+-- using a single type bool is enough unless the program contains a function or a map that allows differentiating between types at runtime
 defaultGenericTypeRange _ = [BoolType]
 
 -- | Default range for instantiating polymorphic maps:
--- | all nullary type contructors
+-- all nullary type constructors
 defaultMapTypeRange context = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors context))]  
   
+-- | Settings for exhaustive testing  
 data ExhaustiveSettings = ExhaustiveSettings {
-  esIntRange :: [Integer],            -- Input range for an integer variable
-  esIntMapDomainRange :: [Integer],   -- Input range for an integer map domain
-  esGenericTypeRange :: [Type],       -- Range of instances for a type parameter of a generic procedure under test 
-  esMapTypeRange :: [Type]            -- Range of instances for a type parameter of a polymorphic map
+  esIntRange :: [Integer],            -- ^ Input range for an integer variable
+  esIntMapDomainRange :: [Integer],   -- ^ Input range for an integer map domain
+  esGenericTypeRange :: [Type],       -- ^ Range of instances for a type parameter of a generic procedure under test 
+  esMapTypeRange :: [Type]            -- ^ Range of instances for a type parameter of a polymorphic map
 }
 
 instance TestSettings ExhaustiveSettings where
-  generateIntInput = gets esIntRange                            -- Return all integers within limits  
-  generateBoolInput = return [False, True]                      -- Return both booleans      
-  combineInputs genOne args = sequence <$> mapM genOne args     -- Use all combinations of inputs for each variable   
+  -- | Return all integers within limits  
+  generateIntInput = gets esIntRange
+  -- | Return both booleans
+  generateBoolInput = return [False, True]      
+  -- | Use all combinations of inputs for each variable   
+  combineInputs genOne args = sequence <$> mapM genOne args
   mapDomainSettings s = s { esIntRange = esIntMapDomainRange s }  
   genericTypeRange = esGenericTypeRange
   mapTypeRange = esMapTypeRange
   
+-- | Settings for random testing  
 data RandomSettings = RandomSettings {
-  rsRandomGen :: StdGen,              -- Random number generator
-  rsCount :: Int,                     -- Number of test cases to be generated (currently per type in rsGenericTypeRange, if the procedure under test is generic)
-  rsIntLimits :: (Integer, Integer),  -- Lower and upper bound for integer inputs
-  rsIntMapDomainRange :: [Integer],   -- Input range for an integer map domain
-  rsGenericTypeRange :: [Type],       -- Range of instances for a type parameter of a generic procedure under test 
-  rsMapTypeRange :: [Type]            -- Range of instances for a type parameter of a polymorphic map
+  rsRandomGen :: StdGen,              -- ^ Random number generator
+  rsCount :: Int,                     -- ^ Number of test cases to be generated (currently per type in 'rsGenericTypeRange', if the procedure under test is generic)
+  rsIntLimits :: (Integer, Integer),  -- ^ Lower and upper bound for integer inputs
+  rsIntMapDomainRange :: [Integer],   -- ^ Input range for an integer map domain
+  rsGenericTypeRange :: [Type],       -- ^ Range of instances for a type parameter of a generic procedure under test 
+  rsMapTypeRange :: [Type]            -- ^ Range of instances for a type parameter of a polymorphic map
 }
 
 setRandomGen gen rs = rs { rsRandomGen = gen }
@@ -139,6 +164,7 @@ instance Eq RuntimeFailure where
 data Outcome = Pass | Fail RuntimeFailure | Invalid RuntimeFailure
   deriving Eq
 
+-- | Pretty-printed outcome  
 outcomeDoc :: Outcome -> Doc
 outcomeDoc Pass = text "passed"
 outcomeDoc (Fail err) = text "failed: " <+> runtimeFailureDoc err
@@ -148,13 +174,14 @@ instance Show Outcome where show o = show (outcomeDoc o)
 
 -- | Description of a test case
 data TestCase = TestCase {
-  tcProcedure :: Id,      -- Procedure under test
-  tcLiveIns :: [Id],      -- Input parameters for which an input value was generated
-  tcLiveGlobals :: [Id],  -- Global variables for which an input value was generated
-  tcInput :: [Value],     -- Values for in-parameters
-  tcOutcome :: Outcome    -- Outcome
+  tcProcedure :: Id,      -- ^ Procedure under test
+  tcLiveIns :: [Id],      -- ^ Input parameters for which an input value was generated
+  tcLiveGlobals :: [Id],  -- ^ Global variables for which an input value was generated
+  tcInput :: [Value],     -- ^ Values for in-parameters
+  tcOutcome :: Outcome    -- ^ Outcome
 } deriving Eq
 
+-- | Pretty-printed test case
 testCaseDoc :: TestCase -> Doc
 testCaseDoc (TestCase procName liveIns liveGlobals input outcome) = text procName <> 
   parens (commaSep (zipWith argDoc (liveIns ++ (map ("var " ++) liveGlobals)) input)) <+>
@@ -170,14 +197,15 @@ equivalent tc1 tc2 = tcProcedure tc1 == tcProcedure tc2 && tcOutcome tc1 == tcOu
 
 -- | Test session summary
 data Summary = Summary {
-  sPassCount :: Int,            -- Number of passing test cases
-  sFailCount :: Int,            -- Number of failing test cases
-  sInvalidCount :: Int,         -- Number of invalid test cases
-  sUniqueFailures :: [TestCase] -- Unique failing test cases
+  sPassCount :: Int,            -- ^ Number of passing test cases
+  sFailCount :: Int,            -- ^ Number of failing test cases
+  sInvalidCount :: Int,         -- ^ Number of invalid test cases
+  sUniqueFailures :: [TestCase] -- ^ Unique failing test cases
 }
 
 totalCount s = sPassCount s + sFailCount s + sInvalidCount s
 
+-- | Pretty-printed test session summary
 summaryDoc :: Summary -> Doc
 summaryDoc summary = 
   text "Test cases:" <+> int (totalCount summary) $+$

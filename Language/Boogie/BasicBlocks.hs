@@ -1,4 +1,4 @@
-{- Basic block transformation for imperative Boogie code -}
+-- | Basic block transformation for imperative Boogie code
 module Language.Boogie.BasicBlocks (toBasicBlocks, startLabel) where
 
 import Language.Boogie.AST
@@ -10,11 +10,11 @@ import Control.Monad.State
 import Control.Applicative
 
 -- | Transform procedure body into a sequence of basic blocks.
--- | A basic block starts with a label and contains no jump, if or while statements,
--- | except for the last statement, which can be a goto or return.
+-- A basic block starts with a label and contains no jump, if or while statements,
+-- except for the last statement, which can be a goto or return.
 toBasicBlocks :: Block -> [BasicBlock]
 toBasicBlocks body = let 
-  tbs = evalState (concat <$> (mapM (transform M.empty) (map contents body))) 0
+  tbs = evalState (concat <$> (mapM (transform M.empty) (map node body))) 0
   -- By the properties of transform, tbs' is a sequence of basic blocks
   tbs' = attach startLabel (tbs ++ [justBareStatement Return])  
   -- Append a labeled statement to a sequence of basic blocks
@@ -51,7 +51,7 @@ genFreshLabel :: String -> Int -> (String, Int)
 genFreshLabel kind i = (show i ++ "_" ++ kind, i + 1)
 
 -- | transform m statement: transform statement into a sequence of basic blocks;
--- | m is a map from statement labels to labels of their exit points (used for break)
+-- m is a map from statement labels to labels of their exit points (used for break)
 transform :: Map Id Id -> BareLStatement -> State Int [BareLStatement]  
 transform m (l:lbs, Pos p Skip) = do
   t <- transform m (lbs, Pos p Skip)
@@ -115,5 +115,5 @@ transform m ([], Pos p stmt) = case stmt of
       [justLabel lDone]    
   _ -> return [justStatement p stmt]  
   where
-    transBlock m b = concat <$> mapM (transform m) (map contents b)
+    transBlock m b = concat <$> mapM (transform m) (map node b)
     checkInvariant inv = justStatement (position (specExpr inv)) (Predicate inv)

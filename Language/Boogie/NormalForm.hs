@@ -1,4 +1,4 @@
-{- Various normal forms of Boolean expressions -}
+-- | Various normal forms of Boolean expressions
 module Language.Boogie.NormalForm where
 
 import Language.Boogie.AST
@@ -9,11 +9,11 @@ import Data.Map (Map, (!))
 import qualified Data.Map as M
 
 -- | Negation normal form of a Boolean expression:
--- | no negation above boolean connectives, quantifiers or relational operators;
--- | no boolean connectives except && and ||.
+-- no negation above boolean connectives, quantifiers or relational operators;
+-- no boolean connectives except @&&@ and @||@
 negationNF :: Context -> Expression -> Expression
-negationNF c boolExpr = case contents boolExpr of
-  UnaryExpression Not e -> case contents e of
+negationNF c boolExpr = case node boolExpr of
+  UnaryExpression Not e -> case node e of
     UnaryExpression Not e' -> negationNF c e'
     BinaryExpression And e1 e2 -> negationNF c (enot e1) ||| negationNF c (enot e2)
     BinaryExpression Or e1 e2 -> negationNF c (enot e1) |&| negationNF c (enot e2)
@@ -45,13 +45,13 @@ negationNF c boolExpr = case contents boolExpr of
   _ -> boolExpr
 
 -- | Prenex normal form of a Boolean expression:
--- | all quantifiers are pushed to the outside and any two quantifiers of the same kind in a row are glued together.
--- | Requires expression to be in the negation normal form.  
+-- all quantifiers are pushed to the outside and any two quantifiers of the same kind in a row are glued together.
+-- Requires expression to be in the negation normal form.  
 prenexNF :: Expression -> Expression
 prenexNF boolExpr = (glue . rawPrenex) boolExpr
   where
     -- | Push all quantifiers to the front
-    rawPrenex boolExpr = case contents boolExpr of
+    rawPrenex boolExpr = case node boolExpr of
       -- We only have to consider && and || because boolExpr is in negation normal form
       BinaryExpression op e1 e2 | op == And || op == Or -> merge (++ "1") (++ "2") op (rawPrenex e1) (rawPrenex e2)
       _ -> boolExpr
@@ -67,14 +67,14 @@ prenexNF boolExpr = (glue . rawPrenex) boolExpr
     typeBinding r tv = M.fromList $ zip tv (map (nullaryType . r) tv)
     renameVar r tv (id, t) = (r id, typeSubst (typeBinding r tv) t)
     -- | Glue together any two quantifiers of the same kind in a row
-    glue boolExpr = attachPos (position boolExpr) (glue' (contents boolExpr))
+    glue boolExpr = attachPos (position boolExpr) (glue' (node boolExpr))
     glue' boolExpr = case boolExpr of
-      Quantified qop tv vars e -> case contents e of
+      Quantified qop tv vars e -> case node e of
         Quantified qop' tv' vars' e' | qop == qop' -> glue' (Quantified qop (tv ++ tv') (vars ++ vars') e')
                                      | otherwise -> Quantified qop tv vars (glue e)
         _ -> boolExpr
       _ -> boolExpr
 
--- | Negation and prenexNF normal form of a Boolean expression
+-- | Negation and prenex normal form of a Boolean expression
 normalize :: Context -> Expression -> Expression      
 normalize c boolExpr = prenexNF $ negationNF c boolExpr

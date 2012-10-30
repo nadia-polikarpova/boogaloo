@@ -1,3 +1,4 @@
+-- | Data-flow analysis on Boogie code
 module Language.Boogie.DataFlow (liveVariables, liveInputVariables) where
 
 import Language.Boogie.AST
@@ -12,8 +13,9 @@ import qualified Data.Set as S
 
 {- Interface -}
 
--- | Input parameters (in the order they appear in the signature) and global names, 
--- | whose initial value might be read by the procedure implementation def
+-- | 'liveInputVariables' @sig def@ : 
+-- Input parameters (in the order they appear in @sig@) and global names, 
+-- whose initial value might be read by the procedure implementation @def@
 liveInputVariables :: PSig -> PDef -> ([Id], [Id])
 liveInputVariables sig def = let
   body = pdefBody def
@@ -37,9 +39,9 @@ liveVariables body = let
 {- Implementation -}
 
 -- | Analyse live variable in body, 
--- | starting from live variables at the entry to each block entry,
--- | live variables at the exit of each block exit,
--- | and the set of blocks whose exit set might have changed changed.
+-- starting from live variables at the entry to each block entry,
+-- live variables at the exit of each block exit,
+-- and the set of blocks whose exit set might have changed changed.
 analyse :: Map Id [Statement] -> Map Id (Set Id) -> Map Id (Set Id) -> Set Id -> Map Id (Set Id)
 analyse body entry exit changed = if S.null changed
   then entry
@@ -58,7 +60,7 @@ analyse body entry exit changed = if S.null changed
 setUnions sets = S.foldl S.union S.empty sets
 
 -- | Variables that are live before a sequence of statements sts,
--- | if the final live variables are exit
+-- if the final live variables are exit
 transition :: [Statement] -> Set Id -> Set Id
 transition sts exit = foldr transition1 exit sts
   where
@@ -66,7 +68,7 @@ transition sts exit = foldr transition1 exit sts
 
 -- | Variables that are not live anymore as a result of st    
 kill :: Statement -> Set Id
-kill st = case contents st of
+kill st = case node st of
   Havoc ids     -> S.fromList ids
   Assign lhss _ -> S.fromList (map fst lhss)
   Call lhss _ _ -> S.fromList lhss
@@ -82,7 +84,7 @@ genOld st = genTwoState snd st
   
 -- | Variables mentioned in st in either current state or old state
 genTwoState :: (([Id], [Id]) -> [Id]) -> Statement -> Set Id
-genTwoState select st = case contents st of
+genTwoState select st = case node st of
   Predicate (SpecClause _ _ e) -> (S.fromList . select . freeVarsTwoState) e
   Assign lhss rhss -> let 
     allSubscipts = concat $ concatMap snd lhss
@@ -99,7 +101,7 @@ genTwoState select st = case contents st of
 exitBlocks :: Map Id [Statement] -> Set Id
 exitBlocks body = M.keysSet $ M.filter isExit body
   where
-    isExit block = case contents (last block) of
+    isExit block = case node (last block) of
       Return -> True
       _ -> False
       
@@ -107,18 +109,18 @@ exitBlocks body = M.keysSet $ M.filter isExit body
 predecessors :: Map Id [Statement] -> Id -> Set Id
 predecessors body label = M.keysSet $ M.filter (goesTo label) body
   where
-    goesTo label block = case contents (last block) of
+    goesTo label block = case node (last block) of
       Goto lbs -> label `elem` lbs
       _ -> False
       
 -- | Blocks in body that have an incoming edge from label  
 successors :: Map Id [Statement] -> Id -> Set Id
-successors body label = case contents (last (body ! label)) of
+successors body label = case node (last (body ! label)) of
   Goto lbs -> S.fromList lbs
   _ -> S.empty
   
 -- | Body of the implementation def of procedure sig with pre- and postcondition checks embedded;
--- | (used to extract live variables from contracts)
+-- (used to extract live variables from contracts)
 attachContractChecks :: PSig -> PDef -> Map Id [Statement]
 attachContractChecks sig def = let
   preChecks = map (attachPos (pdefPos def) . Predicate . subst sig) (psigRequires sig)
@@ -126,7 +128,7 @@ attachContractChecks sig def = let
   subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
   attachPreChecks = M.adjust (preChecks ++) startLabel (snd (pdefBody def))
   attachPostChecks block = let jump = last block
-    in case contents jump of
+    in case node jump of
       Return -> init block ++ postChecks ++ [jump]
       _ -> block
   in M.map attachPostChecks attachPreChecks  

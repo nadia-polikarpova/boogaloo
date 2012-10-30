@@ -1,5 +1,49 @@
-{- Various properties and transformations of Boogie program elements -}
-module Language.Boogie.Util where
+-- | Various properties and transformations of Boogie program elements
+module Language.Boogie.Util ( 
+  -- * Types
+  TypeBinding,
+  typeSubst,
+  isFreeIn,
+  unifier,
+  oneSidedUnifier,
+  boundUnifier,
+  (<==>),
+  -- * Expressions
+  freeVarsTwoState,
+  freeVars,
+  freeOldVars,
+  VarBinding,
+  exprSubst,
+  paramSubst,
+  -- * Specs
+  preconditions,
+  postconditions,
+  modifies,
+  assumePreconditions,
+  -- * Funstions and procedures
+  FSig (..),
+  FDef (..),
+  PSig (..),
+  psigParams,
+  psigArgTypes,
+  psigRetTypes,
+  psigModifies,
+  psigRequires,
+  psigEnsures,
+  PDef (..),
+  -- * Code generation
+  num, eneg, enot,
+  (|+|), (|-|), (|*|), (|/|), (|%|), (|=|), (|!=|), (|<|), (|<=|), (|>|), (|>=|), (|&|), (|||), (|=>|), (|<=>|),
+  assume,
+  -- * Misc
+  interval,
+  fromRight,
+  mapFst,
+  mapSnd,
+  mapBoth,
+  changeState,
+  withLocalState
+) where
 
 import Language.Boogie.AST
 import Language.Boogie.Position
@@ -16,8 +60,9 @@ import Control.Monad.State
 -- | Mapping from type variables to types
 type TypeBinding = Map Id Type
 
--- | typeSubst binding t : substitute all free type variables in t according to binding.
--- | All variables in the domain of bindings are considered free if not explicitly bound. 
+-- | 'typeSubst' @binding t@ :
+-- Substitute all free type variables in @t@ according to binding;
+-- all variables in the domain of @bindings@ are considered free if not explicitly bound
 typeSubst :: TypeBinding -> Type -> Type
 typeSubst _ BoolType = BoolType
 typeSubst _ IntType = IntType
@@ -28,19 +73,19 @@ typeSubst binding (Instance id args) = Instance id (map (typeSubst binding) args
 typeSubst binding (MapType bv domains range) = MapType bv (map (typeSubst removeBound) domains) (typeSubst removeBound range)
   where removeBound = deleteAll bv binding
   
--- | Type binding that replaces type variables tvs with type variables tvs'  
+-- | 'fromTVNames' @tvs tvs'@ : type binding that replaces type variables @tvs@ with type variables @tvs'@
 fromTVNames :: [Id] -> [Id] -> TypeBinding
 fromTVNames tvs tvs' = M.fromList (zip tvs (map nullaryType tvs'))
   
--- | x `isFreeIn` t : does x occur as a free type variable in t?
--- x must not be a name of a type constructor.  
+-- | @x@ `isFreeIn` @t@ : does @x@ occur as a free type variable in @t@?
+-- @x@ must not be a name of a type constructor
 isFreeIn :: Id -> Type -> Bool
 x `isFreeIn` (Instance y []) = x == y
 x `isFreeIn` (Instance y args) = any (x `isFreeIn`) args
 x `isFreeIn` (MapType bv domains range) = x `notElem` bv && any (x `isFreeIn`) (range:domains)
 _ `isFreeIn` _ = False
   
--- | unifier fv xs ys : most general unifier of xs and ys with shared free type variables fv   
+-- | 'unifier' @fv xs ys@ : most general unifier of @xs@ and @ys@ with shared free type variables @fv@
 unifier :: [Id] -> [Type] -> [Type] -> Maybe TypeBinding
 unifier _ [] [] = Just M.empty
 unifier fv (IntType:xs) (IntType:ys) = unifier fv xs ys
@@ -62,8 +107,9 @@ unifier fv ((MapType bv1 domains1 range1):xs) ((MapType bv2 domains2 range2):ys)
     update u = map (typeSubst u)
 unifier _ _ _ = Nothing
 
--- | New names for type variables tvs that are disjoint from tvs'
--- | (If tvs does not have duplicates, then result also does not have duplicates)
+-- | 'removeClashesWith' @tvs tvs'@ :
+-- New names for type variables @tvs@ that are disjoint from @tvs'@
+-- (if @tvs@ does not have duplicates, then result also does not have duplicates)
 removeClashesWith :: [Id] -> [Id] -> [Id]
 removeClashesWith tvs tvs' = map freshName tvs
   where
@@ -72,9 +118,10 @@ removeClashesWith tvs tvs' = map freshName tvs
     -- maximum number of nonIdChar characters at the beginning of a tvs'; by prepending (level + 1) nonIdChar charactes to tv we make is different from all tvs'
     level = maximum [fromJust (findIndex (\c -> c /= nonIdChar) id) | id <- tvs']
 
--- | Most general unifier of xs and ys,
--- | where only xs contain free variables (fv),
--- | while ys contain rigid type variables tv, which might clash with fv    
+-- | 'oneSidedUnifier' @fv xs tv ys@ : 
+-- Most general unifier of @xs@ and @ys@,
+-- where only @xs@ contain free variables (@fv@),
+-- while @ys@ contain rigid type variables @tv@, which might clash with @fv@
 oneSidedUnifier :: [Id] -> [Type] -> [Id] -> [Type] -> Maybe TypeBinding    
 oneSidedUnifier fv xs tv ys = M.map old <$> unifier fv xs (map new ys)
   where
@@ -82,9 +129,10 @@ oneSidedUnifier fv xs tv ys = M.map old <$> unifier fv xs (map new ys)
     new = typeSubst (fromTVNames tv freshTV)
     old = typeSubst (fromTVNames freshTV tv)
 
--- | Most general unifier of xs and ys,
--- | where bv1 are bound type variables in xs and bv2 are bound type variables in ys,
--- | and fv are free type variables of the enclosing context
+-- | 'boundUnifier' @fv bv1 xs bv2 ys@ :   
+-- Most general unifier of @xs@ and @ys@,
+-- where @bv1@ are bound type variables in @xs@ and @bv2@ are bound type variables in @ys@,
+-- and @fv@ are free type variables of the enclosing context
 boundUnifier :: [Id] -> [Id] -> [Type] -> [Id] -> [Type] -> Maybe TypeBinding
 boundUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= length ys 
   then Nothing
@@ -105,17 +153,16 @@ boundUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= leng
       free = deleteAll bv1
       -- binding restricted to bound variables
       bound = deleteAll (fv \\ bv1)
-      -- type list updated with all free variables updated according to binding u      
       
 -- | Semantic equivalence on types
--- | (equality up to renaming of bound type variables)
+-- (equality up to renaming of bound type variables)
 t1 <==> t2 = isJust (unifier [] [t1] [t2])       
   
 {- Expressions -}
 
 -- | Free variables in an expression, referred to in current state and old state
 freeVarsTwoState :: Expression -> ([Id], [Id])
-freeVarsTwoState e = freeVarsTwoState' (contents e)
+freeVarsTwoState e = freeVarsTwoState' (node e)
 
 freeVarsTwoState' FF = ([], [])
 freeVarsTwoState' TT = ([], [])
@@ -131,14 +178,16 @@ freeVarsTwoState' (UnaryExpression _ e) = freeVarsTwoState e
 freeVarsTwoState' (BinaryExpression _ e1 e2) = mapBoth (nub . concat) (unzip [freeVarsTwoState e1, freeVarsTwoState e2])
 freeVarsTwoState' (Quantified _ _ boundVars e) = let (state, old) = freeVarsTwoState e in (state \\ map fst boundVars, old)
 
+-- | Free variables in an expression, in current state
 freeVars = fst . freeVarsTwoState
+-- | Free variables in an expression, in old state
 freeOldVars = snd . freeVarsTwoState
 
 -- | Mapping from variables to expressions
 type VarBinding = Map Id BareExpression
 
--- | exprSubst binding e : substitute all free variables in e according to binding.
--- | All variables in the domain of bindings are considered free if not explicitly bound. 
+-- | 'exprSubst' @binding e@ : substitute all free variables in @e@ according to @binding@;
+-- all variables in the domain of @bindings@ are considered free if not explicitly bound
 exprSubst :: VarBinding -> Expression -> Expression
 exprSubst binding (Pos pos e) = attachPos pos $ exprSubst' binding e
 
@@ -157,7 +206,8 @@ exprSubst' binding (Quantified qop tv boundVars e) = Quantified qop tv boundVars
   where binding' = deleteAll (map fst boundVars) binding
 exprSubst' _ e = e
 
--- | Binding of parameter names from procedure signature sig to their equivalents from procedure definition def
+-- | 'paramBinding' @sig def@ :
+-- Binding of parameter names from procedure signature @sig@ to their equivalents from procedure definition @def@
 paramBinding :: PSig -> PDef -> VarBinding
 paramBinding sig def = M.fromList $ zip (sigIns ++ sigOuts) (defIns ++ defOuts)
   where
@@ -166,7 +216,8 @@ paramBinding sig def = M.fromList $ zip (sigIns ++ sigOuts) (defIns ++ defOuts)
     defIns = map Var $ pdefIns def
     defOuts = map Var $ pdefOuts def
   
--- | Substitute parameter names from sig in an expression with their equivalents from def  
+-- | 'paramSubst' @sig def@ :
+-- Substitute parameter names from @sig@ in an expression with their equivalents from @def@
 paramSubst :: PSig -> PDef -> Expression -> Expression  
 paramSubst sig def = if not (pdefParamsRenamed def) 
   then id 
@@ -174,21 +225,21 @@ paramSubst sig def = if not (pdefParamsRenamed def)
 
 {- Specs -}
 
--- | All precondition clauses in specs  
+-- | 'preconditions' @specs@ : all precondition clauses in @specs@  
 preconditions :: [Contract] -> [SpecClause]
 preconditions specs = catMaybes (map extractPre specs)
   where 
     extractPre (Requires f e) = Just (SpecClause Precondition f e)
     extractPre _ = Nothing
 
--- | All postcondition clauses in specs    
+-- | 'postconditions' @specs@ : all postcondition clauses in @specs@     
 postconditions :: [Contract] -> [SpecClause]
 postconditions specs = catMaybes (map extractPost specs)
   where 
     extractPost (Ensures f e) = Just (SpecClause Postcondition f e)
     extractPost _ = Nothing
    
--- | All modifies clauses in specs   
+-- | 'modifies' @specs@ : all modifies clauses in @specs@   
 modifies :: [Contract] -> [Id]
 modifies specs = (nub . concat . catMaybes) (map extractMod specs)
   where
@@ -206,43 +257,49 @@ assumePreconditions sig = sig { psigContracts = map assumePrecondition (psigCont
 
 -- | Function signature
 data FSig = FSig {
-    fsigName :: Id,         -- Function name
-    fsigTypeVars :: [Id],   -- Type variables
-    fsigArgTypes :: [Type], -- Argument types
-    fsigRetType :: Type     -- Return type
+    fsigName :: Id,         -- ^ Function name
+    fsigTypeVars :: [Id],   -- ^ Type variables
+    fsigArgTypes :: [Type], -- ^ Argument types
+    fsigRetType :: Type     -- ^ Return type
   }
   
 -- | Function definition
 data FDef = FDef {
-    fdefArgs  :: [Id],       -- Argument names (in the same order as fsigArgTypes in the corresponding signature)
-    fdefGuard :: Expression, -- Condition under which this definition applies    
-    fdefBody  :: Expression  -- Body 
+    fdefArgs  :: [Id],       -- ^ Argument names (in the same order as 'fsigArgTypes' in the corresponding signature)
+    fdefGuard :: Expression, -- ^ Condition under which this definition applies    
+    fdefBody  :: Expression  -- ^ Body 
   }
  
 -- | Procedure signature 
 data PSig = PSig {
-    psigName :: Id,               -- Procedure name
-    psigTypeVars :: [Id],         -- Type variables
-    psigArgs :: [IdTypeWhere],    -- In-parameters
-    psigRets :: [IdTypeWhere],    -- Out-parameters
-    psigContracts :: [Contract]   -- Contracts
+    psigName :: Id,               -- ^ Procedure name
+    psigTypeVars :: [Id],         -- ^ Type variables
+    psigArgs :: [IdTypeWhere],    -- ^ In-parameters
+    psigRets :: [IdTypeWhere],    -- ^ Out-parameters
+    psigContracts :: [Contract]   -- ^ Contracts
   }
   
+-- | All parameters of a procedure signature 
 psigParams sig = psigArgs sig ++ psigRets sig
+-- | Types of in-parameters of a procedure signature
 psigArgTypes = (map itwType) . psigArgs
+-- | Types of out-parameters of a procedure signature
 psigRetTypes = (map itwType) . psigRets
+-- | Modifies clauses of a procedure signature
 psigModifies = modifies . psigContracts
+-- | Preconditions of a procedure signature
 psigRequires = preconditions . psigContracts
+-- | Postconditions of a procedure signature
 psigEnsures = postconditions . psigContracts    
   
 -- | Procedure definition;
--- | a single procedure might have multiple definitions (one per body)
+-- a single procedure might have multiple definitions (one per body)
 data PDef = PDef { 
-    pdefIns :: [Id],            -- In-parameter names (in the same order as psigArgsTypes in the corresponding signature)
-    pdefOuts :: [Id],           -- Out-parameter names (in the same order as psigRetTypes in the corresponding signature)
-    pdefParamsRenamed :: Bool,  -- Are any parameter names in this definition different for the procedure signature? (used for optimizing parameter renaming, True is a safe default)
-    pdefBody :: BasicBody,      -- Body
-    pdefPos :: SourcePos        -- Location of the (first line of the) procedure definition in the source
+    pdefIns :: [Id],            -- ^ In-parameter names (in the same order as 'psigArgs' in the corresponding signature)
+    pdefOuts :: [Id],           -- ^ Out-parameter names (in the same order as 'psigRets' in the corresponding signature)
+    pdefParamsRenamed :: Bool,  -- ^ Are any parameter names in this definition different for the procedure signature? (used for optimizing parameter renaming, True is a safe default)
+    pdefBody :: BasicBody,      -- ^ Body
+    pdefPos :: SourcePos        -- ^ Location of the (first line of the) procedure definition in the source
   }
 
 {- Code generation -}
@@ -269,14 +326,14 @@ assume e = attachPos (position e) (Predicate (SpecClause Inline True e))
   
 {- Misc -}
 
--- | Interval from lo to hi
+-- | 'interval' @(lo, hi)@ : Interval from @lo@ to @hi@
 interval (lo, hi) = [lo..hi]
 
--- | Extracts the element out of a Right and throws an error if its argument is Left 
+-- | Extract the element out of a 'Right' and throw an error if its argument is 'Left'
 fromRight :: Either a b -> b
 fromRight (Right x) = x
 
--- | deleteAll keys m : map m with keys removed from its domain
+-- | 'deleteAll' @keys m@ : map @m@ with @keys@ removed from its domain
 deleteAll :: Ord k => [k] -> Map k a -> Map k a
 deleteAll keys m = foldr M.delete m keys
 
@@ -284,7 +341,7 @@ mapFst f (x, y) = (f x, y)
 mapSnd f (x, y) = (x, f y)
 mapBoth f (x, y) = (f x, f y)
 
--- | Execute a computation with state of type t inside a computation with state of type s  
+-- | Execute a computation with state of type @t@ inside a computation with state of type @s@
 changeState :: (s -> t) -> (t -> s -> s) -> State t a -> State s a
 changeState getter modifier e = do
   st <- gets getter
@@ -292,6 +349,7 @@ changeState getter modifier e = do
   modify $ modifier st'
   return res  
 
--- | Execute e in current state modified by localState, and then restore current state
+-- | 'withLocalState' @localState e@ :
+-- Execute @e@ in current state modified by @localState@, and then restore current state
 withLocalState :: (s -> t) -> State t a -> State s a
 withLocalState localState e = changeState localState (flip const) e

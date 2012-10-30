@@ -1,5 +1,24 @@
-{- Pretty printer for Boogie 2 -}
-module Language.Boogie.PrettyPrinter where
+-- | Pretty printer for Boogie 2
+module Language.Boogie.PrettyPrinter (
+  -- * Pretty-printing programs
+  programDoc,
+  renderWithTabs,
+  typeDoc,
+  exprDoc,
+  statementDoc,
+  declDoc,
+  -- * Utility
+  newline,
+  vsep,
+  commaSep,
+  angles,
+  spaces,  
+  option,
+  optionMaybe,
+  unOpDoc,
+  binOpDoc,
+  sigDoc
+) where
 
 import Language.Boogie.AST
 import Language.Boogie.Position
@@ -28,12 +47,16 @@ renderWithTabs = fullRender (mode style) (lineLength style) (ribbonsPerLine styl
       
 {- Tokens -}
 
-unOpDoc op = text (token op unOpTokens)
-binOpDoc op = text (token op binOpTokens)
-qOpDoc op = text (token op qOpTokens)
+-- | Pretty-printed unary operator
+unOpDoc op = text (opName op unOpTokens)
+-- | Pretty-printed binary operator
+binOpDoc op = text (opName op binOpTokens)
+-- | Pretty-printed quantifier
+qOpDoc op = text (opName op qOpTokens)
 
 {- Types -}
 
+-- | Pretty-printed type
 typeDoc :: Type -> Doc
 typeDoc BoolType = text "bool"
 typeDoc IntType = text "int"
@@ -44,6 +67,7 @@ typeDoc (Instance id args) = text id <+> hsep (map typeDoc args)
 
 instance Show Type where show t = show (typeDoc t)
 
+-- | Pretty-printed function or procedure signature
 sigDoc :: [Type] -> [Type] -> Doc
 sigDoc argTypes retTypes = parens(commaSep (map typeDoc argTypes)) <+> 
   text "returns" <+> 
@@ -68,16 +92,16 @@ power (UnaryExpression _ _) = 7
 power (BinaryExpression op _ _) 
   | op `elem` [Times, Div, Mod] = 6 
   | op `elem` [Plus, Minus] = 5
--- | op `elem` [Concat] = 4
   | op `elem` [Eq, Neq, Ls, Leq, Gt, Geq, Lc] = 3
   | op `elem` [And, Or] = 2
   | op `elem` [Implies, Explies] = 1
   | op `elem` [Equiv] = 0
 
+-- | Pretty-printed expression  
 exprDoc :: Expression -> Doc
 exprDoc e = exprDocAt (-1) e
 
--- | exprDocAt expr: print expr in a context with binding power n
+-- | 'exprDocAt' @n expr@ : print @expr@ in a context with binding power @n@
 exprDocAt :: Int -> Expression -> Doc
 exprDocAt n (Pos _ e) = condParens (n' <= n) (
   case e of
@@ -102,6 +126,7 @@ instance Show BareExpression where show e = show (exprDoc (gen e))
 
 {- Statements -}
 
+-- | Pretty-printed statement
 statementDoc :: Statement -> Doc
 statementDoc (Pos _ s) = case s of
   Predicate (SpecClause _ isAssume e) -> (if isAssume then text "assume" else text "assert") <+> exprDoc e <> semi
@@ -169,6 +194,7 @@ specClauseDoc (SpecClause t free e) = option free (text "free") <+> specTypeDoc 
 
 {- Declarations -}
 
+-- | Pretty-printed top-level declaration
 declDoc :: Decl -> Doc
 declDoc (Pos pos d) = case d of
   TypeDecl ts -> typeDeclDoc ts
@@ -256,27 +282,38 @@ implementationDoc name fv args rets bodies =
 defaultIndent = 4
 nestDef = nest defaultIndent
 
+-- | New line
 newline = char '\n'
+-- | Separate by new lines
 vsep = foldr ($+$) empty
+-- | Separate by commas
 commaSep = hsep . punctuate comma
+-- | Enclose in \< \>
 angles d = langle <> d <> rangle
   where
     langle = char '<'
     rangle = char '>'
+-- | Enclose in spaces    
 spaces d = space <> d <> space
 
+-- | Conditionally produce a doc
 option b doc = if b then doc else empty
 
+-- | Convert a 'Just' value to doc
 optionMaybe mVal toDoc = case mVal of
   Nothing -> empty
   Just val -> toDoc val
   
+-- | Conditionally enclose in parentheses  
 condParens b doc = if b then parens doc else doc
     
-typeArgsDoc fv = option (not (null fv)) (angles (commaSep (map text fv)))
+-- | Pretty-printed type arguments     
+typeArgsDoc tv = option (not (null tv)) (angles (commaSep (map text tv)))
 
+-- | Pretty-printed name declaration
 idTypeDoc (id, t) = text id <> text ":" <+> typeDoc t
 
+-- | Pretty-printed name declaration with a where clause
 idTypeWhereDoc (IdTypeWhere id t w) = idTypeDoc (id, t) <+> case w of
   (Pos _ TT) -> empty
   e -> text "where" <+> exprDoc e

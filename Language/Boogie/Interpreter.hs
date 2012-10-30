@@ -1,5 +1,42 @@
-{- Interpreter for Boogie 2 -}
-module Language.Boogie.Interpreter where
+{-# LANGUAGE FlexibleContexts #-}
+
+-- | Interpreter for Boogie 2
+module Language.Boogie.Interpreter (
+  -- * Executing programs
+  executeProgram,
+  -- * State
+  Value (..),
+  Environment (..),
+  emptyEnv,
+  lookupFunction,
+  lookupProcedure,
+  modifyTypeContext,
+  setV,
+  setAll,
+  -- * Executions
+  Execution,
+  SafeExecution,
+  execSafely,
+  execUnsafely,
+  -- * Run-time failures
+  FailureSource (..),
+  InternalCode,
+  StackFrame (..),
+  StackTrace,
+  RuntimeFailure (..),  
+  FailureKind (..),
+  failureKind,
+  -- * Executing parts of programs
+  eval,
+  exec,
+  execProcedure,
+  collectDefinitions,
+  -- * Pretty-printing
+  valueDoc,
+  varsDoc,
+  functionsDoc,
+  runtimeFailureDoc
+  ) where
 
 import Language.Boogie.AST
 import Language.Boogie.Util
@@ -7,7 +44,7 @@ import Language.Boogie.Intervals
 import Language.Boogie.Position
 import Language.Boogie.Tokens (nonIdChar)
 import Language.Boogie.PrettyPrinter
-import Language.Boogie.TypeChecker hiding (checkWhere)
+import Language.Boogie.TypeChecker
 import Language.Boogie.NormalForm
 import Language.Boogie.BasicBlocks
 import Data.List
@@ -20,9 +57,10 @@ import Text.PrettyPrint
 
 {- Interface -}
 
--- | Execute program p in type context tc starting from procedure entryPoint, 
--- | and return the final environment;
--- | requires that entryPoint have no in- or out-parameters
+-- | 'executeProgram' @p tc entryPoint@ :
+-- Execute program @p@ in type context @tc@ starting from procedure @entryPoint@, 
+-- and return the final environment;
+-- requires that @entryPoint@ have no in- or out-parameters
 executeProgram :: Program -> Context -> Id -> Either RuntimeFailure Environment
 executeProgram p tc entryPoint = finalEnvironment
   where
@@ -36,10 +74,11 @@ executeProgram p tc entryPoint = finalEnvironment
               
 {- State -}
 
-data Value = IntValue Integer |   -- Integer value
-  BoolValue Bool |                -- Boolean value
-  MapValue (Map [Value] Value) |  -- Value of a map type
-  CustomValue Integer             -- Value of a user-defined type (values with the same code are considered equal)
+-- | Run-time value
+data Value = IntValue Integer |   -- ^ Integer value
+  BoolValue Bool |                -- ^ Boolean value
+  MapValue (Map [Value] Value) |  -- ^ Value of a map type
+  CustomValue Integer             -- ^ Value of a user-defined type (values with the same code are considered equal)
   deriving (Eq, Ord)
       
 -- | Default value of a type (used to initialize variables)  
@@ -61,17 +100,19 @@ valueDoc (CustomValue n) = text "custom_" <> integer n
 instance Show Value where
   show v = show (valueDoc v)
 
+-- | Execution state
 data Environment = Environment
   {
-    envLocals :: Map Id Value,          -- Local variable names to values
-    envGlobals :: Map Id Value,         -- Global variable names to values
-    envOld :: Map Id Value,             -- Global variable names to old values (in two-state contexts)
-    envConstants :: Map Id Expression,  -- Constant names to expressions
-    envFunctions :: Map Id [FDef],      -- Function names to definitions
-    envProcedures :: Map Id [PDef],     -- Procedure names to definitions
-    envTypeContext :: Context           -- Type context (see TypeChecker)
+    envLocals :: Map Id Value,          -- ^ Local variable names to values
+    envGlobals :: Map Id Value,         -- ^ Global variable names to values
+    envOld :: Map Id Value,             -- ^ Global variable names to old values (in two-state contexts)
+    envConstants :: Map Id Expression,  -- ^ Constant names to expressions
+    envFunctions :: Map Id [FDef],      -- ^ Function names to definitions
+    envProcedures :: Map Id [PDef],     -- ^ Procedure names to definitions
+    envTypeContext :: Context           -- ^ Type context
   }
    
+-- | Empty environment   
 emptyEnv = Environment
   {
     envLocals = M.empty,
@@ -83,10 +124,12 @@ emptyEnv = Environment
     envTypeContext = emptyContext
   }
   
+-- | 'lookupFunction' @id env@ : All definitions of function @id@ in @env@
 lookupFunction id env = case M.lookup id (envFunctions env) of
   Nothing -> []
   Just defs -> defs    
   
+-- | 'lookupProcedure' @id env@ : All definitions of procedure @id@ in @env@  
 lookupProcedure id env = case M.lookup id (envProcedures env) of
   Nothing -> []
   Just defs -> defs  
@@ -113,17 +156,17 @@ functionsDoc funcs = vsep $ map funcDoc (M.toList funcs)
       
 {- Executions -}
 
--- | Computations with Environment as state, which can result in either a or RuntimeFailure  
+-- | Computations with 'Environment' as state, which can result in either @a@ or 'RuntimeFailure'
 type Execution a = ErrorT RuntimeFailure (State Environment) a
 
--- | Computations with Environment as state, which always result in a
+-- | Computations with 'Environment' as state, which always result in @a@
 type SafeExecution a = State Environment a
 
--- | Execute a safe computation in an unsafe environment
+-- | 'execUnsafely' @computation@ : Execute a safe @computation@ in an unsafe environment
 execUnsafely :: SafeExecution a -> Execution a
 execUnsafely computation = ErrorT (Right <$> computation)
 
--- | Execute an unsafe computation in a safe environment, handling errors that occur in computation with handler
+-- | 'execSafely' @computation handler@ : Execute an unsafe @computation@ in a safe environment, handling errors that occur in @computation@ with @handler@
 execSafely :: Execution a -> (RuntimeFailure -> SafeExecution a) -> SafeExecution a
 execSafely computation handler = do
   eres <- runErrorT computation
@@ -145,15 +188,16 @@ instance (Error e, Monad m) => Finalizer (ErrorT e m) where
     cleanup
     return res  
           
--- | Set value of variable id to val.
--- | id has to be declared in the current type context.
+-- | 'setV' @id val@ : set value of variable @id@ to @val@;
+-- @id@ has to be declared in the current type context
 setV id val = do
   tc <- gets envTypeContext
   if M.member id (localScope tc)
     then modify $ setLocal id val
     else modify $ setGlobal id val      
     
--- | Set values of variables ids to vals.  
+-- | 'setAll' @ids vals@ : set values of variables @ids@ to @vals@;
+-- all @ids@ have to be declared in the current type context
 setAll ids vals = zipWithM_ setV ids vals
 
 -- | Run execution in the old environment
@@ -179,9 +223,9 @@ restoreOld olds = do
   put env { envOld = olds }
   
 -- | Enter local scope (apply localTC to the type context and assign actuals to formals),
--- | execute computation,
--- | then restore type context and local variables to their initial values
--- executeLocally :: (MonadState Environment m, Finalizer m) => (Context -> Context) -> [Id] -> [Value] -> m a -> m a
+-- execute computation,
+-- then restore type context and local variables to their initial values
+executeLocally :: (MonadState Environment m, Finalizer m) => (Context -> Context) -> [Id] -> [Value] -> m a -> m a
 executeLocally localTC formals actuals computation = do
   oldEnv <- get
   modify $ modifyTypeContext localTC
@@ -196,9 +240,9 @@ executeLocally localTC formals actuals computation = do
 {- Nondeterminism -}  
   
 -- | Generate a value of type t,
--- | such that when it is set, guard does not fail.
--- | Fail if cannot find such a value.
--- | (So far just returns the default value, but will be more elaborate in the future)
+-- such that when it is set, guard does not fail.
+-- Fail if cannot find such a value.
+-- (So far just returns the default value, but will be more elaborate in the future)
 generateValue :: Type -> (Value -> Execution ()) -> (Execution ()) -> Execution Value          
 generateValue t set guard = let newValue = defaultValue t in
   do
@@ -209,30 +253,31 @@ generateValue t set guard = let newValue = defaultValue t in
 {- Runtime failures -}
 
 data FailureSource = 
-  SpecViolation SpecClause |    -- Violation of user-defined specification
-  DivisionByZero |              -- Division by zero  
-  UnsupportedConstruct String | -- Language construct is not yet supported (should disappear in later versions)
-  InfiniteDomain Id Interval |  -- Quantification over an infinite set
-  NoImplementation Id |         -- Call to a procedure with no implementation
-  InternalFailure InternalCode    -- Must be cought inside the interpreter and never reach the user
+  SpecViolation SpecClause |    -- ^ Violation of user-defined specification
+  DivisionByZero |              -- ^ Division by zero  
+  UnsupportedConstruct String | -- ^ Language construct is not yet supported (should disappear in later versions)
+  InfiniteDomain Id Interval |  -- ^ Quantification over an infinite set
+  NoImplementation Id |         -- ^ Call to a procedure with no implementation
+  InternalFailure InternalCode  -- ^ Must be cought inside the interpreter and never reach the user
   deriving Eq
 
 -- | Information about a procedure or function call  
 data StackFrame = StackFrame {
-  callPos :: SourcePos, -- Source code position of the call
-  callName :: Id        -- Name of procedure or function
+  callPos :: SourcePos, -- ^ Source code position of the call
+  callName :: Id        -- ^ Name of procedure or function
 } deriving Eq
 
 type StackTrace = [StackFrame]
 
+-- | Failures that occur during execution
 data RuntimeFailure = RuntimeFailure {
-  rtfSource :: FailureSource,   -- Source of the failure
-  rtfPos :: SourcePos,          -- Location where the failure occurred
-  rtfEnv :: Environment,        -- Environment at the time of failure
-  rtfTrace :: StackTrace        -- Stack trace from the program entry point to the procedure where the failure occurred
+  rtfSource :: FailureSource,   -- ^ Source of the failure
+  rtfPos :: SourcePos,          -- ^ Location where the failure occurred
+  rtfEnv :: Environment,        -- ^ Environment at the time of failure
+  rtfTrace :: StackTrace        -- ^ Stack trace from the program entry point to the procedure where the failure occurred
 }
 
--- | Throw a runtime failure
+-- | Throw a run-time failure
 throwRuntimeFailure source pos = do
   env <- get
   throwError (RuntimeFailure source pos env [])
@@ -240,12 +285,13 @@ throwRuntimeFailure source pos = do
 -- | Push frame on the stack trace of a runtime failure
 addStackFrame frame (RuntimeFailure source pos env trace) = throwError (RuntimeFailure source pos env (frame : trace))
 
--- | Kind of failure
-data FailureKind = Error | -- Error state reached (assertion violation)
-  Unreachable | -- Unreachable state reached (assumption violation)
-  Nonexecutable -- The state is OK in Boogie semantics, but the execution cannot continue due to the limitations of the interpreter
+-- | Kinds of run-time failures
+data FailureKind = Error | -- ^ Error state reached (assertion violation)
+  Unreachable | -- ^ Unreachable state reached (assumption violation)
+  Nonexecutable -- ^ The state is OK in Boogie semantics, but the execution cannot continue due to the limitations of the interpreter
   deriving Eq
 
+-- | Kind of a run-time failure
 failureKind :: RuntimeFailure -> FailureKind
 failureKind err = case rtfSource err of
   SpecViolation (SpecClause _ True _) -> Unreachable
@@ -257,6 +303,7 @@ instance Error RuntimeFailure where
   noMsg    = RuntimeFailure (UnsupportedConstruct "unknown") noPos emptyEnv []
   strMsg s = RuntimeFailure (UnsupportedConstruct s) noPos emptyEnv []
   
+-- | Pretty-printed run-time failure
 runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) $+$ 
   text "with" <+> varsDoc revelantVars $+$
   vsep (map stackFrameDoc (reverse (rtfTrace err)))
@@ -292,6 +339,7 @@ runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err)
 instance Show RuntimeFailure where
   show err = show (runtimeFailureDoc err)
   
+-- | Internal error codes 
 data InternalCode = NotLinear
   deriving Eq
 
@@ -305,7 +353,7 @@ unOp Neg (IntValue n)   = IntValue (-n)
 unOp Not (BoolValue b)  = BoolValue (not b)
 
 -- | Semi-strict semantics of binary operators:
--- | binOpLazy op lhs: returns the value of "lhs `op`" if already defined, otherwise Nothing 
+-- 'binOpLazy' @op lhs@ : returns the value of @lhs op@ if already defined, otherwise Nothing 
 binOpLazy :: BinOp -> Value -> Maybe Value
 binOpLazy And     (BoolValue False) = Just $ BoolValue False
 binOpLazy Or      (BoolValue True)  = Just $ BoolValue True
@@ -346,9 +394,9 @@ a `euclidean` b =
            | otherwise -> (q + 1, r - b)
 
 -- | Evaluate an expression;
--- | can have a side-effect of initializing variables that were not previously defined
+-- can have a side-effect of initializing variables that were not previously defined
 eval :: Expression -> Execution Value
-eval expr = case contents expr of
+eval expr = case node expr of
   TT -> return $ BoolValue True
   FF -> return $ BoolValue False
   Numeral n -> return $ IntValue n
@@ -415,7 +463,7 @@ evalMapSelection m args pos = do
   case mV of 
     MapValue map -> case M.lookup argsV map of
       Nothing -> 
-        case mapVariable tc (contents m) of
+        case mapVariable tc (node m) of
         Nothing -> return $ defaultValue rangeType -- The underlying map comes from a constant or function, nothing to check
         Just v -> generateValue rangeType (\_ -> return ()) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause
         -- Decided not to cache map access so far, because it leads to strange effects when the map is passed as an argument and can take a lot of memory 
@@ -425,7 +473,7 @@ evalMapSelection m args pos = do
     mapVariable tc (Var v) = if M.member v (allVars tc)
       then Just v
       else Nothing
-    mapVariable tc (MapUpdate m _ _) = mapVariable tc (contents m)
+    mapVariable tc (MapUpdate m _ _) = mapVariable tc (node m)
     mapVariable tc _ = Nothing 
     -- cache m map args val = setV m (MapValue (M.insert args val map))
     
@@ -462,7 +510,7 @@ type Domain = [Value]
 evalExists :: [Id] -> [IdType] -> Expression -> SourcePos -> Execution Value      
 evalExists tv vars e pos = do
   tc <- gets envTypeContext
-  case contents $ normalize tc (attachPos pos $ Quantified Exists tv vars e) of
+  case node $ normalize tc (attachPos pos $ Quantified Exists tv vars e) of
     Quantified Exists tv' vars' e' -> evalExists' tv' vars' e'
 
 evalExists' :: [Id] -> [IdType] -> Expression -> Execution Value    
@@ -487,9 +535,10 @@ evalExists' tv vars e = do
       
 {- Statements -}
 
--- | Execute a simple statement
+-- | Execute a basic statement
+-- (no jump, if or while statements allowed)
 exec :: Statement -> Execution ()
-exec stmt = case contents stmt of
+exec stmt = case node stmt of
   Predicate specClause -> execPredicate specClause (position stmt)
   Havoc ids -> execHavoc ids (position stmt)
   Assign lhss rhss -> execAssign lhss rhss
@@ -532,7 +581,7 @@ execCall lhss name args pos = do
     frame = StackFrame pos name
     
 -- | Execute program consisting of blocks starting from the block labeled label.
--- | Return the location of the exit point.
+-- Return the location of the exit point.
 execBlock :: Map Id [Statement] -> Id -> Execution SourcePos
 execBlock blocks label = let
   block = blocks ! label
@@ -544,7 +593,7 @@ execBlock blocks label = let
       Pos _ (Goto lbs) -> tryOneOf blocks lbs
   
 -- | tryOneOf blocks labels: try executing blocks starting with each of labels,
--- | until we find one that does not result in an assumption violation      
+-- until we find one that does not result in an assumption violation      
 tryOneOf :: Map Id [Statement] -> [Id] -> Execution SourcePos        
 tryOneOf blocks (l : lbs) = execBlock blocks l `catchError` retry
   where
@@ -552,7 +601,8 @@ tryOneOf blocks (l : lbs) = execBlock blocks l `catchError` retry
       | failureKind err == Unreachable && not (null lbs) = tryOneOf blocks lbs
       | otherwise = throwError err
   
--- | Execute definition def of procedure sig with actual arguments actuals and call left-hand sides lhss
+-- | 'execProcedure' @sig def args lhss@ :
+-- Execute definition @def@ of procedure @sig@ with actual arguments @args@ and call left-hand sides @lhss@
 execProcedure :: PSig -> PDef -> [Expression] -> [Expression] -> Execution [Value]
 execProcedure sig def args lhss = let 
   ins = pdefIns def
@@ -585,7 +635,7 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
 
 -- | Assume where clause of variable at a program location pos
--- | (pos will be reported as the location of the failure instead of the location of the variable definition).
+-- (pos will be reported as the location of the failure instead of the location of the variable definition).
 checkWhere id pos = do
   whereClauses <- ctxWhere <$> gets envTypeContext
   case M.lookup id whereClauses of
@@ -594,7 +644,7 @@ checkWhere id pos = do
 
 {- Preprocessing -}
 
--- | Collect constant, function and procedure definitions from p
+-- | Collect constant, function and procedure definitions from the program
 collectDefinitions :: Program -> SafeExecution ()
 collectDefinitions (Program decls) = mapM_ processDecl decls
   where
@@ -630,16 +680,16 @@ processAxiom expr = do
 
 -- | Extract constant definitions from a boolean expression bExpr
 extractConstantDefs :: Expression -> SafeExecution ()
-extractConstantDefs bExpr = case contents bExpr of  
+extractConstantDefs bExpr = case node bExpr of  
   BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstantDef c rhs -- c == rhs: remember rhs as a definition for c
   _ -> return ()
 
 -- | Extract function definitions from a boolean expression bExpr, using guards extracted from the exclosing expression.
--- | bExpr of the form "(forall x :: P(x, c) ==> f(x, c) == rhs(x, c) && B) && A",
--- | with zero or more bound variables x and zero or more constants c,
--- | produces a definition "f(x, x') = rhs(x, x')" with a guard "P(x) && x' == c"
+-- bExpr of the form "(forall x :: P(x, c) ==> f(x, c) == rhs(x, c) && B) && A",
+-- with zero or more bound variables x and zero or more constants c,
+-- produces a definition "f(x, x') = rhs(x, x')" with a guard "P(x) && x' == c"
 extractFunctionDefs :: Expression -> [Expression] -> SafeExecution ()
-extractFunctionDefs bExpr guards = extractFunctionDefs' (contents bExpr) guards
+extractFunctionDefs bExpr guards = extractFunctionDefs' (node bExpr) guards
 
 extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) outerGuards = do
   c <- gets envTypeContext
@@ -681,7 +731,7 @@ extractFunctionDefs' _ _ = return ()
 type Constraints = Map Id Interval
             
 -- | The set of domains for each variable in vars, outside which boolean expression boolExpr is always false.
--- | Fails if any of the domains are infinite or cannot be found.
+-- Fails if any of the domains are infinite or cannot be found.
 domains :: Expression -> [Id] -> Execution [Domain]
 domains boolExpr vars = do
   initC <- foldM initConstraints M.empty vars
@@ -705,8 +755,8 @@ domains boolExpr vars = do
             int -> throwRuntimeFailure (InfiniteDomain var int) (position boolExpr)
 
 -- | Starting from initial constraints, refine them with the information from boolExpr,
--- | until fixpoint is reached or the domain for one of the variables is empty.
--- | This function terminates because the interval for each variable can only become smaller with each iteration.
+-- until fixpoint is reached or the domain for one of the variables is empty.
+-- This function terminates because the interval for each variable can only become smaller with each iteration.
 inferConstraints :: Expression -> Constraints -> Execution Constraints
 inferConstraints boolExpr constraints = do
   constraints' <- foldM refineVar constraints (M.keys constraints)
@@ -722,10 +772,10 @@ inferConstraints boolExpr constraints = do
       return $ M.insert id (meet (c ! id) int) c 
 
 -- | Infer an interval for variable x, outside which boolean expression booExpr is always false, 
--- | assuming all other quantified variables satisfy constraints;
--- | boolExpr has to be in negation-prenex normal form.
+-- assuming all other quantified variables satisfy constraints;
+-- boolExpr has to be in negation-prenex normal form.
 inferInterval :: Expression -> Constraints -> Id -> Execution Interval
-inferInterval boolExpr constraints x = (case contents boolExpr of
+inferInterval boolExpr constraints x = (case node boolExpr of
   FF -> return bot
   BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 constraints x) (inferInterval be2 constraints x)
   BinaryExpression Or be1 be2 -> liftM2 join (inferInterval be1 constraints x) (inferInterval be2 constraints x)
@@ -760,9 +810,9 @@ inferInterval boolExpr constraints x = (case contents boolExpr of
 type LinearForm = (Interval, Interval)
 
 -- | If possible, convert arithmetic expression aExpr into a linear form over variable x,
--- | assuming all other quantified variables satisfy constraints.
+-- assuming all other quantified variables satisfy constraints.
 toLinearForm :: Expression -> Constraints -> Id -> Execution LinearForm
-toLinearForm aExpr constraints x = case contents aExpr of
+toLinearForm aExpr constraints x = case node aExpr of
   Numeral n -> return (0, fromInteger n)
   Var y -> if x == y
     then return (1, 0)

@@ -1,5 +1,32 @@
-{- Type checker for Boogie 2 -}
-module Language.Boogie.TypeChecker where
+-- | Type checker for Boogie 2
+module Language.Boogie.TypeChecker (
+  -- * Checking programs
+  checkProgram,
+  exprType,
+  resolve,
+  TypeError (..),
+  typeErrorsDoc,
+  Checked,  
+  -- * Typechecking context
+  Context (..),
+  emptyContext,
+  typeNames,
+  globalScope,
+  localScope,
+  mutableVars,
+  allVars,
+  allNames,
+  funProcNames,
+  funSig,
+  procSig,
+  setGlobals,
+  setIns,
+  setLocals,
+  setConstants,
+  enterFunction,
+  enterProcedure,
+  enterQuantified
+) where
 
 import Language.Boogie.AST
 import Language.Boogie.Util
@@ -16,7 +43,7 @@ import Text.PrettyPrint
 
 {- Interface -}
 
--- | checkProgram p: check program p and return the type information in the global part of the context
+-- | 'checkProgram' @p@ : Check program @p@ and return the type information in the global part of the context
 checkProgram :: Program -> Checked Context
 checkProgram (Program decls) = do
   pass1  <- foldAccum collectTypes emptyContext decls                            -- collect type names from type declarations
@@ -26,15 +53,17 @@ checkProgram (Program decls) = do
   pass5  <- foldAccum checkBodies pass4 decls                                    -- check axioms, function and procedure bodies, constant parent info
   return pass5
   
--- | Type of expr in context c;
--- | fails if expr contains type errors.    
+-- | 'exprType' @c expr@ :
+-- Type of @expr@ in context @c@;
+-- fails if expr contains type errors.    
 exprType :: Context -> Expression -> Type
 exprType c expr = case checkExpression c expr of
   Left _ -> (error . show) (text "encountered ill-typed expression during execution:" <+> exprDoc expr)
   Right t -> t
   
--- | Local context of function sig with formal arguments formals and actual arguments actuals
--- | in a context where the return type is exprected to be mRetType (if known)
+-- | 'enterFunction' @sig formals actuals mRetType c@ :
+-- Local context of function @sig@ with formal arguments @formals@ and actual arguments @actuals@
+-- in a context where the return type is exprected to be @mRetType@ (if known)
 enterFunction :: FSig -> [Id] -> [Expression] -> Maybe Type -> Context -> Context 
 enterFunction sig formals actuals mRetType c = c 
   {
@@ -53,8 +82,9 @@ enterFunction sig formals actuals mRetType c = c
       Right u -> typeSubst u
     argTypes = map inst (fsigArgTypes sig)
 
--- | Local context of procedure sig with definition def and actual arguments actuals 
--- | in a call with left-hand sides lhss
+-- | 'enterProcedure' @sig def actuals lhss c@ :
+-- Local context of procedure @sig@ with definition @def@ and actual arguments @actuals@
+-- in a call with left-hand sides @lhss@
 enterProcedure :: PSig -> PDef -> [Expression] -> [Expression] -> Context -> Context 
 enterProcedure sig def actuals lhss c = c 
   {
@@ -132,34 +162,38 @@ report :: ErrorAccum a -> Checked a
 report (ErrorAccum [] x) = Right x
 report (ErrorAccum es _) = Left es  
 
--- | Apply type checking f to all nodes in the initial context c,
--- | accumulating errors from all nodes and reporting them at the end;
--- | in case of success the modified context is passed on and in case of failure the context is unchanged
+-- | 'foldAccum' @f c nodes@ :
+-- Apply type checking @f@ to all @nodes@ in the initial context @c@,
+-- accumulating errors from all @nodes@ and reporting them at the end;
+-- in case of success the modified context is passed on and in case of failure the context is unchanged
 foldAccum :: (a -> b -> Checked a) -> a -> [b] -> Checked a
 foldAccum f c nodes = report $ foldM (acc f) c nodes
   where
     acc f x y = accum (f x y) x
     
--- | Apply type checking f to all nodes,
--- | accumulating errors from all nodes and reporting them at the end
+-- | 'mapAccum' @f def nodes@ :
+-- Apply type checking @f@ to all @nodes@,
+-- accumulating errors from all @nodes@ and reporting them at the end
 mapAccum :: (b -> Checked c) -> c -> [b] -> Checked [c]
 mapAccum f def nodes = report $ mapM (acc f) nodes  
   where
     acc f x  = accum (f x) def
    
--- | Apply type checking f to all nodes throwing away the result,
--- | accumulating errors from all nodes
+-- | 'mapAccumA_' @f nodes@ :
+-- Apply type checking @f@ to all @nodes@ throwing away the result,
+-- accumulating errors from all @nodes@
 mapAccumA_ :: (a -> Checked ()) -> [a] -> ErrorAccum ()
 mapAccumA_ f nodes = mapM_ (acc f) nodes  
   where
     acc f x  = accum (f x) ()
     
--- | Same as mapAccumA_, but reporting the error at the end
+-- | Same as 'mapAccumA_', but reporting the error at the end
 mapAccum_ :: (a -> Checked ()) -> [a] -> Checked ()
 mapAccum_ f nodes = report $ mapAccumA_ f nodes  
 
--- | Apply type checking f to all xs and ys throwing away the result,
--- | accumulating errors from all nodes and reporting them at the end
+-- | 'zipWithAccum_' @f xs ys@ :
+-- Apply type checking @f@ to all @xs@ and @ys@ throwing away the result,
+-- accumulating errors from all nodes and reporting them at the end
 zipWithAccum_ :: (a -> b -> Checked ()) -> [a] -> [b] -> Checked ()
 zipWithAccum_ f xs ys = report $ zipWithM_ (acc f) xs ys  
   where
@@ -171,25 +205,27 @@ zipWithAccum_ f xs ys = report $ zipWithM_ (acc f) xs ys
 data Context = Context
   {
     -- Global context:
-    ctxTypeConstructors :: Map Id Int,      -- type constructor arity
-    ctxTypeSynonyms :: Map Id ([Id], Type), -- type synonym values
-    ctxGlobals :: Map Id Type,              -- global variable types (type synonyms resolved)
-    ctxConstants :: Map Id Type,            -- constant types (type synonyms resolved)
-    ctxFunctions :: Map Id FSig,            -- function signatures (type synonyms resolved)
-    ctxProcedures :: Map Id PSig,           -- procedure signatures (type synonyms resolved)
-    ctxWhere :: Map Id Expression,          -- where clauses of variables (global and local)
+    ctxTypeConstructors :: Map Id Int,      -- ^ type constructor arity
+    ctxTypeSynonyms :: Map Id ([Id], Type), -- ^ type synonym values
+    ctxGlobals :: Map Id Type,              -- ^ global variable types (type synonyms resolved)
+    ctxConstants :: Map Id Type,            -- ^ constant types (type synonyms resolved)
+    ctxFunctions :: Map Id FSig,            -- ^ function signatures (type synonyms resolved)
+    ctxProcedures :: Map Id PSig,           -- ^ procedure signatures (type synonyms resolved)
+    ctxWhere :: Map Id Expression,          -- ^ where clauses of variables (global and local)
+    
     -- Local context:
-    ctxTypeVars :: [Id],                    -- free type variables
-    ctxIns :: Map Id Type,                  -- input parameter types
-    ctxLocals :: Map Id Type,               -- local variable types
-    ctxModifies :: [Id],                    -- variables in the modifies clause of the enclosing procedure
-    ctxLabels :: [Id],                      -- all labels of the enclosing procedure body
-    ctxEncLabels :: [Id],                   -- labels of all enclosing statements
-    ctxTwoState :: Bool,                    -- is the context two-state? (procedure body or postcondition)
-    ctxInLoop :: Bool,                      -- is context inside a loop body?
-    ctxPos :: SourcePos                     -- position in the source code
+    ctxTypeVars :: [Id],                    -- ^ free type variables
+    ctxIns :: Map Id Type,                  -- ^ input parameter types
+    ctxLocals :: Map Id Type,               -- ^ local variable types
+    ctxModifies :: [Id],                    -- ^ variables in the modifies clause of the enclosing procedure
+    ctxLabels :: [Id],                      -- ^ all labels of the enclosing procedure body
+    ctxEncLabels :: [Id],                   -- ^ labels of all enclosing statements
+    ctxTwoState :: Bool,                    -- ^ is the context two-state? (procedure body or postcondition)
+    ctxInLoop :: Bool,                      -- ^ is context inside a loop body?
+    ctxPos :: SourcePos                     -- ^ position in the source code
   }
 
+-- | Empty context  
 emptyContext = Context {
     ctxTypeConstructors = M.empty,
     ctxTypeSynonyms     = M.empty,
@@ -228,9 +264,9 @@ allVars c = M.union (localScope c) (ctxGlobals c)
 allNames c = M.union (localScope c) (globalScope c)
 -- | Names of functions and procedures
 funProcNames c = M.keys (ctxFunctions c) ++ M.keys (ctxProcedures c)
--- | Signature of funtion name
+-- | Function signature by name
 funSig name c = ctxFunctions c ! name
--- | Signature of procedure name
+-- | Procedure signature by name
 procSig name c = ctxProcedures c ! name    
   
 {- Types -}
@@ -242,7 +278,7 @@ checkTypeVar c v
   | v `elem` ctxTypeVars c = throwTypeError (ctxPos c) (text "Multiple decalartions of type variable" <+> text v)
   | otherwise = return c { ctxTypeVars = v : ctxTypeVars c }
 
--- | checkType c t : check that t is a correct type in context c (i.e. that all type names exist and have correct number of arguments)
+-- | 'checkType' @c t@ : check that @t@ is a correct type in context @c@ (i.e. that all type names exist and have correct number of arguments)
 checkType :: Context -> Type -> Checked ()
 checkType c (MapType tv domains range) = do
   c' <- foldAccum checkTypeVar c tv
@@ -263,7 +299,7 @@ checkType c (Instance name args)
       formals = fst (ctxTypeSynonyms c ! name)
 checkType _ _ = return ()
 
--- | resolve c t : type t with all type synonyms resolved according to binding in c      
+-- | 'resolve' @c t@ : type @t@ with all type synonyms resolved according to binding in @c@
 resolve :: Context -> Type -> Type
 resolve c (MapType tv domains range) = MapType tv (map (resolve c') domains) (resolve c' range)
   where c' = c { ctxTypeVars = ctxTypeVars c ++ tv }
@@ -274,8 +310,9 @@ resolve c (Instance name args)
     Just (formals, t) -> resolve c (typeSubst (M.fromList (zip formals args)) t)
 resolve _ t = t
 
--- | Instantiation of type variables in a function signature sig given the actual arguments actuals in a context c 
--- | and possibly a return type mRetType (if known from the context)
+-- | 'fInstance' @c sig actuals mRetType@ :
+-- Instantiation of type variables in a function signature @sig@ given the actual arguments @actuals@ in a context @c@
+-- and possibly a return type @mRetType@ (if known from the context)
 fInstance :: Context -> FSig -> [Expression] -> Maybe Type -> Checked TypeBinding
 fInstance c sig actuals mRetType = case mRetType of
     Nothing -> if not (null retOnlyTVs) 
@@ -303,7 +340,8 @@ fInstance c sig actuals mRetType = case mRetType of
     retOnlyTVs = filter (not . freeInArgs) tvs
     freeInArgs tv = any (tv `isFreeIn`) (fsigArgTypes sig)
       
--- | Instantiation of type variables in a procedure signature sig given the actual arguments actuals and call left-hand sides lhss, in a context c 
+-- | 'pInstance' @c sig actuals lhss@ : 
+-- Instantiation of type variables in a procedure @sig@ given the actual arguments @actuals@ and call left-hand sides @lhss@, in a context @c@
 pInstance :: Context -> PSig -> [Expression] -> [Expression] -> Checked TypeBinding
 pInstance c sig actuals lhss = do
   actualTypes <- mapAccum (checkExpression c) noType actuals
@@ -318,7 +356,9 @@ pInstance c sig actuals lhss = do
   
 {- Expressions -}
 
--- | requires all types in the context be valid and type synonyms be resolved
+-- | 'checkExpression' @c expr@ :
+-- Check that @expr@ is a valid expression in context @c@ and return its type
+-- (requires all types in the context be valid and type synonyms be resolved)
 checkExpression :: Context -> Expression -> Checked Type
 checkExpression c (Pos pos e) = case e of
   TT -> return BoolType
@@ -341,8 +381,8 @@ checkExpression c (Pos pos e) = case e of
   where
     cPos = c { ctxPos = pos }
 
--- | mRetType stored function return type if known from the context (currently: if used inside a coercion);
--- | it is a temporary workaround for generic return types of functions    
+-- @mRetType@ stores function return type if known from the context (currently: if used inside a coercion);
+-- it is a temporary workaround for generic return types of functions    
 checkApplication :: Context -> Id -> [Expression] -> Maybe Type -> Checked Type
 checkApplication c id args mRetType = case M.lookup id (ctxFunctions c) of
   Nothing -> throwTypeError (ctxPos c) (text "Not in scope: function" <+> text id)
@@ -382,7 +422,7 @@ checkCoercion :: Context -> Expression -> Type -> Checked Type
 checkCoercion c e t = do
   checkType c t
   let t' = resolve c t
-  case contents e of
+  case node e of
     Application id args -> checkApplication cPos id args (Just t')
     _ -> compareType c "coerced expression" t' e >> return t'
   where cPos = c { ctxPos = position e }
@@ -432,6 +472,8 @@ checkQuantified c qop tv vars e = do
     
 {- Statements -}
 
+-- | 'checkStatement' @c st@ :
+-- Check that @st@ is a valid statement in context @c@
 checkStatement :: Context -> Statement -> Checked ()
 checkStatement c (Pos pos s) = case s of
   Predicate (SpecClause _ _ e) -> compareType cPos "predicate" BoolType e
@@ -516,7 +558,8 @@ checkLabelBreak c l = if not (l `elem` ctxEncLabels c)
   
 {- Blocks -}
 
--- | collectLabels c block: check that all labels in block and nested blocks are unique and add then to the context
+-- | 'collectLabels' @c block@ : 
+-- Check that all labels in @block@ and nested blocks are unique and add them to the context
 collectLabels :: Context -> Block -> Checked Context
 collectLabels c block = foldAccum checkLStatement c block
   where
@@ -534,7 +577,7 @@ collectLabels c block = foldAccum checkLStatement c block
       then throwTypeError pos (text "Multiple occurrences of label" <+> text l <+> text "in a procedure body")
       else return c {ctxLabels = l : ctxLabels c}
 
--- | check every statement in the block
+-- | Check every statement in a block
 checkBlock :: Context -> Block -> Checked ()    
 checkBlock c block = mapAccum_ (checkLStatement c) block
   where
@@ -595,7 +638,8 @@ checkSignatures c (Pos pos d) = case d of
   where
     cPos = c { ctxPos = pos }
 
--- | checkIdType scope get set c idType: check that declaration idType is fresh in scope, and if so add it to (get c) using (set c) 
+-- | 'checkIdType' @scope get set c idType@ : 
+-- Check that declaration @idType@ is fresh in @scope@, and if so add it to @get c@ using @set c@
 checkIdType :: (Context -> Map Id Type) -> (Context -> Map Id Type) -> (Context -> Map Id Type -> Context) -> Context -> IdType -> Checked Context
 checkIdType scope get set c (i, t)   
   | M.member i (scope c) = throwTypeError (ctxPos c) (text "Multiple declarations of variable or constant" <+> text i)
@@ -621,6 +665,7 @@ checkFunctionSignature c name tv args ret
       argTypes = map (resolve c . snd) args
       retType = (resolve c . snd) ret
       
+-- | Check uniqueness of procedure name, types of formals and add procedure to context      
 checkProcSignature :: Context -> Id -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> [Contract] -> Checked Context
 checkProcSignature c name tv args rets specs
   | name `elem` funProcNames c = throwTypeError (ctxPos c) (text "Multiple declarations of function or procedure" <+> text name)
@@ -651,7 +696,7 @@ checkBodies c (Pos pos d) = case d of
   where
     cPos = c { ctxPos = pos }  
   
--- | Check that "where" part is a valid boolean expression
+-- | Check that where-part is a valid boolean expression
 checkWhere :: Context -> IdTypeWhere -> Checked Context
 checkWhere c var = do
   compareType c "where clause" BoolType (itwWhere var)
@@ -686,7 +731,7 @@ checkFunction c name tv args body = do
     sig = funSig name c
     retType = fsigRetType sig
         
--- | Check "where" parts of procedure arguments and statements in its body
+-- | Check where-parts of procedure arguments and statements in its body
 checkProcedure :: Context -> [Id] -> [IdTypeWhere] -> [IdTypeWhere] -> [Contract] -> (Maybe Body) -> Checked ()
 checkProcedure c tv args rets specs mb = do 
   cArgs <- foldAccum (checkIdType localScope ctxIns setIns) c { ctxTypeVars = tv } (map noWhere args)
@@ -702,7 +747,7 @@ checkProcedure c tv args rets specs mb = do
       Just body -> checkBody cRets { ctxModifies = modifies specs, ctxTwoState = True } body
   where invalidModifies = modifies specs \\ M.keys (ctxGlobals c)
   
--- | Check procedure body in context c  
+-- | Check procedure body  
 checkBody :: Context -> Body -> Checked ()
 checkBody c body = do
   bodyScope <- foldAccum (checkIdType localScope ctxLocals setLocals) c (map noWhere (concat (fst body)))
@@ -730,8 +775,10 @@ checkImplementation c name tv args rets bodies = case M.lookup name (ctxProcedur
     
 {- Misc -}
 
--- | compareType c msg t e: check that e is a valid expression in context c and its type is t
--- | (requires type synonyms in t be resolved)
+-- | 'compareType' @c msg t e@
+-- Check that @e@ is a valid expression in context @c@ and its type is @t@;
+-- in case of type error use @msg@ as a description for @e@
+-- (requires type synonyms in t be resolved)
 compareType :: Context -> String -> Type -> Expression -> Checked ()
 compareType c msg t e = do
   t' <- checkExpression c e
@@ -739,7 +786,8 @@ compareType c msg t e = do
     then return ()
     else throwTypeError (ctxPos c) (text "Type of" <+> text msg <+> doubleQuotes (typeDoc t') <+> text "is different from" <+> doubleQuotes (typeDoc t))
     
--- | checkLefts c ids n: check that there are n ids, all ids are unique and denote mutable variables
+-- 'checkLefts' @c ids n@ : 
+-- Check that there are @n@ @ids@, all @ids@ are unique and denote mutable variables
 checkLefts :: Context -> [Id] -> Int -> Checked ()
 checkLefts c vars n = if length vars /= n 
   then throwTypeError (ctxPos c) (text "Expected" <+> int n <+> text "left-hand sides and got" <+> int (length vars))

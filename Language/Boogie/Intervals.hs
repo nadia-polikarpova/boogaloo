@@ -1,4 +1,6 @@
-{- Lattice of integer intervals -}
+{-# LANGUAGE PatternGuards #-}
+
+-- | Lattice of integer intervals
 module Language.Boogie.Intervals where
 
 import Data.Ratio
@@ -6,11 +8,11 @@ import Data.Maybe
 
 -- | Lattice type class 
 class Eq a => Lattice a where
-  top   :: a              -- Top
-  bot   :: a              -- Bottom
-  (<:)  :: a -> a -> Bool -- Partial order
-  join  :: a -> a -> a    -- Least upper bound
-  meet  :: a -> a -> a    -- Greatest lower bound
+  top   :: a              -- ^ Top
+  bot   :: a              -- ^ Bottom
+  (<:)  :: a -> a -> Bool -- ^ Partial order
+  join  :: a -> a -> a    -- ^ Least upper bound
+  meet  :: a -> a -> a    -- ^ Greatest lower bound
   
   x <: y = meet x y == x
 
@@ -55,8 +57,8 @@ instance Num Extended where
   
   fromInteger i = Finite i
 
--- | extDiv r a b: result of dividing a by b, rounded with r in the finite case;
--- | dividing infinty by infinity yields Nothing.
+-- | 'extDiv' @r a b@ : result of dividing @a@ by @b@, rounded with @r@ in the finite case;
+-- dividing infinty by infinity yields 'Nothing'.
 extDiv :: (Ratio Integer -> Integer) -> Extended -> Extended -> Maybe Extended  
 extDiv r (Finite i) (Finite j) = Just $ Finite (r (i % j))
 extDiv _ Inf (Finite j) = Just $ signum (Finite j) * Inf
@@ -94,7 +96,7 @@ nonNegatives = Interval 0 Inf
 -- | All netaive integers and 0
 nonPositives = Interval NegInf 0
 
--- | f applied to all pairs of bounds, where each pair comes from two different intervals
+-- | Apply function to all pairs of bounds coming from two different intervals
 mapBounds f (Interval l1 u1) (Interval l2 u2) = [f b1 b2 | b1 <- [l1, u1], b2 <- [l2, u2]]
 
 instance Show Interval where

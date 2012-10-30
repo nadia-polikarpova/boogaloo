@@ -1,5 +1,11 @@
-{- Parsec-based parser for Boogie 2 -}
-module Language.Boogie.Parser where
+-- | Parsec-based parser for Boogie 2
+module Language.Boogie.Parser (
+  program,
+  type_,
+  expression,
+  statement,
+  decl
+) where
 
 import Language.Boogie.AST
 import Language.Boogie.Util
@@ -15,6 +21,7 @@ import Control.Applicative ((<$>), (<*>), (<*), (*>))
 
 {- Interface -}
 
+-- | Program parser
 program :: Parser Program
 program = do 
   whiteSpace
@@ -103,6 +110,7 @@ typeCtorArgs = choice [
     return [x]
   ]
 
+-- | Type parser  
 type_ :: Parser Type
 type_ = choice [
   typeAtom, 
@@ -126,7 +134,7 @@ atom = choice [
   varOrCall,
   old,
   ifThenElse,
-  contents <$> try (parens expression),
+  node <$> try (parens expression),
   parens quantified
   ]
   where
@@ -182,6 +190,7 @@ coercionExpression = do
       t <- type_
       return $ inheritPos ((flip Coercion) t)
     
+-- | Expression parser    
 expression :: Parser Expression  
 expression = buildExpressionParser table coercionExpression <?> "expression"
 
@@ -195,10 +204,10 @@ table = [[unOp Neg, unOp Not],
      [binOp Implies AssocRight, binOp Explies AssocLeft], -- Mixing is prevented by different associativities
      [binOp Equiv AssocRight]]
   where
-    binOp op assoc = Infix (reservedOp (token op binOpTokens) >> return (\e1 e2 -> attachPos (position e1) (BinaryExpression op e1 e2))) assoc
+    binOp op assoc = Infix (reservedOp (opName op binOpTokens) >> return (\e1 e2 -> attachPos (position e1) (BinaryExpression op e1 e2))) assoc
     unOp op = Prefix (do
       pos <- getPosition
-      reservedOp (token op unOpTokens)
+      reservedOp (opName op unOpTokens)
       return (\e -> attachPos pos (UnaryExpression op e)))
     
 wildcardExpression :: Parser WildcardExpression
@@ -270,6 +279,7 @@ whileStatement = do
       semi
       return (SpecClause LoopInvariant free e)    
 
+-- | Statement parser      
 statement :: Parser Statement
 statement = attachPosBefore (choice [
   do { reserved "assert"; many attribute; e <- expression; semi; return $ Predicate (SpecClause Inline False e) },
@@ -425,6 +435,7 @@ implDecl = do
   bs <- many body
   return $ ImplementationDecl name tArgs (ungroup args) (ungroup rets) bs
   
+-- | Top-level declaration parser  
 decl :: Parser Decl
 decl = attachPosBefore (choice [
   typeDecl,
