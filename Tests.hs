@@ -21,7 +21,7 @@ parserTests = TestLabel "Parser" $ TestList [
 typeCheckerTests = TestLabel "TypeChecker" $ TestList [
   testCase (typeCheckerFailure 8)   "BadLabels",
   testCase (typeCheckerFailure 4)   "Orderings",
-  testCase (typeCheckerFailure 2)   "WhereResolution",
+  testCase (typeCheckerFailure 4)   "WhereResolution",
   testCase (typeCheckerFailure 35)  "Arrays",
   testCase (typeCheckerFailure 15)  "Frame",
   testCase (typeCheckerFailure 3)   "FunBody",

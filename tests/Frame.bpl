@@ -70,7 +70,7 @@ procedure Q() returns (x: int, y: int, h: [ref, name]int)
 procedure QCallerBad()
 {
   start:
-    call g0, g1, h0 := Q();
+    call g0, g1, h0 := Q(); // error: g0, g1, h0 are not in modifies clause
     return;
 }
 

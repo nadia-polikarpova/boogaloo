@@ -29,7 +29,7 @@ procedure Q(w: int where x < w || x > alpha/*error: out-parameter alpha is not i
     returns (v: bool where v,
              y: int where x + y + z < 0,
              z: int where g == 12,
-             alpha: ref where old(alpha) != null,  // error: cannot use old in where clause
+             alpha: ref where alpha != null,
              beta: ref where (forall r: ref :: r == beta ==> beta == null))
   requires x < 100;
   modifies g;
@@ -49,13 +49,10 @@ const SomeConstant: ref;
 
 procedure Cnst(n: ref where n != SomeConstant) returns (SomeConstant: int)
 {
-  var m: ref where m != SomeConstant;
+  var m: ref where m != SomeConstant; // error: SomeConstant is int
   var k: int where k != SomeConstant;
-  var r: ref where (forall abc: ref :: abc == SomeConstant);
-  var b: bool;
-  start:
-    b := (forall l: ref :: l == SomeConstant);
-    return;
+  var r: ref where (forall abc: ref :: abc == SomeConstant);  // error: SomeConstant is int
+  var b: bool where old(y) == 5;  // error: cannot use old in where clause
 }
 
 type ref;

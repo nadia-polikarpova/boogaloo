@@ -10,9 +10,6 @@
   - Dynamic assertion (loop invariant) inference (testing + statistical test)
 
 - Type checker
-  - Fix where clauses:
-    - Disallow old
-    - Out-params should not be in scope
   - Type constraint solving (HM?) to allow generic return types in functions
   - Data type for type errors (will be easier to evaluate test results)
   - Annotate AST with expr types

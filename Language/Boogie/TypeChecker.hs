@@ -699,7 +699,8 @@ checkBodies c (Pos pos d) = case d of
 -- | Check that where-part is a valid boolean expression
 checkWhere :: Context -> IdTypeWhere -> Checked Context
 checkWhere c var = do
-  compareType c "where clause" BoolType (itwWhere var)
+   -- Where clauses are always in single-state context:
+  compareType c { ctxTwoState = False } "where clause" BoolType (itwWhere var)
   return c { ctxWhere = M.insert (itwId var) (itwWhere var) (ctxWhere c) }
 
 -- | Check that identifiers in parents are distinct constants of a proper type and do not occur among ids

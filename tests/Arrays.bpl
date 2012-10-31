@@ -12,14 +12,10 @@ procedure Good0(x: int, y: int)
 }
 
 procedure Bad0(x: int, y: int)
-  requires one[x,y] == 7;
-  requires two[x] == 8;
+  requires one[x,y] == 7; // error: wrong selection types
+  requires two[x] == 8; // error: wrong selection types
   modifies one, two;
 {
-  start:
-    one[x,y] := 10;
-    two[x] := 11;
-    return;
 }
 
 var A: [int]bool;
@@ -38,20 +34,14 @@ procedure Good1(x: int, b: bool, o: ref)
 }
 
 procedure Bad1(x: int, b: bool, o: ref)
-  requires A[b];
-  requires A[x] == 7;
-  requires B[x,x] < 12;
-  requires B[b,b] == B[o,o];
-  requires B[null,5];
-  requires B[7,7] == A[7];
+  requires A[b]; // error: wrong selection type
+  requires A[x] == 7; // error: wrong range type
+  requires B[x,x] < 12; // error: wrong selection types
+  requires B[b,b] == B[o,o]; // error: wrong selection types
+  requires B[null,5]; // error: wrong selection types
+  requires B[7,7] == A[7]; // error: wrong selection types
   modifies A, B;
 {
-  start:
-    A[b] := true;
-    B[3,14] := null;
-    A[A[x]] := 9;
-    B[false,false] := 70;
-    return;
 }
 
 var M: [ [int,int]bool, [name]name ]int;
@@ -110,28 +100,28 @@ procedure Bad2(k: [int,int]bool, l: [name]name) returns (n: int)
   var qqx: [int,int][name]int;
 
   start:
-    n := M[Sven,l];
-    m := p;
-    p := l[Mia];
-    p[5,8] := Tryggve;
-    m[p,Gunnel] := 13;
-    M := qq;
+    n := M[Sven,l]; // error: wrong selection types
+    m := p; // error: wrong lhs type
+    p := l[Mia]; // error: wrong lhs type
+    p[5,8] := Tryggve; // error: wrong lhs type
+    m[p,Gunnel] := 13; // error: wrong selection types
+    M := qq; // error: wrong lhs type
     goto next;
 
   next:
     qq := Q;  // okay
-    q := Q[13];
-    n := n - Q[89][34,55];
-    Q[true,233] := q;
-    qqx := qq;
-    Q := qqx;
+    q := Q[13]; // error: wrong selection types
+    n := n - Q[89][34,55]; // error: wrong selection types
+    Q[true,233] := q; // error: wrong selection types
+    qqx := qq; // error: wrong lhs type
+    Q := qqx; // error: wrong lhs type
     qqx := qqx;  // okay
     Q := Q;  // okay
-    n := n + Q[34,55][144,169];
-    R[1,2] := 0;
-    R[1] := R[2,3];
-    n := n + R[1][2];
-    n := n + R[1,2];
+    n := n + Q[34,55][144,169]; // error: wrong selection types
+    R[1,2] := 0; // error: wrong selection types
+    R[1] := R[2,3]; // error: wrong selection types
+    n := n + R[1][2]; // error: wrong selection types
+    n := n + R[1,2]; // error: wrong selection types
     return;
 }
 
@@ -163,7 +153,7 @@ procedure SubtypesGood(a: any)
     b := S4[4,a];
     b := S4[5,null];  // any := ref
     b := S4[6,S4];  // any := [int,any]bool
-    b := Sf(S5);
+    b := Sf(S5); // error: wrong argument type
     return;
 }
 
@@ -193,12 +183,6 @@ procedure ArrayP(x: int, y: any)
   requires ArrayB[y];
   modifies ArrayA, ArrayB;
 {
-  start:
-    ArrayA[x] := true;
-    ArrayA[y] := true;  // error
-    ArrayB[x] := true;
-    ArrayB[y] := true;
-    return;
 }
 
 // ----------------------------------------------------
@@ -212,7 +196,7 @@ procedure IntMethodCaller()
   entry:
     call x := AnyMethod(y);  // types are exact
     call x := IntMethod(y);  // error: type mismatch for out-parameter
-    x := y;
+    x := y; // error (is this supposed to work?)
     y := x;  // error: cannot assign any to int
     call y := IntMethod(x);  // types are exact
     call y := AnyMethod(x);  // type error on both in-parameter and out-parameter
