@@ -1,3 +1,4 @@
 syntax: glob
 *.hi
 *.o
+./dist
