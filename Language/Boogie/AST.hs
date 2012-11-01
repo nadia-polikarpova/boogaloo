@@ -13,13 +13,14 @@ newtype Program = Program [Decl]
 {- Types -}
 
 -- | Type
-data Type = BoolType | IntType |
-  MapType [Id] [Type] Type |
-  Instance Id [Type]
+data Type = BoolType |        -- ^ bool 
+  IntType |                   -- ^ int
+  MapType [Id] [Type] Type |  -- 'MapType' @type_vars domains range@ : arrow type (used for maps, function and procedure signatures)
+  IdType Id [Type]            -- 'IdType' @name args@: type denoted by an identifier (either type constructor, possibly with arguments, or a type variable)
   deriving Eq -- syntactic equality
 
 -- | 'nullaryType' @id@ : type denoted by @id@ without arguments
-nullaryType id = Instance id []
+nullaryType id = IdType id []
 
 -- | Dummy type used during type checking to denote error
 noType = nullaryType "NoType"

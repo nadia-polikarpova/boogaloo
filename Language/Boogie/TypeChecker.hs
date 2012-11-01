@@ -283,7 +283,7 @@ checkType :: Context -> Type -> Checked ()
 checkType c (MapType tv domains range) = do
   c' <- foldAccum checkTypeVar c tv
   mapAccum_ (checkType c') (domains ++ [range])
-checkType c (Instance name args)
+checkType c (IdType name args)
   | name `elem` ctxTypeVars c && null args = return ()
   | M.member name (ctxTypeConstructors c) = if n == length args 
     then mapAccum_ (checkType c) args
@@ -303,10 +303,10 @@ checkType _ _ = return ()
 resolve :: Context -> Type -> Type
 resolve c (MapType tv domains range) = MapType tv (map (resolve c') domains) (resolve c' range)
   where c' = c { ctxTypeVars = ctxTypeVars c ++ tv }
-resolve c (Instance name args) 
-  | name `elem` ctxTypeVars c = Instance name args
+resolve c (IdType name args) 
+  | name `elem` ctxTypeVars c = IdType name args
   | otherwise = case M.lookup name (ctxTypeSynonyms c) of
-    Nothing -> Instance name (map (resolve c) args)
+    Nothing -> IdType name (map (resolve c) args)
     Just (formals, t) -> resolve c (typeSubst (M.fromList (zip formals args)) t)
 resolve _ t = t
 
@@ -615,7 +615,7 @@ checkCycles :: Context -> [Decl] -> Id -> Checked ()
 checkCycles c decls id = checkCyclesWith c id (value id)
   where
     checkCyclesWith c id t = case t of
-      Instance name args -> do
+      IdType name args -> do
         if M.member name (ctxTypeSynonyms c)
           then if id == name 
             then throwTypeError firstPos (text "Cycle in the definition of type synonym" <+> text id) 
@@ -760,7 +760,7 @@ checkBody c body = do
 checkImplementation :: Context -> Id -> [Id] -> [IdType] -> [IdType] -> [Body] -> Checked ()  
 checkImplementation c name tv args rets bodies = case M.lookup name (ctxProcedures c) of
     Nothing -> throwTypeError (ctxPos c) (text "Not in scope: procedure" <+> text name)
-    Just sig -> case boundUnifier [] (psigTypeVars sig) (psigArgTypes sig ++ psigRetTypes sig) tv (argTypes ++ retTypes) of
+    Just sig -> case unifier [] [psigType sig] [MapType tv argTypes (tupleType retTypes)] of
       Nothing -> throwTypeError (ctxPos c) (text "Could not match procedure signature" <+> 
         doubleQuotes (sigDoc (psigArgTypes sig) (psigRetTypes sig)) <+>
         text "against implementation signature" <+>

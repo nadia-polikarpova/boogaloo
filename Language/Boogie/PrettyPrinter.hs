@@ -63,7 +63,7 @@ typeDoc IntType = text "int"
 typeDoc (MapType fv domains range) = typeArgsDoc fv <> 
   brackets (commaSep (map typeDoc domains)) <+>
   typeDoc range
-typeDoc (Instance id args) = text id <+> hsep (map typeDoc args)
+typeDoc (IdType id args) = text id <+> hsep (map typeDoc args)
 
 instance Show Type where show t = show (typeDoc t)
 

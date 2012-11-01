@@ -6,8 +6,8 @@ module Language.Boogie.Util (
   isFreeIn,
   unifier,
   oneSidedUnifier,
-  boundUnifier,
   (<==>),
+  tupleType,  
   -- * Expressions
   freeVarsTwoState,
   freeVars,
@@ -22,6 +22,7 @@ module Language.Boogie.Util (
   assumePreconditions,
   -- * Funstions and procedures
   FSig (..),
+  fsigType,
   FDef (..),
   PSig (..),
   psigParams,
@@ -30,6 +31,7 @@ module Language.Boogie.Util (
   psigModifies,
   psigRequires,
   psigEnsures,
+  psigType,
   PDef (..),
   -- * Code generation
   num, eneg, enot,
@@ -66,10 +68,10 @@ type TypeBinding = Map Id Type
 typeSubst :: TypeBinding -> Type -> Type
 typeSubst _ BoolType = BoolType
 typeSubst _ IntType = IntType
-typeSubst binding (Instance id []) = case M.lookup id binding of
+typeSubst binding (IdType id []) = case M.lookup id binding of
   Just t -> t
-  Nothing -> Instance id []
-typeSubst binding (Instance id args) = Instance id (map (typeSubst binding) args)
+  Nothing -> IdType id []
+typeSubst binding (IdType id args) = IdType id (map (typeSubst binding) args)
 typeSubst binding (MapType bv domains range) = MapType bv (map (typeSubst removeBound) domains) (typeSubst removeBound range)
   where removeBound = deleteAll bv binding
   
@@ -80,8 +82,8 @@ fromTVNames tvs tvs' = M.fromList (zip tvs (map nullaryType tvs'))
 -- | @x@ `isFreeIn` @t@ : does @x@ occur as a free type variable in @t@?
 -- @x@ must not be a name of a type constructor
 isFreeIn :: Id -> Type -> Bool
-x `isFreeIn` (Instance y []) = x == y
-x `isFreeIn` (Instance y args) = any (x `isFreeIn`) args
+x `isFreeIn` (IdType y []) = x == y
+x `isFreeIn` (IdType y args) = any (x `isFreeIn`) args
 x `isFreeIn` (MapType bv domains range) = x `notElem` bv && any (x `isFreeIn`) (range:domains)
 _ `isFreeIn` _ = False
   
@@ -90,17 +92,17 @@ unifier :: [Id] -> [Type] -> [Type] -> Maybe TypeBinding
 unifier _ [] [] = Just M.empty
 unifier fv (IntType:xs) (IntType:ys) = unifier fv xs ys
 unifier fv (BoolType:xs) (BoolType:ys) = unifier fv xs ys
-unifier fv ((Instance id1 args1):xs) ((Instance id2 args2):ys) | id1 == id2 = unifier fv (args1 ++ xs) (args2 ++ ys)
-unifier fv ((Instance id []):xs) (y:ys) | id `elem` fv = 
+unifier fv ((IdType id1 args1):xs) ((IdType id2 args2):ys) | id1 == id2 = unifier fv (args1 ++ xs) (args2 ++ ys)
+unifier fv ((IdType id []):xs) (y:ys) | id `elem` fv = 
   if id `isFreeIn` y then Nothing 
   else M.insert id y <$> unifier fv (update xs) (update ys)
     where update = map (typeSubst (M.singleton id y))
-unifier fv (x:xs) ((Instance id []):ys) | id `elem` fv = 
+unifier fv (x:xs) ((IdType id []):ys) | id `elem` fv = 
   if id `isFreeIn` x then Nothing 
   else M.insert id x <$> unifier fv (update xs) (update ys)
     where update = map (typeSubst (M.singleton id x))
 unifier fv ((MapType bv1 domains1 range1):xs) ((MapType bv2 domains2 range2):ys) =
-  case boundUnifier fv bv1 (range1:domains1) bv2 (range2:domains2) of
+  case forallUnifier fv bv1 (range1:domains1) bv2 (range2:domains2) of
     Nothing -> Nothing
     Just u -> M.union u <$> (unifier fv (update u xs) (update u ys))
   where
@@ -117,6 +119,31 @@ removeClashesWith tvs tvs' = map freshName tvs
     freshName tv = if tv `elem` tvs' then replicate (level + 1) nonIdChar ++ tv else tv
     -- maximum number of nonIdChar characters at the beginning of a tvs'; by prepending (level + 1) nonIdChar charactes to tv we make is different from all tvs'
     level = maximum [fromJust (findIndex (\c -> c /= nonIdChar) id) | id <- tvs']
+    
+-- | 'forallUnifier' @fv bv1 xs bv2 ys@ :   
+-- Most general unifier of @xs@ and @ys@,
+-- where @bv1@ are universally quantified type variables in @xs@ and @bv2@ are universally quantified type variables in @ys@,
+-- and @fv@ are free type variables of the enclosing context
+forallUnifier :: [Id] -> [Id] -> [Type] -> [Id] -> [Type] -> Maybe TypeBinding
+forallUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= length ys 
+  then Nothing
+  else case unifier (fv ++ bv1) xs (map withFreshBV ys) of
+    Nothing -> Nothing
+    Just u -> if all isFreshBV (M.elems (bound u)) && not (any hasFreshBV (M.elems (free u)))
+      then Just (free u)
+      else Nothing
+    where
+      freshBV = bv2 `removeClashesWith` bv1
+      withFreshBV = typeSubst (fromTVNames bv2 freshBV)
+      -- does a type correspond to one of the fresh bound variables of m2?
+      isFreshBV (IdType id []) = id `elem` freshBV
+      isFreshBV _ = False
+      -- does type t contain any fresh bound variables of m2?
+      hasFreshBV t = any (`isFreeIn` t) freshBV
+      -- binding restricted to free variables
+      free = deleteAll bv1
+      -- binding restricted to bound variables
+      bound = deleteAll (fv \\ bv1)    
 
 -- | 'oneSidedUnifier' @fv xs tv ys@ : 
 -- Most general unifier of @xs@ and @ys@,
@@ -128,35 +155,13 @@ oneSidedUnifier fv xs tv ys = M.map old <$> unifier fv xs (map new ys)
     freshTV = tv `removeClashesWith` fv
     new = typeSubst (fromTVNames tv freshTV)
     old = typeSubst (fromTVNames freshTV tv)
-
--- | 'boundUnifier' @fv bv1 xs bv2 ys@ :   
--- Most general unifier of @xs@ and @ys@,
--- where @bv1@ are bound type variables in @xs@ and @bv2@ are bound type variables in @ys@,
--- and @fv@ are free type variables of the enclosing context
-boundUnifier :: [Id] -> [Id] -> [Type] -> [Id] -> [Type] -> Maybe TypeBinding
-boundUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= length ys 
-  then Nothing
-  else case unifier (fv ++ bv1) xs (map withFreshBV ys) of
-    Nothing -> Nothing
-    Just u -> if all isFreshBV (M.elems (bound u)) && not (any hasFreshBV (M.elems (free u)))
-      then Just (free u)
-      else Nothing
-    where
-      freshBV = bv2 `removeClashesWith` bv1
-      withFreshBV = typeSubst (fromTVNames bv2 freshBV)
-      -- does a type correspond to one of the fresh bound variables of m2?
-      isFreshBV (Instance id []) = id `elem` freshBV
-      isFreshBV _ = False
-      -- does type t contain any fresh bound variables of m2?
-      hasFreshBV t = any (`isFreeIn` t) freshBV
-      -- binding restricted to free variables
-      free = deleteAll bv1
-      -- binding restricted to bound variables
-      bound = deleteAll (fv \\ bv1)
       
 -- | Semantic equivalence on types
 -- (equality up to renaming of bound type variables)
-t1 <==> t2 = isJust (unifier [] [t1] [t2])       
+t1 <==> t2 = isJust (unifier [] [t1] [t2])
+
+-- | Internal tuple type constructor (used for representing procedure returns as a single type)
+tupleType ts = IdType "*Tuple" ts
   
 {- Expressions -}
 
@@ -263,6 +268,9 @@ data FSig = FSig {
     fsigRetType :: Type     -- ^ Return type
   }
   
+-- | Function signature as a map type  
+fsigType sig = MapType (fsigTypeVars sig) (fsigArgTypes sig) (fsigRetType sig)  
+  
 -- | Function definition
 data FDef = FDef {
     fdefArgs  :: [Id],       -- ^ Argument names (in the same order as 'fsigArgTypes' in the corresponding signature)
@@ -285,12 +293,14 @@ psigParams sig = psigArgs sig ++ psigRets sig
 psigArgTypes = (map itwType) . psigArgs
 -- | Types of out-parameters of a procedure signature
 psigRetTypes = (map itwType) . psigRets
+-- | Procedure signature as a map type
+psigType sig = MapType (psigTypeVars sig) (psigArgTypes sig) (tupleType $ psigRetTypes sig) 
 -- | Modifies clauses of a procedure signature
 psigModifies = modifies . psigContracts
 -- | Preconditions of a procedure signature
 psigRequires = preconditions . psigContracts
 -- | Postconditions of a procedure signature
-psigEnsures = postconditions . psigContracts    
+psigEnsures = postconditions . psigContracts
   
 -- | Procedure definition;
 -- a single procedure might have multiple definitions (one per body)

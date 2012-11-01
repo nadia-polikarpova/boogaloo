@@ -90,7 +90,7 @@ defaultGenericTypeRange _ = [BoolType]
 
 -- | Default range for instantiating polymorphic maps:
 -- all nullary type constructors
-defaultMapTypeRange context = [BoolType, IntType] ++ [Instance name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors context))]  
+defaultMapTypeRange context = [BoolType, IntType] ++ [IdType name [] | name <- M.keys (M.filter (== 0) (ctxTypeConstructors context))]  
   
 -- | Settings for exhaustive testing  
 data ExhaustiveSettings = ExhaustiveSettings {
@@ -289,7 +289,7 @@ generateInputValue c (MapType tv domains range) = do
       args <- withLocalState mapDomainSettings (combineInputs (generateInputValue c) domains)
       rets <- combineInputs (generateInputValue c) (replicate (length args) range)
       return $ map (\r -> M.fromList (zip args r)) rets
-generateInputValue _ (Instance _ _) = map CustomValue <$> generateIntInput
+generateInputValue _ (IdType _ _) = map CustomValue <$> generateIntInput
 
 -- | All instantiations of types ts in context c, with a range of instances for a single type variables range 
 generateInputTypes :: [Type] -> Context -> [Type] -> [[Type]]

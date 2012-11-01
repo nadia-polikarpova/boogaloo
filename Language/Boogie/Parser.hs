@@ -104,7 +104,7 @@ typeCtorArgs = choice [
   do
     x <- identifier
     xs <- option [] typeCtorArgs
-    return $ Instance x [] : xs,
+    return $ IdType x [] : xs,
   do
     x <- mapType
     return [x]
@@ -118,7 +118,7 @@ type_ = choice [
   do
     id <- identifier
     args <- option [] typeCtorArgs
-    return $ Instance id args
+    return $ IdType id args
   ] <?> "type"
 
 {- Expressions -}

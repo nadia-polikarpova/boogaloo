@@ -86,7 +86,7 @@ defaultValue :: Type -> Value
 defaultValue BoolType         = BoolValue False  
 defaultValue IntType          = IntValue 0
 defaultValue (MapType _ _ _)  = MapValue M.empty
-defaultValue (Instance _ _)   = CustomValue 0
+defaultValue (IdType _ _)     = CustomValue 0
 
 -- | Pretty-printed value
 valueDoc :: Value -> Doc
