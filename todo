@@ -13,7 +13,6 @@
   - Type constraint solving (HM?) to allow generic return types in functions
   - Data type for type errors (will be easier to evaluate test results)
   - Annotate AST with expr types
-  - Use state?
   
 - Interpreter
   - Support calls to procedures with no implementation

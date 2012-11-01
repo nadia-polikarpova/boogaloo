@@ -235,7 +235,7 @@ testImplementation sig def = do
       let localName index = [nonIdChar] ++ show index
       let localNames = map localName [0..length (psigParams sig) - 1]
       -- declare local variables localNames with appropriate types:
-      modify $ mapSnd (modifyTypeContext (`setLocals` (M.fromList $ zip localNames typeInputs)))
+      modify $ mapSnd (modifyTypeContext ((M.fromList $ zip localNames typeInputs) `setLocals`))
       tc <- gets (envTypeContext . snd)
       
       -- names of actual in- and out-parameters

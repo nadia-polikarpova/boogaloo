@@ -131,7 +131,7 @@ runOnFile command file = do
   parseResult <- parseFromFile Parser.program file
   case parseResult of
     Left parseErr -> print parseErr
-    Right p -> case checkProgram p of
+    Right p -> case typeCheckProgram p of
       Left typeErrs -> print (typeErrorsDoc typeErrs)
       Right context -> command p context
       

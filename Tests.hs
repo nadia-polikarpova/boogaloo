@@ -66,7 +66,7 @@ typeCheckerFailure n file = do
   parseResult <- parseFromFile program file
   case parseResult of
     Left parseErr -> assertFailure (show parseErr)
-    Right p -> case checkProgram p of
+    Right p -> case typeCheckProgram p of
       Left typeErrs -> let m = length typeErrs in assertBool ("Expected " ++ show n ++ " type errors and got " ++ show m) (m == n)
       Right context -> assertFailure ("Expected " ++ show n ++ " type errors and got 0")
       
@@ -75,7 +75,7 @@ typeCheckerSuccess file = do
   parseResult <- parseFromFile program file
   case parseResult of
     Left parseErr -> assertFailure (show parseErr)
-    Right p -> case checkProgram p of
+    Right p -> case typeCheckProgram p of
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
       Right context -> return ()
       
@@ -84,7 +84,7 @@ interpreterSuccess file = do
   parseResult <- parseFromFile program file
   case parseResult of
     Left parseErr -> assertFailure (show parseErr)
-    Right p -> case checkProgram p of
+    Right p -> case typeCheckProgram p of
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
       Right context -> case executeProgram p context entryPoint of
         Left err -> assertFailure (show err)
