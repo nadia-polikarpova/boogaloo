@@ -317,7 +317,14 @@ checkTypeVar v = do
 checkType :: Type -> Typing ()
 checkType (MapType tv domains range) = do
   mapAccum_ checkTypeVar tv
-  mapAccum_ (locally . checkType) (domains ++ [range])
+  mapAccum_ (locally . checkType) (domains ++ [range])  
+  if not (null missingTV)
+    then throwTypeError (text "Type variable(s) must occur in the domains or range of the map type:" <+> commaSep (map text missingTV)) 
+    else return ()
+  where
+    missingTV = filter (not . freeInComponents) tv    
+    freeInComponents v = any (v `isFreeIn`) (range : domains)      
+  
 checkType (IdType name args) = do
   tv <- gets ctxTypeVars
   tc <- gets ctxTypeConstructors

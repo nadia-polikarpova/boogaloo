@@ -29,7 +29,8 @@ typeCheckerTests = TestLabel "TypeChecker" $ TestList [
   testCase (typeCheckerFailure 4)   "Lambda",
   testCase (typeCheckerFailure 12)  "UpdateExprTyping",
   testCase (typeCheckerFailure 1)   "TypeVarClash",
-  testCase (typeCheckerFailure 8)   "GenericReturn"
+  testCase (typeCheckerFailure 8)   "GenericReturn",
+  testCase (typeCheckerFailure 3)   "MissingTV"
   ]
 
 interpreterTests = TestLabel "Interpreter" $ TestList [
