@@ -56,8 +56,8 @@ exprType c expr = case evalState (runErrorT (checkExpression expr)) c of
 -- | 'enterFunction' @sig formals actuals mRetType c@ :
 -- Local context of function @sig@ with formal arguments @formals@ and actual arguments @actuals@
 -- in a context where the return type is exprected to be @mRetType@ (if known)
-enterFunction :: FSig -> [Id] -> [Expression] -> Maybe Type -> Context -> Context 
-enterFunction sig formals actuals mRetType c = c 
+enterFunction :: FSig -> [Id] -> [Expression] -> Context -> Context 
+enterFunction sig formals actuals c = c 
   {
     ctxTypeVars = [],
     ctxIns = M.fromList (zip formals argTypes),
@@ -67,12 +67,12 @@ enterFunction sig formals actuals mRetType c = c
     ctxInLoop = False
   }
   where 
-    inst = case evalState (runErrorT (fInstance sig actuals mRetType)) c of
+    inst = case evalState (runErrorT (fInstance sig actuals)) c of
       Left _ -> (error . show) (text "encountered ill-typed function application during execution:" <+> 
         text (fsigName sig) <+> parens (commaSep (map text formals)) <+>
         text "to actual arguments" <+> parens (commaSep (map exprDoc actuals)))
-      Right u -> typeSubst u
-    argTypes = map inst (fsigArgTypes sig)
+      Right sig' -> sig'
+    argTypes = fsigArgTypes inst
 
 -- | 'enterProcedure' @sig def actuals lhss c@ :
 -- Local context of procedure @sig@ with definition @def@ and actual arguments @actuals@
@@ -96,10 +96,10 @@ enterProcedure sig def actuals lhss c = c
       Left _ -> (error . show) (text "encountered ill-typed procedure call during execution:" <+> 
         text (psigName sig) <+> text "with actual arguments" <+> parens (commaSep (map exprDoc actuals)) <+>
         text "and left-hand sides" <+> parens (commaSep (map exprDoc lhss)))
-      Right u -> typeSubst u
-    inTypes = map inst (psigArgTypes sig)
-    outTypes = map inst (psigRetTypes sig)
-    localTypes = map (inst . itwType) locals
+      Right u -> u
+    inTypes = map (typeSubst inst) (psigArgTypes sig)
+    outTypes = map (typeSubst inst) (psigRetTypes sig)
+    localTypes = map (typeSubst inst . itwType) locals
     localNames = map itwId locals
     addWhere m (id, w) = M.insert id w m
     localWhere = map itwWhere locals
@@ -120,16 +120,16 @@ enterQuantified tv vars c = c'
 -- | Typing context
 data Context = Context
   {
-    -- Global context:
+    -- Scope context (specific to an AST node, gets restored when type cher leaves the node):
+      -- Global:
     ctxTypeConstructors :: Map Id Int,      -- ^ type constructor arity
     ctxTypeSynonyms :: Map Id ([Id], Type), -- ^ type synonym values
     ctxGlobals :: Map Id Type,              -- ^ global variable types (type synonyms resolved)
     ctxConstants :: Map Id Type,            -- ^ constant types (type synonyms resolved)
     ctxFunctions :: Map Id FSig,            -- ^ function signatures (type synonyms resolved)
     ctxProcedures :: Map Id PSig,           -- ^ procedure signatures (type synonyms resolved)
-    ctxWhere :: Map Id Expression,          -- ^ where clauses of global variables (global and local)
-    
-    -- Local context:
+    ctxWhere :: Map Id Expression,          -- ^ where clauses of global variables (global and local)    
+      -- Local:
     ctxTypeVars :: [Id],                    -- ^ free type variables
     ctxIns :: Map Id Type,                  -- ^ input parameter types
     ctxLocals :: Map Id Type,               -- ^ local variable types
@@ -138,7 +138,9 @@ data Context = Context
     ctxEncLabels :: [Id],                   -- ^ labels of all enclosing statements
     ctxTwoState :: Bool,                    -- ^ is the context two-state? (procedure body or postcondition)
     ctxInLoop :: Bool,                      -- ^ is context inside a loop body?
-    ctxPos :: SourcePos                     -- ^ position in the source code
+    ctxPos :: SourcePos,                    -- ^ position in the source code
+    -- Persistent context (not specific to any node, never gets restored):
+    ctxFreshTVCount :: Integer              -- ^ number of fresh type variables already generated
   }
 
 -- | Empty context  
@@ -158,7 +160,8 @@ emptyContext = Context {
     ctxEncLabels        = [],
     ctxTwoState         = False,
     ctxInLoop           = False,
-    ctxPos              = noPos
+    ctxPos              = noPos,
+    ctxFreshTVCount     = 0
   }
 
 setGlobals g ctx    = ctx { ctxGlobals = g }
@@ -191,7 +194,10 @@ funSig name c = ctxFunctions c ! name
 -- | Procedure signature by name
 procSig name c = ctxProcedures c ! name
 
--- | 'locally' @check@ : perform @check@ and then restore the local part of context
+-- | Return a fresh type variable name and a modified context
+genFreshTV c = (freshTVName $ ctxFreshTVCount c, c { ctxFreshTVCount = ctxFreshTVCount c + 1 })
+
+-- | 'locally' @check@ : perform @check@ and then restores the scoped part of the context
 locally :: Typing a -> Typing a
 locally check = do
   c <- get
@@ -199,7 +205,9 @@ locally check = do
   restore c
   return res
   where
-    restore c = put c  -- Todo: preserve global part, in particular fresh name counter
+    restore c = do
+      n <- gets ctxFreshTVCount
+      put c { ctxFreshTVCount = n }
 
 {- Errors -}
 
@@ -222,6 +230,13 @@ typeErrorsDoc errs = (vsep . punctuate newline . map typeErrorDoc) errs
 throwTypeError msgDoc = do
   pos <- gets ctxPos
   throwError [TypeError pos msgDoc]
+  
+-- | 'typeMismatch' @doc1 ts1 doc2 ts2 contextDoc@ : throw an error because types @ts1@ do not match @ts2@;
+-- use @doc1@ and @doc2@ to describe @ts1@ and @ts2@ correspondingly; use @contextDoc@ to describe the context of mismatch
+typeMismatch doc1 ts1 doc2 ts2 contextDoc = throwTypeError $ 
+  text "Cannot match" <+> doc1 <+> doubleQuotes (commaSep (map typeDoc ts1)) <+> 
+  text "against" <+>      doc2 <+> doubleQuotes (commaSep (map typeDoc ts2)) <+>
+  contextDoc  
 
 -- | Error accumulator: used to store intermediate type checking results, when errors should be accumulated rather than reported immediately  
 data ErrorAccumT e m a = ErrorAccumT { runErrorAccumT :: m ([e], a) }
@@ -333,52 +348,41 @@ resolve c (IdType name args)
     Just (formals, t) -> resolve c (typeSubst (M.fromList (zip formals args)) t)
 resolve _ t = t
 
--- | 'fInstance' @sig actuals mRetType@ :
--- Instantiation of type variables in a function signature @sig@ given the actual arguments @actuals@
--- and possibly a return type @mRetType@ (if known from the context)
-fInstance :: FSig -> [Expression] -> Maybe Type -> Typing TypeBinding
-fInstance sig actuals mRetType = case mRetType of
-  Nothing -> if not (null retOnlyTVs) 
-    then throwTypeError (text "Cannot infer type arguments from the context:" <+> commaSep (map text retOnlyTVs) <+> text "(insert a coercion)")
-    else do
-      ctv <- gets ctxTypeVars
-      actualTypes <- mapAccum (locally . checkExpression) noType actuals
-      case oneSidedUnifier (fsigTypeVars sig) (fsigArgTypes sig) ctv actualTypes of
-        Nothing -> throwTypeError (text "Could not match formal argument types" <+> 
-          doubleQuotes (commaSep (map typeDoc (fsigArgTypes sig))) <+>
-          text "against actual argument types" <+> 
-          doubleQuotes (commaSep (map typeDoc actualTypes)) <+>
-          text "in the call to" <+> text (fsigName sig))
-        Just u -> return u
-  Just retType -> do
-    ctv <- gets ctxTypeVars
-    actualTypes <- mapAccum (locally . checkExpression) noType actuals
-    case oneSidedUnifier (fsigTypeVars sig) (fsigRetType sig : fsigArgTypes sig) ctv (retType : actualTypes) of
-      Nothing -> throwTypeError (text "Could not match function signature" <+> 
-        doubleQuotes (sigDoc (fsigArgTypes sig) [fsigRetType sig]) <+>
-        text "against actual types" <+> 
-        doubleQuotes (sigDoc actualTypes [retType]) <+>
-        text "in the call to" <+> text (fsigName sig))
-      Just u -> return u
-  where
-    tvs = fsigTypeVars sig
-    retOnlyTVs = filter (not . freeInArgs) tvs
-    freeInArgs tv = any (tv `isFreeIn`) (fsigArgTypes sig)
+-- | 'withFreshTV' @tv types@ : generate fresh names for @tv@ and replace their occurrences in @types@
+withFreshTV :: [Id] -> [Type] -> Typing ([Id], [Type])
+withFreshTV tv types = do
+  tv' <- replicateM (length tv) (state $ genFreshTV)
+  let binding = fromTVNames tv tv'
+  return (tv', map (typeSubst binding) types)
+
+-- | 'fInstance' @sig actuals@ :
+-- Function signature @sig@ with type variables instantiated given the actual arguments @actuals@
+fInstance :: FSig -> [Expression] -> Typing FSig
+fInstance (FSig name tv argTypes retType) actuals = do
+  actualTypes <- mapAccum (locally . checkExpression) noType actuals
+  (_, newRetType : newArgTypes) <- withFreshTV tv (retType : argTypes)
+  case unifier [] newArgTypes actualTypes of
+    Nothing -> typeMismatch (text "formal argument types") argTypes (text "actual argument types") actualTypes (text "in the call to" <+> text name)
+    Just u -> return $ FSig name [] (map (typeSubst u) newArgTypes) (typeSubst u newRetType)
       
 -- | 'pInstance' @sig actuals lhss@ : 
 -- Instantiation of type variables in a procedure @sig@ given the actual arguments @actuals@ and call left-hand sides @lhss@
+-- (type binding is returned in terms of original type variables of @sig@, so that types of locals can be calculated)
 pInstance :: PSig -> [Expression] -> [Expression] -> Typing TypeBinding
 pInstance sig actuals lhss = do
-  ctv <- gets ctxTypeVars
   actualTypes <- mapAccum (locally . checkExpression) noType actuals
   lhssTypes <- mapAccum (locally . checkExpression) noType lhss
-  case oneSidedUnifier (psigTypeVars sig) (psigArgTypes sig ++ psigRetTypes sig) ctv (actualTypes ++ lhssTypes) of
-    Nothing -> throwTypeError (text "Could not match procedure signature" <+> 
-      doubleQuotes (sigDoc (psigArgTypes sig) (psigRetTypes sig)) <+>
-      text "against actual types" <+> 
-      doubleQuotes (sigDoc actualTypes lhssTypes) <+>
-      text "in the call to" <+> text (psigName sig))
-    Just u -> return u    
+  let name = psigName sig
+  let tv = psigTypeVars sig
+  let argTypes = psigArgTypes sig
+  let retTypes = psigRetTypes sig
+  (newTV, newParamTypes) <- withFreshTV tv (argTypes ++ retTypes)
+  let (newArgTypes, newRetTypes) = splitAt (length argTypes) newParamTypes
+  case unifier [] newArgTypes actualTypes of
+    Nothing -> typeMismatch (text "in-parameter types") argTypes (text "actual argument types") actualTypes (text "in the call to" <+> text name)
+    Just u1 -> case unifier [] (map (typeSubst u1) newRetTypes) lhssTypes of
+      Nothing -> typeMismatch (text "out-parameter types") (map (typeSubst (renameTypeVars newTV tv u1)) retTypes) (text "call left-hand side types") lhssTypes (text "in the call to" <+> text name)
+      Just u2 -> return $ renameTypeVars newTV tv (u1 `M.union` u2)
   
 {- Expressions -}
 
@@ -393,7 +397,7 @@ checkExpression (Pos pos e) = do
     FF -> return BoolType
     Numeral n -> return IntType
     Var id -> checkVar id
-    Application id args -> checkApplication id args Nothing
+    Application id args -> checkApplication id args
     MapSelection m args -> checkMapSelection m args
     MapUpdate m args val -> checkMapUpdate m args val
     Old e' -> checkOld e'
@@ -410,38 +414,52 @@ checkVar id = do
     Nothing -> throwTypeError (text "Not in scope: variable or constant" <+> text id)
     Just t -> return t    
 
--- @mRetType@ stores function return type if known from the context (currently: if used inside a coercion);
--- it is a temporary workaround for generic return types of functions    
-checkApplication :: Id -> [Expression] -> Maybe Type -> Typing Type
-checkApplication id args mRetType = do
+checkApplication :: Id -> [Expression] -> Typing Type
+checkApplication id args = do
   cfun <- gets ctxFunctions
   case M.lookup id cfun of
     Nothing -> throwTypeError (text "Not in scope: function" <+> text id)
     Just sig -> do
-      u <- locally $ fInstance sig args mRetType
-      return $ typeSubst u (fsigRetType sig)
+      inst <- locally $ fInstance sig args
+      return $ fsigRetType inst
     
 checkMapSelection :: Expression -> [Expression] -> Typing Type
 checkMapSelection m args = do
   mType <- locally $ checkExpression m
+  selectTypes <- mapAccum (locally . checkExpression) noType args
   case mType of
     MapType tv domainTypes rangeType -> do
-      ctv <- gets ctxTypeVars
-      actualTypes <- mapAccum (locally . checkExpression) noType args
-      case oneSidedUnifier tv domainTypes ctv actualTypes of
-        Nothing -> throwTypeError (text "Could not match map domain types" <+> doubleQuotes (commaSep (map typeDoc domainTypes)) <+>
-          text "against map selection types" <+> doubleQuotes (commaSep (map typeDoc actualTypes)) <+>
-          text "for the map" <+> exprDoc m)
-        Just u -> return (typeSubst u rangeType)
-    t -> throwTypeError (text "Map selection applied to a non-map" <+> exprDoc m <+> text "of type" <+> doubleQuotes (typeDoc t))
+      (_, newRangeType : newDomainTypes) <- withFreshTV tv (rangeType : domainTypes)
+      case unifier [] newDomainTypes selectTypes of
+        Nothing -> typeMismatch (text "map domain types") domainTypes (text "map selection types") selectTypes (text "for map" <+> exprDoc m)
+        Just u -> return (typeSubst u newRangeType)
+    t -> do
+      freshRange <- nullaryType <$> state genFreshTV
+      case unifier [] [t] [MapType [] selectTypes freshRange] of
+        -- t is not a free variable:
+        Nothing -> throwTypeError (text "Map selection applied to a non-map" <+> exprDoc m <+> text "of type" <+> doubleQuotes (typeDoc t))
+        -- t is a free variable:
+        Just u -> return $ typeSubst u freshRange
   
 checkMapUpdate :: Expression -> [Expression] -> Expression -> Typing Type
-checkMapUpdate m args val = do 
-  t <- locally $ checkMapSelection m args
-  actualT <- locally $ checkExpression val
-  if t <==> actualT 
-    then locally $ checkExpression m 
-    else throwTypeError (text "Update value type" <+> doubleQuotes (typeDoc actualT) <+> text "different from map range type" <+> doubleQuotes (typeDoc t))
+checkMapUpdate m args val = do
+  mType <- locally $ checkExpression m
+  selectTypes <- mapAccum (locally . checkExpression) noType args
+  updateType <- locally $ checkExpression val
+  case mType of
+    MapType tv domainTypes rangeType -> do
+      (newTV, (newRangeType : newDomainTypes)) <- withFreshTV tv (rangeType : domainTypes)
+      case unifier [] newDomainTypes selectTypes of
+        Nothing -> typeMismatch (text "map domain types") domainTypes (text "map selection types") selectTypes (text "for map" <+> exprDoc m)
+        Just u1 -> case unifier [] [typeSubst u1 newRangeType] [updateType] of
+          Nothing -> typeMismatch (text "map range type") [typeSubst (renameTypeVars newTV tv u1) rangeType] (text "map update type") [updateType] (text "for map" <+> exprDoc m)
+          Just u2 -> return $ typeSubst (u1 `M.union` u2) mType -- mType does not contain fresh names for tv, so only free type variables that came from outside will be substituted      
+    t -> do
+      case unifier [] [t] [MapType [] selectTypes updateType] of
+        -- t is not a free variable:
+        Nothing -> throwTypeError (text "Map update applied to a non-map" <+> exprDoc m <+> text "of type" <+> doubleQuotes (typeDoc t))
+        -- t is a free variable:
+        Just u -> return $ typeSubst u t
     
 checkOld :: Expression -> Typing Type    
 checkOld e = do
@@ -454,44 +472,52 @@ checkOld e = do
     
 checkIfExpression :: Expression -> Expression -> Expression -> Typing Type    
 checkIfExpression cond e1 e2 = do
-  locally $ compareType "if-expression condition" BoolType cond
-  t <- locally $ checkExpression e1
-  locally $ compareType "else-part of the if-expression" t e2
-  return t
+  locally $ checkMatch (text "if-expression condition") BoolType cond
+  t1 <- locally $ checkExpression e1
+  t2 <- locally $ checkExpression e2
+  case unifier [] [t1] [t2] of
+    Nothing -> typeMismatch (text "type of then-part") [t1] (text "type of else-part") [t2] (text "in if-expression")
+    Just u -> return $ typeSubst u t1
   
 checkCoercion :: Expression -> Type -> Typing Type
 checkCoercion e t = do
   locally $ checkType t
   t' <- (flip resolve) t <$> get
-  case node e of
-    Application id args -> do
-      modify $ setPos (position e)
-      locally $ checkApplication id args (Just t')
-    _ -> (locally $ compareType "coerced expression" t' e) >> return t'
+  locally $ checkMatch (text "coerced expression") t' e
+  return t'
     
 checkUnaryExpression :: UnOp -> Expression -> Typing Type
 checkUnaryExpression op e
-  | op == Neg = matchType IntType IntType
-  | op == Not = matchType BoolType BoolType
+  | op == Neg = checkMatch (msg op) IntType e >> return IntType
+  | op == Not = checkMatch (msg op) BoolType e >> return BoolType
   where 
-    matchType t ret = do
-      t' <- locally $ checkExpression e
-      if t' <==> t then return ret else throwTypeError (errorMsg t' op)
-    errorMsg t op = text "Invalid argument type" <+> doubleQuotes (typeDoc t) <+> text "to unary operator" <+> unOpDoc op
+    msg op = text "operand to" <+> unOpDoc op
   
 checkBinaryExpression :: BinOp -> Expression -> Expression -> Typing Type
 checkBinaryExpression op e1 e2
-  | elem op [Plus, Minus, Times, Div, Mod] = matchTypes (\t1 t2 -> t1 <==> IntType && t2 <==> IntType) IntType
-  | elem op [And, Or, Implies, Explies, Equiv] = matchTypes (\t1 t2 -> t1 <==> BoolType && t2 <==> BoolType) BoolType
-  | elem op [Ls, Leq, Gt, Geq] = matchTypes (\t1 t2 -> t1 <==> IntType && t2 <==> IntType) BoolType
-  | elem op [Eq, Neq] = do ctv <- gets ctxTypeVars; matchTypes (\t1 t2 -> isJust (unifier ctv [t1] [t2])) BoolType
-  | op == Lc = matchTypes (<==>) BoolType
+  | elem op [Plus, Minus, Times, Div, Mod] = matchOperands IntType IntType IntType
+  | elem op [And, Or, Implies, Explies, Equiv] = matchOperands BoolType BoolType BoolType
+  | elem op [Ls, Leq, Gt, Geq] = matchOperands IntType IntType BoolType
+  | elem op [Eq, Neq] = do 
+    ctv <- gets ctxTypeVars; 
+    t1 <- locally $ checkExpression e1; 
+    t2 <- locally $ checkExpression e2;
+    case unifier ctv [t1] [t2] of
+      Nothing -> typeMismatch (text "type of left operand") [t1] (text "type of right operand") [t2] (text "to" <+> binOpDoc op)
+      Just _ -> return BoolType
+  | op == Lc = do 
+    t1 <- locally $ checkExpression e1; 
+    t2 <- locally $ checkExpression e2;
+    case unifier [] [t1] [t2] of
+      Nothing -> typeMismatch (text "type of left operand") [t1] (text "type of right operand") [t2] (text "to" <+> binOpDoc op)
+      Just _ -> return BoolType
   where 
-    matchTypes pred ret = do
-      t1 <- locally $ checkExpression e1
-      t2 <- locally $ checkExpression e2
-      if pred t1 t2 then return ret else throwTypeError (errorMsg t1 t2 op)
-    errorMsg t1 t2 op = text "Invalid argument types" <+> doubleQuotes (typeDoc t1) <+> text "and" <+> doubleQuotes (typeDoc t2) <+> text "to binary operator" <+> binOpDoc op
+    matchOperands t1 t2 ret = do
+      locally $ checkMatch (msgLeft op) t1 e1
+      locally $ checkMatch (msgRight op) t2 e2
+      return ret
+    msgLeft op = text "left operand to" <+> binOpDoc op
+    msgRight op = text "right operand to" <+> binOpDoc op
     
 checkQuantified :: QOp -> [Id] -> [IdType] -> Expression -> Typing Type
 checkQuantified Lambda tv vars e = do
@@ -501,7 +527,7 @@ checkQuantified Lambda tv vars e = do
     then throwTypeError (text "Type variable(s) must occur among the types of lambda parameters:" <+> commaSep (map text missingTV)) 
     else do
       rangeType <- locally $ checkExpression e
-      return $ MapType tv varTypes rangeType -- ToDo: shouldn't it be resolved?
+      return $ MapType tv varTypes rangeType
   where
     varTypes = map snd vars
     missingTV = filter (not . freeInVars) tv    
@@ -509,7 +535,7 @@ checkQuantified Lambda tv vars e = do
 checkQuantified qop tv vars e = do
   mapAccum_ checkTypeVar tv
   mapAccum_ (checkIdType localScope ctxIns setIns) vars
-  locally $ compareType "quantified expression" BoolType e
+  checkMatch (text "scoped expression") BoolType e
   return BoolType
     
 {- Statements -}
@@ -520,7 +546,7 @@ checkStatement :: Statement -> Typing ()
 checkStatement (Pos pos s) = do
   modify $ setPos pos
   case s of
-    Predicate (SpecClause _ _ e) -> compareType "predicate" BoolType e
+    Predicate (SpecClause _ _ e) -> checkMatch (text "predicate") BoolType e
     Havoc vars -> checkLefts (nub vars) (length (nub vars))
     Assign lhss rhss -> checkAssign lhss rhss
     Call lhss name args -> checkCall lhss name args
@@ -538,7 +564,7 @@ checkAssign lhss rhss = do
   rTypes <- mapAccum (locally . checkExpression) noType rhss
   cpos <- gets ctxPos
   let selectExpr (id, selects) = foldl mapSelectExpr (attachPos cpos (Var id)) selects
-  zipWithAccum_ (\t e -> locally $ compareType "assignment left-hand side" t e) rTypes (map selectExpr lhss) 
+  zipWithAccum_ (\t e -> locally $ checkMatch (text "assignment left-hand side") t e) rTypes (map selectExpr lhss)
         
 checkCall :: [Id] -> Id -> [Expression] -> Typing ()
 checkCall lhss name args = do
@@ -574,7 +600,7 @@ checkIf :: WildcardExpression -> Block -> (Maybe Block) -> Typing ()
 checkIf cond thenBlock elseBlock = report $ do
   case cond of
     Wildcard -> return ()
-    Expr e -> accum (locally $ compareType "branching condition" BoolType e) ()
+    Expr e -> accum (locally $ checkMatch (text "branching condition") BoolType e) ()
   accum (locally $ checkBlock thenBlock) ()
   case elseBlock of
     Nothing -> return ()
@@ -584,8 +610,8 @@ checkWhile :: WildcardExpression -> [SpecClause] -> Block -> Typing ()
 checkWhile cond invs body = report $ do
   case cond of  
     Wildcard -> return ()
-    Expr e -> accum (locally $ compareType "loop condition" BoolType e) ()
-  mapAccumA_ (locally . compareType "loop invariant" BoolType) (map specExpr invs)
+    Expr e -> accum (locally $ checkMatch (text "loop condition") BoolType e) ()
+  mapAccumA_ (locally . checkMatch (text "loop invariant") BoolType) (map specExpr invs)
   lift . modify $ setInLoop True
   accum (checkBlock body) ()
 
@@ -787,7 +813,7 @@ checkWhere :: IdTypeWhere -> Typing ()
 checkWhere var = do
   locally $ do
     modify $ setTwoState False
-    compareType "where clause" BoolType (itwWhere var)
+    checkMatch (text "where clause") BoolType (itwWhere var)
   modify $ \c -> c { ctxWhere = M.insert (itwId var) (itwWhere var) (ctxWhere c) }
 
 -- | 'checkParentInfo' @ids t parents@ : Check that identifiers in @parents@ are distinct constants of type @t@ and do not occur among @ids@
@@ -800,9 +826,9 @@ checkParentInfo ids t parents = if length parents /= length (nub parents)
       cconst <- gets ctxConstants
       case M.lookup p cconst of
         Nothing -> throwTypeError (text "Not in scope: constant" <+> text p)
-        Just t' -> if not (t <==> t')
-          then throwTypeError (text "Parent type" <+> doubleQuotes (typeDoc t') <+> text "is different from constant type" <+> doubleQuotes (typeDoc t))
-          else if p `elem` ids
+        Just t' -> case unifier [] [t] [t'] of
+          Nothing -> typeMismatch (text "type of parent" <+> text p) [t'] (text "constant type") [t] Text.PrettyPrint.empty
+          Just _ -> if p `elem` ids
             then throwTypeError (text "Constant" <+> text p <+> text "is decalred to be its own parent")
             else return ()    
 
@@ -810,7 +836,7 @@ checkParentInfo ids t parents = if length parents /= length (nub parents)
 checkAxiom :: Expression -> Typing ()
 checkAxiom e = do
   modify $ setGlobals M.empty 
-  compareType "axiom" BoolType e
+  checkMatch (text "axiom") BoolType e
   
 -- | Check that function body is a valid expression of the same type as the function return type
 checkFunction :: Id -> [Id] -> [FArg] -> Expression -> Typing ()
@@ -819,7 +845,7 @@ checkFunction name tv args body = do
   mapAccum_ addFArg args
   modify $ setGlobals M.empty
   retType <- gets $ fsigRetType . funSig name
-  compareType "function body" retType body
+  checkMatch (text "function body") retType body
   where 
     addFArg (Just id, t) = checkIdType ctxIns ctxIns setIns (id, t)
     addFArg _ = return ()
@@ -830,11 +856,11 @@ checkProcedure tv args rets specs mb = do
   modify $ setTypeVars tv
   mapAccum_ (checkIdType localScope ctxIns setIns) (map noWhere args)
   locally $ mapAccum_ checkWhere args
-  mapAccum_ (locally . compareType "precondition" BoolType . specExpr) (preconditions specs)
+  mapAccum_ (locally . checkMatch (text "precondition") BoolType . specExpr) (preconditions specs)
   mapAccum_ (checkIdType localScope ctxLocals setLocals) (map noWhere rets)
   locally $ mapAccum_ checkWhere rets
   modify $ setTwoState True
-  mapAccum_ (locally . compareType "postcondition" BoolType . specExpr) (postconditions specs)
+  mapAccum_ (locally . checkMatch (text "postcondition") BoolType . specExpr) (postconditions specs)
   cglobs <- gets ctxGlobals
   let invalidModifies = modifies specs \\ M.keys cglobs
   if not (null invalidModifies)
@@ -890,16 +916,16 @@ checkProgram (Program decls) = do
     
 {- Misc -}
 
--- | 'compareType' @msg t e@
--- Check that @e@ is a valid expression and its type is @t@;
+-- | 'checkMatch' @msg t e@
+-- Check that @e@ is a valid expression and its type matches @t@;
 -- in case of type error use @msg@ as a description for @e@
 -- (requires type synonyms in t be resolved)
-compareType :: String -> Type -> Expression -> Typing ()
-compareType msg t e = do
+checkMatch :: Doc -> Type -> Expression -> Typing ()
+checkMatch edoc t e = do
   t' <- locally $ checkExpression e
-  if t <==> t' 
-    then return ()
-    else throwTypeError (text "Type of" <+> text msg <+> doubleQuotes (typeDoc t') <+> text "is different from" <+> doubleQuotes (typeDoc t))
+  case unifier [] [t] [t'] of
+    Nothing -> typeMismatch (text "type of" <+> edoc) [t'] (text "expected type") [t] Text.PrettyPrint.empty
+    Just u -> return ()
     
 -- 'checkLefts' @ids n@ : 
 -- Check that there are @n@ @ids@, all @ids@ are unique and denote mutable variables

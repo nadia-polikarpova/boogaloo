@@ -401,12 +401,12 @@ eval expr = case node expr of
   FF -> return $ BoolValue False
   Numeral n -> return $ IntValue n
   Var id -> evalVar id (position expr)
-  Application id args -> evalApplication id args (position expr) Nothing
+  Application id args -> evalApplication id args (position expr)
   MapSelection m args -> evalMapSelection m args (position expr)
   MapUpdate m args new -> evalMapUpdate m args new
   Old e -> old $ eval e
   IfExpr cond e1 e2 -> evalIf cond e1 e2
-  Coercion e t -> evalCoercion e t
+  Coercion e t -> eval e
   UnaryExpression op e -> unOp op <$> eval e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
   Quantified Lambda _ _ _ -> throwRuntimeFailure (UnsupportedConstruct "lambda expressions") (position expr)
@@ -434,7 +434,7 @@ evalVar id pos = do
         Just val -> return val
         Nothing -> generateValue t (modify . setter id) (checkWhere id pos)
   
-evalApplication name args pos mRetType = do
+evalApplication name args pos = do
   defs <- gets (lookupFunction name)  
   evalDefs defs
   where
@@ -449,10 +449,8 @@ evalApplication name args pos mRetType = do
         BoolValue False -> evalDefs defs
     evalLocally formals actuals expr = do
       sig <- funSig name <$> gets envTypeContext
-      executeLocally (enterFunction sig formals args mRetType) formals actuals (eval expr)
-    returnType tc = case mRetType of
-      Nothing -> exprType tc (gen $ Application name args)
-      Just t -> t
+      executeLocally (enterFunction sig formals args) formals actuals (eval expr)
+    returnType tc = exprType tc (gen $ Application name args)
     frame = StackFrame pos name
     
 evalMapSelection m args pos = do 
@@ -489,13 +487,7 @@ evalIf cond e1 e2 = do
   case v of
     BoolValue True -> eval e1    
     BoolValue False -> eval e2    
-    
-evalCoercion (Pos pos (Application f args)) t = do
-  c <- gets envTypeContext
-  let t' = resolve c t
-  evalApplication f args pos (Just t') 
-evalCoercion e _ = eval e
-  
+      
 evalBinary op e1 e2 = do
   left <- eval e1
   case binOpLazy op left of

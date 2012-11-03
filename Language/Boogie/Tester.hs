@@ -232,7 +232,7 @@ testImplementation sig def = do
     typeTestCase :: TestSettings s => [Type] -> TestSession s [TestCase]
     typeTestCase typeInputs = do
       -- fresh name for a parameter at position index; to be used as actual parameter
-      let localName index = [nonIdChar] ++ show index
+      let localName index = nonIdChar : show index
       let localNames = map localName [0..length (psigParams sig) - 1]
       -- declare local variables localNames with appropriate types:
       modify $ mapSnd (modifyTypeContext ((M.fromList $ zip localNames typeInputs) `setLocals`))
