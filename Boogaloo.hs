@@ -12,6 +12,7 @@ import Language.Boogie.Interpreter
 import Language.Boogie.Tester
 import System.Environment
 import System.Console.CmdArgs
+import System.Console.ANSI
 import System.Random
 import Data.Time.Calendar
 import Data.List
@@ -105,11 +106,11 @@ executeFromFile :: String -> String -> IO ()
 executeFromFile file entryPoint = runOnFile printFinalState file
   where
     printFinalState p context = case M.lookup entryPoint (ctxProcedures context) of
-      Nothing -> print (text "Cannot find program entry point" <+> text entryPoint)
+      Nothing -> printError (text "Cannot find program entry point" <+> text entryPoint)
       Just sig -> if not (goodEntryPoint sig)
-        then print (text "Program entry point" <+> text entryPoint <+> text "does not have the required signature" <+> doubleQuotes (sigDoc [] []))
+        then printError (text "Program entry point" <+> text entryPoint <+> text "does not have the required signature" <+> doubleQuotes (sigDoc [] []))
         else case executeProgram p context entryPoint of
-          Left err -> print err
+          Left err -> printError err
           Right env -> (print . varsDoc . envGlobals) env
     goodEntryPoint sig = null (psigTypeVars sig) && null (psigArgTypes sig) && null (psigRetTypes sig)
 
@@ -120,7 +121,7 @@ testFromFile file procNames testMethod printAll = runOnFile printTestOutcomes fi
   where
     printTestOutcomes p context = do
       let (present, missing) = partition (`M.member` ctxProcedures context) procNames
-      when (not (null missing)) $ print (text "Cannot find procedures under test:" <+> commaSep (map text missing))
+      when (not (null missing)) $ printError (text "Cannot find procedures under test:" <+> commaSep (map text missing))
       testResults <- testMethod p context present
       print $ testSessionSummary testResults
       when printAll $ putStr "\n" >> mapM_ print testResults
@@ -130,10 +131,18 @@ runOnFile :: (Program -> Context -> IO ()) -> String -> IO ()
 runOnFile command file = do 
   parseResult <- parseFromFile Parser.program file
   case parseResult of
-    Left parseErr -> print parseErr
+    Left parseErr -> printError parseErr
     Right p -> case typeCheckProgram p of
-      Left typeErrs -> print (typeErrorsDoc typeErrs)
+      Left typeErrs -> printError (typeErrorsDoc typeErrs)
       Right context -> command p context
+      
+{- Output -}
+
+-- | Output errors in red
+printError e = do
+  setSGR [SetColor Foreground Vivid Red]
+  print e
+  setSGR []
       
 {- Helpers for testing internal functions -}      
       
@@ -142,18 +151,5 @@ harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
       let env = execState (collectDefinitions p) emptyEnv { envTypeContext = context }
-      print $ envGlobals env
-      
--- | Test that print . parse == print . parse . print .parse      
-testParser :: String -> IO ()      
-testParser file = do
-  result <- parseFromFile Parser.program file
-  case (result) of
-    Left err -> print err
-    Right p -> do
-      case parse Parser.program ('*' : file) (show p) of
-        Left err -> print err
-        Right p' -> if p == p'
-          then putStr ("Passed.\n")
-          else putStr ("Failed with different ASTs.\n")
+      print $ envGlobals env      
           
