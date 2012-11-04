@@ -30,7 +30,9 @@ typeCheckerTests = TestLabel "TypeChecker" $ TestList [
   testCase (typeCheckerFailure 12)  "UpdateExprTyping",
   testCase (typeCheckerFailure 1)   "TypeVarClash",
   testCase (typeCheckerFailure 8)   "GenericReturn",
-  testCase (typeCheckerFailure 3)   "MissingTV"
+  testCase (typeCheckerFailure 3)   "MissingTV",
+  testCase typeCheckerSuccess       "DafnyPrelude",
+  testCase typeCheckerSuccess       "VccPrelude"
   ]
 
 interpreterTests = TestLabel "Interpreter" $ TestList [
