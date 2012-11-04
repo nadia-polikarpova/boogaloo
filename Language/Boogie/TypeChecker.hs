@@ -26,6 +26,7 @@ module Language.Boogie.TypeChecker (
 
 import Language.Boogie.AST
 import Language.Boogie.Util
+import Language.Boogie.ErrorAccum
 import Language.Boogie.Position
 import Language.Boogie.PrettyPrinter
 import Data.List
@@ -223,9 +224,6 @@ typeErrorDoc (TypeError pos msgDoc) = text "Type error in" <+> text (show pos) $
 -- | Pretty-printed list of type errors
 typeErrorsDoc errs = (vsep . punctuate newline . map typeErrorDoc) errs
   
--- | Result of type checking: either 'a' or a type error
--- type Checked a = Either [TypeError] a
-
 -- | Throw a single type error
 throwTypeError msgDoc = do
   pos <- gets ctxPos
@@ -238,67 +236,8 @@ typeMismatch doc1 ts1 doc2 ts2 contextDoc = throwTypeError $
   text "against" <+>      doc2 <+> doubleQuotes (commaSep (map typeDoc ts2)) <+>
   contextDoc  
 
--- | Error accumulator: used to store intermediate type checking results, when errors should be accumulated rather than reported immediately  
-data ErrorAccumT e m a = ErrorAccumT { runErrorAccumT :: m ([e], a) }
-
-instance Monad m => Monad (ErrorAccumT e m) where
-  return x  = ErrorAccumT $ return ([], x)
-  m >>= k   = ErrorAccumT $ do
-    (errs, res) <- runErrorAccumT m
-    (errs', res') <- runErrorAccumT $ k res
-    return (errs ++ errs', res')
-    
-instance MonadTrans (ErrorAccumT e) where
-  lift m = ErrorAccumT $ do
-    a <- m
-    return ([], a)  
-
 -- | Computation with typing context as state, which can result in either a list of type errors or a    
 type Typing a = ErrorT [TypeError] (State Context) a
--- | Computation with typing context as state, which results in a and a list of errors    
-type TypingAccum a = ErrorAccumT TypeError (State Context) a    
-    
--- | Transform a typing and default value into a typing accumlator
-accum :: Typing a -> a -> TypingAccum a
-accum typing def = ErrorAccumT (errToAccum def <$> runErrorT typing)
-  where
-    errToAccum def (Left errs)  = (errs, def)
-    errToAccum def (Right x)    = ([], x)
-        
--- | Transform a typing accumlator back into a regular typing  
-report :: TypingAccum a -> Typing a
-report accum  = ErrorT (accumToErr <$> runErrorAccumT accum)
-  where
-    accumToErr ([], x) = Right x
-    accumToErr (es, _) = Left es  
-
--- | 'mapAccum' @f def nodes@ :
--- Apply type checking @f@ to all @nodes@,
--- accumulating errors from all @nodes@ and reporting them at the end
-mapAccum :: (b -> Typing c) -> c -> [b] -> Typing [c]
-mapAccum f def nodes = report $ mapM (acc f) nodes  
-  where
-    acc f x  = accum (f x) def
-   
--- | 'mapAccumA_' @f nodes@ :
--- Apply type checking @f@ to all @nodes@ throwing away the result,
--- accumulating errors from all @nodes@
-mapAccumA_ :: (a -> Typing ()) -> [a] -> TypingAccum ()
-mapAccumA_ f nodes = mapM_ (acc f) nodes  
-  where
-    acc f x  = accum (f x) ()
-    
--- | Same as 'mapAccumA_', but reporting the error at the end
-mapAccum_ :: (a -> Typing ()) -> [a] -> Typing ()
-mapAccum_ f nodes = report $ mapAccumA_ f nodes  
-
--- | 'zipWithAccum_' @f xs ys@ :
--- Apply type checking @f@ to all @xs@ and @ys@ throwing away the result,
--- accumulating errors from all nodes and reporting them at the end
-zipWithAccum_ :: (a -> b -> Typing ()) -> [a] -> [b] -> Typing ()
-zipWithAccum_ f xs ys = report $ zipWithM_ (acc f) xs ys  
-  where
-    acc f x y  = accum (f x y) ()
   
 {- Types -}
   

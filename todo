@@ -10,7 +10,6 @@
   - Dynamic assertion (loop invariant) inference (testing + statistical test)?
 
 - Type checker
-  - Put ErrorAccum into a separate module
   - Data type for type errors (will be easier to evaluate test results)
   - Annotate AST with expr types
   
