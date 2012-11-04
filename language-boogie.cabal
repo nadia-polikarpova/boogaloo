@@ -26,7 +26,7 @@ flag tests
   Default:     False
 
 library
-  exposed-modules:     Language.Boogie.Util, Language.Boogie.TypeChecker, Language.Boogie.Tokens, Language.Boogie.Tester, Language.Boogie.PrettyPrinter, Language.Boogie.Position, Language.Boogie.Parser, Language.Boogie.Interpreter, Language.Boogie.BasicBlocks, Language.Boogie.AST, Language.Boogie.DataFlow, Language.Boogie.NormalForm, Language.Boogie.Intervals
+  exposed-modules:     Language.Boogie.Util, Language.Boogie.TypeChecker, Language.Boogie.Tokens, Language.Boogie.Tester, Language.Boogie.PrettyPrinter, Language.Boogie.Position, Language.Boogie.Parser, Language.Boogie.Interpreter, Language.Boogie.BasicBlocks, Language.Boogie.AST, Language.Boogie.ErrorAccum, Language.Boogie.DataFlow, Language.Boogie.NormalForm, Language.Boogie.Intervals
   -- other-modules:       
   build-depends:       base ==4.*, cmdargs ==0.10.*, random ==1.0.*, time ==1.4.*, containers ==0.4.*, mtl ==2.1.*, pretty ==1.1.*, parsec ==3.1.*, transformers ==0.3.*
   
