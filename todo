@@ -11,19 +11,18 @@
 
 - Type checker
   - Data type for type errors (will be easier to evaluate test results)
-  - Annotate AST with expr types
+  -> Annotate AST with expr types (v0.2)
   
 - Interpreter
   - Support calls to procedures with no implementation
+  - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses)  
+  - Extract constant constraints from axioms
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - Backtracking (logicT monad?)  
   - User-defined types
   - Extends ordering
-  - Extract function and constant constraints from axioms
+  - Extract function constraints from axioms
   - Constraint solving
-  - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses);
-      forces to have "shalow" Eq, Ord on types and expressions, so that map values can be stored as map keys
-      or to create a named function per lambda expression
   - With better non-determinism: treat maps like functions in testing, and do not generate all possible values for them explicitly?
   - Call forall
   
