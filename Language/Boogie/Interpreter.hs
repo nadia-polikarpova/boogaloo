@@ -81,12 +81,15 @@ data Value = IntValue Integer |   -- ^ Integer value
   CustomValue Integer             -- ^ Value of a user-defined type (values with the same code are considered equal)
   deriving (Eq, Ord)
       
--- | Default value of a type (used to initialize variables)  
-defaultValue :: Type -> Value
-defaultValue BoolType         = BoolValue False  
-defaultValue IntType          = IntValue 0
-defaultValue (MapType _ _ _)  = MapValue M.empty
-defaultValue (IdType _ _)     = CustomValue 0
+-- | 'defaultValue' @t@ : Default value of type @t@ (used to initialize variables);
+-- 'Nothing' if @t@ is a type variable
+defaultValue :: Type -> Maybe Value
+defaultValue BoolType         = Just $ BoolValue False  
+defaultValue IntType          = Just $ IntValue 0
+defaultValue (MapType _ _ _)  = Just $ MapValue M.empty
+defaultValue (IdType x []) 
+  | isTypeVar [] x            = Nothing
+defaultValue (IdType _ _)     = Just $ CustomValue 0
 
 -- | Pretty-printed value
 valueDoc :: Value -> Doc
@@ -200,6 +203,13 @@ setV id val = do
 -- all @ids@ have to be declared in the current type context
 setAll ids vals = zipWithM_ setV ids vals
 
+-- | 'generateDefault' @t pos@ : generate default value of type @t@ at source position @pos@;
+-- fail if @t@ is a type variable
+generateDefault :: Type -> SourcePos -> Execution Value
+generateDefault t pos = case defaultValue t of
+  Nothing -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
+  Just v -> return v
+
 -- | Run execution in the old environment
 old :: Execution a -> Execution a
 old execution = do
@@ -236,20 +246,7 @@ executeLocally localTC formals actuals computation = do
     unwind oldEnv = do
       env <- get
       put env { envTypeContext = envTypeContext oldEnv, envLocals = envLocals oldEnv }
-              
-{- Nondeterminism -}  
-  
--- | Generate a value of type t,
--- such that when it is set, guard does not fail.
--- Fail if cannot find such a value.
--- (So far just returns the default value, but will be more elaborate in the future)
-generateValue :: Type -> (Value -> Execution ()) -> (Execution ()) -> Execution Value          
-generateValue t set guard = let newValue = defaultValue t in
-  do
-    set newValue 
-    guard
-    return newValue  
-  
+                
 {- Runtime failures -}
 
 data FailureSource = 
@@ -304,8 +301,8 @@ instance Error RuntimeFailure where
   strMsg s = RuntimeFailure (UnsupportedConstruct s) noPos emptyEnv []
   
 -- | Pretty-printed run-time failure
-runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) $+$ 
-  text "with" <+> varsDoc revelantVars $+$
+runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) $+$
+  option (not (M.null revelantVars)) (text "with" <+> varsDoc revelantVars) $+$
   vsep (map stackFrameDoc (reverse (rtfTrace err)))
   where
     failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
@@ -425,14 +422,18 @@ evalVar id pos = do
           constants <- gets envConstants
           case M.lookup id constants of
             Just e -> eval e
-            Nothing -> return $ defaultValue t -- ToDo: cache constant value?
+            Nothing -> generateDefault t pos -- ToDo: cache constant value?
         Nothing -> (error . show) (text "encountered unknown identifier during execution:" <+> text id) 
   where
     lookup getter setter t = do
       vars <- gets getter
       case M.lookup id vars of
         Just val -> return val
-        Nothing -> generateValue t (modify . setter id) (checkWhere id pos)
+        Nothing -> do
+          val <- generateDefault t pos 
+          modify $ setter id val
+          checkWhere id pos
+          return val
   
 evalApplication name args pos = do
   defs <- gets (lookupFunction name)  
@@ -440,7 +441,9 @@ evalApplication name args pos = do
   where
     -- | If the guard of one of function definitions evaluates to true, apply that definition; otherwise return the default value
     evalDefs :: [FDef] -> Execution Value
-    evalDefs [] = defaultValue . returnType <$> gets envTypeContext
+    evalDefs [] = do
+      tc <- gets envTypeContext
+      generateDefault (returnType tc) pos
     evalDefs (FDef formals guard body : defs) = do
       argsV <- mapM eval args
       applicable <- evalLocally formals argsV guard `catchError` addStackFrame frame
@@ -460,12 +463,13 @@ evalMapSelection m args pos = do
   argsV <- mapM eval args
   case mV of 
     MapValue map -> case M.lookup argsV map of
-      Nothing -> 
+      Nothing -> do
+        val <- generateDefault rangeType pos
         case mapVariable tc (node m) of
-        Nothing -> return $ defaultValue rangeType -- The underlying map comes from a constant or function, nothing to check
-        Just v -> generateValue rangeType (\_ -> return ()) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause
-        -- Decided not to cache map access so far, because it leads to strange effects when the map is passed as an argument and can take a lot of memory 
-        -- Just v -> generateValue rangeType (cache v map argsV) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause and cache the value
+          Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
+          Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
+          -- Decided not to cache map access so far, because it leads to strange effects when the map is passed as an argument and can take a lot of memory 
+          -- Just v -> generateValue rangeType (cache v map argsV) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause and cache the value
       Just v -> return v
   where
     mapVariable tc (Var v) = if M.member v (allVars tc)
@@ -547,7 +551,10 @@ execHavoc ids pos = do
   tc <- gets envTypeContext
   mapM_ (havoc tc) ids 
   where
-    havoc tc id = generateValue (exprType tc . gen . Var $ id) (setV id) (checkWhere id pos) 
+    havoc tc id = do
+      val <- generateDefault (exprType tc . gen . Var $ id) pos
+      setV id val
+      checkWhere id pos      
     
 execAssign lhss rhss = do
   rVals <- mapM eval rhss'

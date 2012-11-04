@@ -6,6 +6,7 @@ module Language.Boogie.Util (
   renameTypeVars,
   fromTVNames,
   isFreeIn,
+  isTypeVar,
   unifier,
   freshTVName,
   tupleType,  
