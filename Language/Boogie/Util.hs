@@ -46,7 +46,8 @@ module Language.Boogie.Util (
   mapSnd,
   mapBoth,
   changeState,
-  withLocalState
+  withLocalState,
+  allIntegers
 ) where
 
 import Language.Boogie.AST
@@ -58,6 +59,7 @@ import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Applicative
 import Control.Monad.State
+import Control.Monad.Stream
 
 {- Types -}
 
@@ -354,14 +356,25 @@ mapBoth f (x, y) = (f x, f y)
 mapItwType f (IdTypeWhere i t w) = IdTypeWhere i (f t) w
 
 -- | Execute a computation with state of type @t@ inside a computation with state of type @s@
-changeState :: (s -> t) -> (t -> s -> s) -> State t a -> State s a
+changeState :: Monad m => (s -> t) -> (t -> s -> s) -> StateT t m a -> StateT s m a
 changeState getter modifier e = do
   st <- gets getter
-  let (res, st') = runState e st
+  (res, st') <- lift $ runStateT e st
   modify $ modifier st'
   return res  
 
 -- | 'withLocalState' @localState e@ :
 -- Execute @e@ in current state modified by @localState@, and then restore current state
-withLocalState :: (s -> t) -> State t a -> State s a
+withLocalState :: Monad m => (s -> t) -> StateT t m a -> StateT s m a
 withLocalState localState e = changeState localState (flip const) e
+
+-- | Infinite stream that produces all values of type Integer in the order [0, 1, -1, 2, -2, ...]
+allIntegers :: Stream Integer
+allIntegers = (return 0) `mplus` genNonZero
+  where 
+    genNonZero = (return 1) `mplus` (do
+      x <- genNonZero
+      if x > 0 
+        then return $ -x  
+        else return $ -x + 1
+      )

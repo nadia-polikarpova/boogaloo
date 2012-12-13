@@ -19,6 +19,7 @@ import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.State
+import Control.Monad.Stream
 import Control.Applicative
 import Text.PrettyPrint hiding (mode)
 import Text.ParserCombinators.Parsec (parse, parseFromFile)
@@ -84,7 +85,6 @@ testMethod (Test _ _ limits dlimits _ ) program context procNames =
     }
   in return $ testProgram settings program context procNames
 testMethod (RTest _ _ limits dlimits tc_count seed _) program context procNames = do
-  defaultGen <- getStdGen
   randomGen <- case seed of
     Nothing -> getStdGen
     Just s -> return $ mkStdGen s
@@ -109,9 +109,11 @@ executeFromFile file entryPoint = runOnFile printFinalState file
       Nothing -> printError (text "Cannot find program entry point" <+> text entryPoint)
       Just sig -> if not (goodEntryPoint sig)
         then printError (text "Program entry point" <+> text entryPoint <+> text "does not have the required signature" <+> doubleQuotes (sigDoc [] []))
-        else case executeProgram p context entryPoint of
-          Left err -> printError err
-          Right env -> (print . varsDoc . envGlobals) env
+        -- else printOutcome $ executeProgramDet p context entryPoint
+        else mapM_ printOutcome (take 50 (executeProgram p context entryPoint))
+    printOutcome out = case out of
+      Left err -> printError err
+      Right store -> (print . storeDoc) store    
     goodEntryPoint sig = null (psigTypeVars sig) && null (psigArgTypes sig) && null (psigRetTypes sig)
 
 -- | Test procedures procNames from file with a testMethod
@@ -142,7 +144,7 @@ runOnFile command file = do
 printError e = do
   setSGR [SetColor Foreground Vivid Red]
   print e
-  setSGR []
+  setSGR [SetColor Foreground Vivid White]
       
 {- Helpers for testing internal functions -}      
       
@@ -150,6 +152,5 @@ printError e = do
 harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
-      let env = execState (collectDefinitions p) emptyEnv { envTypeContext = context }
-      print $ envGlobals env      
-          
+      let env = head (toList (execStateT (collectDefinitions p) (initEnv context allValues)))
+      print $ (storeDoc . currentStore) env

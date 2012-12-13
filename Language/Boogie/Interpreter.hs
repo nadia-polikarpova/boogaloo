@@ -3,11 +3,18 @@
 -- | Interpreter for Boogie 2
 module Language.Boogie.Interpreter (
   -- * Executing programs
+  executeProgramDet,
   executeProgram,
+  executeProgramGeneric,
   -- * State
   Value (..),
+  defaultValue,
+  allValues,
+  Store,
+  emptyStore,
   Environment (..),
-  emptyEnv,
+  initEnv,
+  currentStore,
   lookupFunction,
   lookupProcedure,
   modifyTypeContext,
@@ -33,7 +40,7 @@ module Language.Boogie.Interpreter (
   collectDefinitions,
   -- * Pretty-printing
   valueDoc,
-  varsDoc,
+  storeDoc,
   functionsDoc,
   runtimeFailureDoc
   ) where
@@ -53,24 +60,37 @@ import qualified Data.Map as M
 import Control.Monad.Error hiding (join)
 import Control.Applicative hiding (empty)
 import Control.Monad.State hiding (join)
+import Control.Monad.Identity hiding (join)
+import Control.Monad.Stream
 import Text.PrettyPrint
 
 {- Interface -}
 
 -- | 'executeProgram' @p tc entryPoint@ :
--- Execute program @p@ in type context @tc@ starting from procedure @entryPoint@, 
--- and return the final environment;
--- requires that @entryPoint@ have no in- or out-parameters
-executeProgram :: Program -> Context -> Id -> Either RuntimeFailure Environment
-executeProgram p tc entryPoint = finalEnvironment
+-- Execute program @p@ /non-deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
+-- and return an infinite list of possible outcomes (each either runtime failure or the final variable store).
+-- Whenever a value is unspecified, all values of the required type are tried exhaustively.
+executeProgram :: Program -> Context -> Id -> [Either RuntimeFailure Store]
+executeProgram p tc entryPoint = toList $ executeProgramGeneric p tc allValues entryPoint
+
+-- | 'executeProgramDet' @p tc entryPoint@ :
+-- Execute program @p@ /deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
+-- and return a single outcome.
+-- Whenever a value is unspecified, a default value of the required type is used.
+executeProgramDet :: Program -> Context -> Id -> Either RuntimeFailure Store
+executeProgramDet p tc entryPoint = runIdentity $ executeProgramGeneric p tc (Identity . defaultValue) entryPoint
+      
+-- | 'executeProgramGeneric' @p tc gen entryPoint@ :
+-- Execute program @p@ in type context @tc@ with value generator @gen@, starting from procedure @entryPoint@,
+-- and return the outcome(s) embedded into the value generator's monad.
+executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> (Type -> m Value) -> Id -> m (Either RuntimeFailure Store)
+executeProgramGeneric p tc gen entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc gen)
   where
-    initEnvironment = emptyEnv { envTypeContext = tc }
-    finalEnvironment = case runState (runErrorT programExecution) initEnvironment of
-      (Left err, _) -> Left err
-      (_, env)      -> Right env            
     programExecution = do
       execUnsafely $ collectDefinitions p
       execCall [] entryPoint [] noPos
+    result (Left err, _) = Left err
+    result (_, env)      = Right $ currentStore env
               
 {- State -}
 
@@ -81,15 +101,19 @@ data Value = IntValue Integer |   -- ^ Integer value
   CustomValue Integer             -- ^ Value of a user-defined type (values with the same code are considered equal)
   deriving (Eq, Ord)
       
--- | 'defaultValue' @t@ : Default value of type @t@ (used to initialize variables);
--- 'Nothing' if @t@ is a type variable
-defaultValue :: Type -> Maybe Value
-defaultValue BoolType         = Just $ BoolValue False  
-defaultValue IntType          = Just $ IntValue 0
-defaultValue (MapType _ _ _)  = Just $ MapValue M.empty
-defaultValue (IdType x []) 
-  | isTypeVar [] x            = Nothing
-defaultValue (IdType _ _)     = Just $ CustomValue 0
+-- | 'defaultValue' @t@ : Default value of type @t@
+defaultValue :: Type -> Value
+defaultValue BoolType         = BoolValue False  
+defaultValue IntType          = IntValue 0
+defaultValue (MapType _ _ _)  = MapValue M.empty
+defaultValue (IdType _ _)     = CustomValue 0
+
+-- | 'allValues' @t@ : List all values of type @t@ exhaustively
+allValues :: Type -> Stream Value
+allValues BoolType        = return (BoolValue False) `mplus` return (BoolValue False)
+allValues IntType         = IntValue <$> allIntegers
+allValues (MapType _ _ _) = MapValue <$> return M.empty
+allValues (IdType _ _)    = CustomValue <$> allIntegers
 
 -- | Pretty-printed value
 valueDoc :: Value -> Doc
@@ -103,29 +127,47 @@ valueDoc (CustomValue n) = text "custom_" <> integer n
 instance Show Value where
   show v = show (valueDoc v)
 
+-- | Store: stores variable values at runtime 
+type Store = Map Id Value
+
+-- | A store with no variables
+emptyStore :: Store
+emptyStore = M.empty
+
+-- | Pretty-printed store
+storeDoc :: Store -> Doc
+storeDoc vars = vsep $ map varDoc (M.toList vars)
+  where varDoc (id, val) = text id <+> text "=" <+> valueDoc val
+  
 -- | Execution state
-data Environment = Environment
+data Environment m = Environment
   {
-    envLocals :: Map Id Value,          -- ^ Local variable names to values
-    envGlobals :: Map Id Value,         -- ^ Global variable names to values
-    envOld :: Map Id Value,             -- ^ Global variable names to old values (in two-state contexts)
+    envLocals :: Store,                 -- ^ Local variable store
+    envGlobals :: Store,                -- ^ Global variable store
+    envOld :: Store,                    -- ^ Old global variable store (in two-state contexts)
     envConstants :: Map Id Expression,  -- ^ Constant names to expressions
     envFunctions :: Map Id [FDef],      -- ^ Function names to definitions
     envProcedures :: Map Id [PDef],     -- ^ Procedure names to definitions
-    envTypeContext :: Context           -- ^ Type context
+    envTypeContext :: Context,          -- ^ Type context    
+    envGenValue :: Type -> m Value      -- ^ Value generator (used any time a value must be chosen non-deterministically)
   }
    
--- | Empty environment   
-emptyEnv = Environment
+-- | 'initEnv' @tc gen@: Initial environment in a type context @tc@ with a value generator @gen@  
+initEnv tc gen = Environment
   {
-    envLocals = M.empty,
-    envGlobals = M.empty,
-    envOld = M.empty,
+    envLocals = emptyStore,
+    envGlobals = emptyStore,
+    envOld = emptyStore,
     envConstants = M.empty,
     envFunctions = M.empty,
     envProcedures = M.empty,
-    envTypeContext = emptyContext
+    envTypeContext = tc,
+    envGenValue = gen
   }
+
+-- | 'currentStore' @env@: Current values of all variables in @env@
+currentStore :: Environment m -> Store
+currentStore env = envLocals env `M.union` envGlobals env
   
 -- | 'lookupFunction' @id env@ : All definitions of function @id@ in @env@
 lookupFunction id env = case M.lookup id (envFunctions env) of
@@ -143,11 +185,6 @@ addConstantDef id def env = env { envConstants = M.insert id def (envConstants e
 addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction id env ++ defs) (envFunctions env) }
 addProcedureDef id def env = env { envProcedures = M.insert id (def : (lookupProcedure id env)) (envProcedures env) } 
 modifyTypeContext f env = env { envTypeContext = f (envTypeContext env) }
-
--- | Pretty-printed mapping of variables to values
-varsDoc :: Map Id Value -> Doc
-varsDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (id, val) = text id <+> text "=" <+> valueDoc val
   
 -- | Pretty-printed set of function definitions
 functionsDoc :: Map Id [FDef] -> Doc  
@@ -160,26 +197,26 @@ functionsDoc funcs = vsep $ map funcDoc (M.toList funcs)
 {- Executions -}
 
 -- | Computations with 'Environment' as state, which can result in either @a@ or 'RuntimeFailure'
-type Execution a = ErrorT RuntimeFailure (State Environment) a
+type Execution m a = ErrorT RuntimeFailure (StateT (Environment m) m) a
 
 -- | Computations with 'Environment' as state, which always result in @a@
-type SafeExecution a = State Environment a
+type SafeExecution m a = StateT (Environment m) m a
 
 -- | 'execUnsafely' @computation@ : Execute a safe @computation@ in an unsafe environment
-execUnsafely :: SafeExecution a -> Execution a
+execUnsafely :: (Monad m, Functor m) => SafeExecution m a -> Execution m a
 execUnsafely computation = ErrorT (Right <$> computation)
 
 -- | 'execSafely' @computation handler@ : Execute an unsafe @computation@ in a safe environment, handling errors that occur in @computation@ with @handler@
-execSafely :: Execution a -> (RuntimeFailure -> SafeExecution a) -> SafeExecution a
+execSafely :: (Monad m, Functor m) => Execution m a -> (RuntimeFailure -> SafeExecution m a) -> SafeExecution m a
 execSafely computation handler = do
   eres <- runErrorT computation
   either handler return eres
   
 -- | Computations that perform a cleanup at the end
-class Monad m => Finalizer m where
-  finally :: m a -> m () -> m a
+class Monad s => Finalizer s where
+  finally :: s a -> s () -> s a
     
-instance (Monad m) => Finalizer (StateT s m) where
+instance Monad m => Finalizer (StateT s m) where
   finally main cleanup = do
     res <- main
     cleanup
@@ -203,15 +240,17 @@ setV id val = do
 -- all @ids@ have to be declared in the current type context
 setAll ids vals = zipWithM_ setV ids vals
 
--- | 'generateDefault' @t pos@ : generate default value of type @t@ at source position @pos@;
+-- | 'generateValue' @t pos@ : choose a value of type @t@ at source position @pos@;
 -- fail if @t@ is a type variable
-generateDefault :: Type -> SourcePos -> Execution Value
-generateDefault t pos = case defaultValue t of
-  Nothing -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
-  Just v -> return v
+generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
+generateValue t pos = case t of
+  IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
+  _ -> do
+    gen <- gets envGenValue
+    lift (lift (gen t))
 
 -- | Run execution in the old environment
-old :: Execution a -> Execution a
+old :: (Monad m, Functor m) => Execution m a -> Execution m a
 old execution = do
   env <- get
   put env { envGlobals = envOld env }
@@ -220,14 +259,14 @@ old execution = do
   return res
 
 -- | Save current values of global variables in the "old" environment, return the previous "old" environment
-saveOld :: Execution (Map Id Value)  
+saveOld :: (Monad m, Functor m) => Execution m (Map Id Value)  
 saveOld = do
   env <- get
   put env { envOld = envGlobals env }
   return $ envOld env
 
 -- | Set the "old" environment to olds  
-restoreOld :: Map Id Value -> Execution ()  
+restoreOld :: (Monad m, Functor m) => Map Id Value -> Execution m ()  
 restoreOld olds = do
   env <- get
   put env { envOld = olds }
@@ -235,7 +274,7 @@ restoreOld olds = do
 -- | Enter local scope (apply localTC to the type context and assign actuals to formals),
 -- execute computation,
 -- then restore type context and local variables to their initial values
-executeLocally :: (MonadState Environment m, Finalizer m) => (Context -> Context) -> [Id] -> [Value] -> m a -> m a
+executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> s a -> s a
 executeLocally localTC formals actuals computation = do
   oldEnv <- get
   modify $ modifyTypeContext localTC
@@ -270,17 +309,17 @@ type StackTrace = [StackFrame]
 data RuntimeFailure = RuntimeFailure {
   rtfSource :: FailureSource,   -- ^ Source of the failure
   rtfPos :: SourcePos,          -- ^ Location where the failure occurred
-  rtfEnv :: Environment,        -- ^ Environment at the time of failure
+  rtfStore :: Store,            -- ^ Variable values at the time of failure
   rtfTrace :: StackTrace        -- ^ Stack trace from the program entry point to the procedure where the failure occurred
 }
 
 -- | Throw a run-time failure
 throwRuntimeFailure source pos = do
-  env <- get
-  throwError (RuntimeFailure source pos env [])
+  store <- gets currentStore
+  throwError (RuntimeFailure source pos store [])
 
 -- | Push frame on the stack trace of a runtime failure
-addStackFrame frame (RuntimeFailure source pos env trace) = throwError (RuntimeFailure source pos env (frame : trace))
+addStackFrame frame (RuntimeFailure source pos store trace) = throwError (RuntimeFailure source pos store (frame : trace))
 
 -- | Kinds of run-time failures
 data FailureKind = Error | -- ^ Error state reached (assertion violation)
@@ -297,12 +336,12 @@ failureKind err = case rtfSource err of
   _ -> Nonexecutable
   
 instance Error RuntimeFailure where
-  noMsg    = RuntimeFailure (UnsupportedConstruct "unknown") noPos emptyEnv []
-  strMsg s = RuntimeFailure (UnsupportedConstruct s) noPos emptyEnv []
+  noMsg    = RuntimeFailure (UnsupportedConstruct "unknown") noPos emptyStore []
+  strMsg s = RuntimeFailure (UnsupportedConstruct s) noPos emptyStore []
   
 -- | Pretty-printed run-time failure
 runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) $+$
-  option (not (M.null revelantVars)) (text "with" <+> varsDoc revelantVars) $+$
+  option (not (M.null revelantVars)) (text "with" <+> storeDoc revelantVars) $+$
   vsep (map stackFrameDoc (reverse (rtfTrace err)))
   where
     failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
@@ -321,8 +360,7 @@ runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err)
     defPosition LoopInvariant _ = empty
     defPosition _ e = text "defined" <+> posDoc (position e)
     
-    revelantVars = let env = rtfEnv err      
-      in M.filterWithKey (\k _ -> isRelevant k) (envLocals env `M.union` envGlobals env)
+    revelantVars = M.filterWithKey (\k _ -> isRelevant k) (rtfStore err)
       
     isRelevant k = case rtfSource err of
       SpecViolation (SpecClause _ _ expr) -> k `elem` freeVars expr
@@ -359,7 +397,7 @@ binOpLazy Explies (BoolValue True)  = Just $ BoolValue True
 binOpLazy _ _                       = Nothing
 
 -- | Strict semantics of binary operators
-binOp :: SourcePos -> BinOp -> Value -> Value -> Execution Value 
+binOp :: (Monad m, Functor m) => SourcePos -> BinOp -> Value -> Value -> Execution m Value 
 binOp pos Plus    (IntValue n1) (IntValue n2)   = return $ IntValue (n1 + n2)
 binOp pos Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
 binOp pos Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
@@ -392,7 +430,7 @@ a `euclidean` b =
 
 -- | Evaluate an expression;
 -- can have a side-effect of initializing variables that were not previously defined
-eval :: Expression -> Execution Value
+eval :: (Monad m, Functor m) => Expression -> Execution m Value
 eval expr = case node expr of
   TT -> return $ BoolValue True
   FF -> return $ BoolValue False
@@ -422,7 +460,7 @@ evalVar id pos = do
           constants <- gets envConstants
           case M.lookup id constants of
             Just e -> eval e
-            Nothing -> generateDefault t pos -- ToDo: cache constant value?
+            Nothing -> generateValue t pos -- ToDo: cache constant value?
         Nothing -> (error . show) (text "encountered unknown identifier during execution:" <+> text id) 
   where
     lookup getter setter t = do
@@ -430,7 +468,7 @@ evalVar id pos = do
       case M.lookup id vars of
         Just val -> return val
         Nothing -> do
-          val <- generateDefault t pos 
+          val <- generateValue t pos 
           modify $ setter id val
           checkWhere id pos
           return val
@@ -440,10 +478,10 @@ evalApplication name args pos = do
   evalDefs defs
   where
     -- | If the guard of one of function definitions evaluates to true, apply that definition; otherwise return the default value
-    evalDefs :: [FDef] -> Execution Value
+    evalDefs :: (Monad m, Functor m) => [FDef] -> Execution m Value
     evalDefs [] = do
       tc <- gets envTypeContext
-      generateDefault (returnType tc) pos
+      generateValue (returnType tc) pos
     evalDefs (FDef formals guard body : defs) = do
       argsV <- mapM eval args
       applicable <- evalLocally formals argsV guard `catchError` addStackFrame frame
@@ -464,7 +502,7 @@ evalMapSelection m args pos = do
   case mV of 
     MapValue map -> case M.lookup argsV map of
       Nothing -> do
-        val <- generateDefault rangeType pos
+        val <- generateValue rangeType pos
         case mapVariable tc (node m) of
           Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
           Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
@@ -503,13 +541,13 @@ evalBinary op e1 e2 = do
 -- | Finite domain      
 type Domain = [Value]      
 
-evalExists :: [Id] -> [IdType] -> Expression -> SourcePos -> Execution Value      
+evalExists :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> SourcePos -> Execution m Value      
 evalExists tv vars e pos = do
   tc <- gets envTypeContext
   case node $ normalize tc (attachPos pos $ Quantified Exists tv vars e) of
     Quantified Exists tv' vars' e' -> evalExists' tv' vars' e'
 
-evalExists' :: [Id] -> [IdType] -> Expression -> Execution Value    
+evalExists' :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> Execution m Value    
 evalExists' tv vars e = do
   results <- executeLocally (enterQuantified tv vars) [] [] evalWithDomains
   return $ BoolValue (any isTrue results)
@@ -518,11 +556,11 @@ evalExists' tv vars e = do
       doms <- domains e varNames
       evalForEach varNames doms
     -- | evalForEach vars domains: evaluate e for each combination of possible values of vars, drown from respective domains
-    evalForEach :: [Id] -> [Domain] -> Execution [Value]
+    evalForEach :: (Monad m, Functor m) => [Id] -> [Domain] -> Execution m [Value]
     evalForEach [] [] = replicate 1 <$> eval e
     evalForEach (var : vars) (dom : doms) = concat <$> forM dom (fixOne vars doms var)
     -- | Fix the value of var to val, then evaluate e for each combination of values for the rest of vars
-    fixOne :: [Id] -> [Domain] -> Id -> Value -> Execution [Value]
+    fixOne :: (Monad m, Functor m) => [Id] -> [Domain] -> Id -> Value -> Execution m [Value]
     fixOne vars doms var val = do
       setV var val
       evalForEach vars doms
@@ -533,7 +571,7 @@ evalExists' tv vars e = do
 
 -- | Execute a basic statement
 -- (no jump, if or while statements allowed)
-exec :: Statement -> Execution ()
+exec :: (Monad m, Functor m) => Statement -> Execution m ()
 exec stmt = case node stmt of
   Predicate specClause -> execPredicate specClause (position stmt)
   Havoc ids -> execHavoc ids (position stmt)
@@ -552,7 +590,7 @@ execHavoc ids pos = do
   mapM_ (havoc tc) ids 
   where
     havoc tc id = do
-      val <- generateDefault (exprType tc . gen . Var $ id) pos
+      val <- generateValue (exprType tc . gen . Var $ id) pos
       setV id val
       checkWhere id pos      
     
@@ -581,7 +619,7 @@ execCall lhss name args pos = do
     
 -- | Execute program consisting of blocks starting from the block labeled label.
 -- Return the location of the exit point.
-execBlock :: Map Id [Statement] -> Id -> Execution SourcePos
+execBlock :: (Monad m, Functor m) => Map Id [Statement] -> Id -> Execution m SourcePos
 execBlock blocks label = let
   block = blocks ! label
   statements = init block
@@ -593,7 +631,7 @@ execBlock blocks label = let
   
 -- | tryOneOf blocks labels: try executing blocks starting with each of labels,
 -- until we find one that does not result in an assumption violation      
-tryOneOf :: Map Id [Statement] -> [Id] -> Execution SourcePos        
+tryOneOf :: (Monad m, Functor m) => Map Id [Statement] -> [Id] -> Execution m SourcePos        
 tryOneOf blocks (l : lbs) = execBlock blocks l `catchError` retry
   where
     retry err 
@@ -602,7 +640,7 @@ tryOneOf blocks (l : lbs) = execBlock blocks l `catchError` retry
   
 -- | 'execProcedure' @sig def args lhss@ :
 -- Execute definition @def@ of procedure @sig@ with actual arguments @args@ and call left-hand sides @lhss@
-execProcedure :: PSig -> PDef -> [Expression] -> [Expression] -> Execution [Value]
+execProcedure :: (Monad m, Functor m) => PSig -> PDef -> [Expression] -> [Expression] -> Execution m [Value]
 execProcedure sig def args lhss = let 
   ins = pdefIns def
   outs = pdefOuts def
@@ -644,7 +682,7 @@ checkWhere id pos = do
 {- Preprocessing -}
 
 -- | Collect constant, function and procedure definitions from the program
-collectDefinitions :: Program -> SafeExecution ()
+collectDefinitions :: (Monad m, Functor m) => Program -> SafeExecution m ()
 collectDefinitions (Program decls) = mapM_ processDecl decls
   where
     processDecl (Pos _ (FunctionDecl name _ args _ (Just body))) = processFunctionBody name args body
@@ -678,7 +716,7 @@ processAxiom expr = do
 {- Constant and function definitions -}
 
 -- | Extract constant definitions from a boolean expression bExpr
-extractConstantDefs :: Expression -> SafeExecution ()
+extractConstantDefs :: (Monad m, Functor m) => Expression -> SafeExecution m ()
 extractConstantDefs bExpr = case node bExpr of  
   BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstantDef c rhs -- c == rhs: remember rhs as a definition for c
   _ -> return ()
@@ -687,7 +725,7 @@ extractConstantDefs bExpr = case node bExpr of
 -- bExpr of the form "(forall x :: P(x, c) ==> f(x, c) == rhs(x, c) && B) && A",
 -- with zero or more bound variables x and zero or more constants c,
 -- produces a definition "f(x, x') = rhs(x, x')" with a guard "P(x) && x' == c"
-extractFunctionDefs :: Expression -> [Expression] -> SafeExecution ()
+extractFunctionDefs :: (Monad m, Functor m) => Expression -> [Expression] -> SafeExecution m ()
 extractFunctionDefs bExpr guards = extractFunctionDefs' (node bExpr) guards
 
 extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) outerGuards = do
@@ -731,7 +769,7 @@ type Constraints = Map Id Interval
             
 -- | The set of domains for each variable in vars, outside which boolean expression boolExpr is always false.
 -- Fails if any of the domains are infinite or cannot be found.
-domains :: Expression -> [Id] -> Execution [Domain]
+domains :: (Monad m, Functor m) => Expression -> [Id] -> Execution m [Domain]
 domains boolExpr vars = do
   initC <- foldM initConstraints M.empty vars
   finalC <- inferConstraints boolExpr initC 
@@ -756,7 +794,7 @@ domains boolExpr vars = do
 -- | Starting from initial constraints, refine them with the information from boolExpr,
 -- until fixpoint is reached or the domain for one of the variables is empty.
 -- This function terminates because the interval for each variable can only become smaller with each iteration.
-inferConstraints :: Expression -> Constraints -> Execution Constraints
+inferConstraints :: (Monad m, Functor m) => Expression -> Constraints -> Execution m Constraints
 inferConstraints boolExpr constraints = do
   constraints' <- foldM refineVar constraints (M.keys constraints)
   if bot `elem` M.elems constraints'
@@ -765,7 +803,7 @@ inferConstraints boolExpr constraints = do
       then return constraints'                    -- if a fixpoint is reached, return it
       else inferConstraints boolExpr constraints' -- otherwise do another iteration
   where
-    refineVar :: Constraints -> Id -> Execution Constraints
+    refineVar :: (Monad m, Functor m) => Constraints -> Id -> Execution m Constraints
     refineVar c id = do
       int <- inferInterval boolExpr c id
       return $ M.insert id (meet (c ! id) int) c 
@@ -773,7 +811,7 @@ inferConstraints boolExpr constraints = do
 -- | Infer an interval for variable x, outside which boolean expression booExpr is always false, 
 -- assuming all other quantified variables satisfy constraints;
 -- boolExpr has to be in negation-prenex normal form.
-inferInterval :: Expression -> Constraints -> Id -> Execution Interval
+inferInterval :: (Monad m, Functor m) => Expression -> Constraints -> Id -> Execution m Interval
 inferInterval boolExpr constraints x = (case node boolExpr of
   FF -> return bot
   BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 constraints x) (inferInterval be2 constraints x)
@@ -810,7 +848,7 @@ type LinearForm = (Interval, Interval)
 
 -- | If possible, convert arithmetic expression aExpr into a linear form over variable x,
 -- assuming all other quantified variables satisfy constraints.
-toLinearForm :: Expression -> Constraints -> Id -> Execution LinearForm
+toLinearForm :: (Monad m, Functor m) => Expression -> Constraints -> Id -> Execution m LinearForm
 toLinearForm aExpr constraints x = case node aExpr of
   Numeral n -> return (0, fromInteger n)
   Var y -> if x == y

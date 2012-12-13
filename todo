@@ -14,11 +14,15 @@
   -> Annotate AST with expr types (v0.2)
   
 - Interpreter
+  - Backtracking
+    - Add nd-related command-line options
+    - Exhaustive generator for maps
+    - Random generator?
+    - Remove tester?
   - Support calls to procedures with no implementation
   - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses)  
   - Extract constant constraints from axioms
   - Turn source positions into spans; use the end of the span to report postcondition violations  
-  - Backtracking (logicT monad?)  
   - User-defined types
   - Extends ordering
   - Extract function constraints from axioms

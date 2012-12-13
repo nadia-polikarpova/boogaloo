@@ -34,6 +34,7 @@ import qualified Data.Map as M
 import Control.Monad.Error
 import Control.Applicative
 import Control.Monad.State
+import Control.Monad.Identity
 import Text.PrettyPrint
 
 {- Interface -}
@@ -42,9 +43,8 @@ import Text.PrettyPrint
 -- Test all implementations of all procedures @procNames@ from program @p@ in type context @tc@;
 -- requires that all @procNames@ exist in @tc@
 testProgram :: TestSettings s => s -> Program -> Context -> [Id] -> [TestCase]
-testProgram settings p tc procNames = evalState testExecution (settings, initEnvironment)
+testProgram settings p tc procNames = evalState testExecution (settings, initEnv tc (Identity . defaultValue))
   where
-    initEnvironment = emptyEnv { envTypeContext = tc }
     testExecution = do
       changeState snd (mapSnd . const) $ collectDefinitions p
       concat <$> forM procNames testProcedure
@@ -152,7 +152,7 @@ instance TestSettings RandomSettings where
   mapTypeRange = rsMapTypeRange
 
 -- | Executions that have access to testing session parameters
-type TestSession s a = State (s, Environment) a
+type TestSession s a = State (s, Environment Identity) a
         
 {- Reporting results -}
 
@@ -260,7 +260,7 @@ testImplementation sig def = do
       mapM reportTestCase inputs
     -- | Assign inputVals to inputVars, and execute procedure with actual in-parameter variables inParams and actual out-parameter variables outParams;
     -- | inputVars contain some inParams and some globals variables
-    testCase :: [Id] -> [Id] -> [Id] -> [Value] -> SafeExecution Outcome
+    testCase :: [Id] -> [Id] -> [Id] -> [Value] -> SafeExecution Identity Outcome
     testCase inParams outParams inputVars inputVals = do
       setAll inputVars inputVals
       let inExpr = map (gen . Var) inParams
