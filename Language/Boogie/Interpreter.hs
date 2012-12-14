@@ -146,14 +146,15 @@ storeDoc vars = vsep $ map varDoc (M.toList vars)
 -- | Execution state
 data Environment m = Environment
   {
-    envLocals :: Store,                 -- ^ Local variable store
-    envGlobals :: Store,                -- ^ Global variable store
-    envOld :: Store,                    -- ^ Old global variable store (in two-state contexts)
-    envConstants :: Map Id Expression,  -- ^ Constant names to expressions
-    envFunctions :: Map Id [FDef],      -- ^ Function names to definitions
-    envProcedures :: Map Id [PDef],     -- ^ Procedure names to definitions
-    envTypeContext :: Context,          -- ^ Type context    
-    envGenValue :: Type -> m Value      -- ^ Value generator (used any time a value must be chosen non-deterministically)
+    envLocals :: Store,                          -- ^ Local variable store
+    envGlobals :: Store,                         -- ^ Global variable store
+    envOld :: Store,                             -- ^ Old global variable store (in two-state contexts)
+    envConstDefs :: Map Id Expression,           -- ^ Constant names to definitions
+    envConstConstraints :: Map Id [Expression],  -- ^ Constant names to constraints
+    envFunctions :: Map Id [FDef],               -- ^ Function names to definitions
+    envProcedures :: Map Id [PDef],              -- ^ Procedure names to definitions
+    envTypeContext :: Context,                   -- ^ Type context    
+    envGenValue :: Type -> m Value               -- ^ Value generator (used any time a value must be chosen non-deterministically)
   }
    
 -- | 'initEnv' @tc gen@: Initial environment in a type context @tc@ with a value generator @gen@  
@@ -162,7 +163,8 @@ initEnv tc gen = Environment
     envLocals = emptyStore,
     envGlobals = emptyStore,
     envOld = emptyStore,
-    envConstants = M.empty,
+    envConstDefs = M.empty,
+    envConstConstraints = M.empty,
     envFunctions = M.empty,
     envProcedures = M.empty,
     envTypeContext = tc,
@@ -172,6 +174,11 @@ initEnv tc gen = Environment
 -- | 'currentStore' @env@: Current values of all variables in @env@
 currentStore :: Environment m -> Store
 currentStore env = envLocals env `M.union` envGlobals env
+
+-- | 'lookupConstConstraints' @id env@ : All constraints of constant @id@ in @env@
+lookupConstConstraints id env = case M.lookup id (envConstConstraints env) of
+  Nothing -> []
+  Just cs -> cs
   
 -- | 'lookupFunction' @id env@ : All definitions of function @id@ in @env@
 lookupFunction id env = case M.lookup id (envFunctions env) of
@@ -181,13 +188,14 @@ lookupFunction id env = case M.lookup id (envFunctions env) of
 -- | 'lookupProcedure' @id env@ : All definitions of procedure @id@ in @env@  
 lookupProcedure id env = case M.lookup id (envProcedures env) of
   Nothing -> []
-  Just defs -> defs  
+  Just defs -> defs 
 
 setGlobal id val env = env { envGlobals = M.insert id val (envGlobals env) }    
 setLocal id val env = env { envLocals = M.insert id val (envLocals env) }
-addConstantDef id def env = env { envConstants = M.insert id def (envConstants env) }
+addConstantDef id def env = env { envConstDefs = M.insert id def (envConstDefs env) }
+addConstantConstraint id expr env = env { envConstConstraints = M.insert id (lookupConstConstraints id env ++ [expr]) (envConstConstraints env) }
 addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction id env ++ defs) (envFunctions env) }
-addProcedureDef id def env = env { envProcedures = M.insert id (def : (lookupProcedure id env)) (envProcedures env) } 
+addProcedureDef id def env = env { envProcedures = M.insert id (lookupProcedure id env ++ [def]) (envProcedures env) } 
 modifyTypeContext f env = env { envTypeContext = f (envTypeContext env) }
   
 -- | Pretty-printed set of function definitions
@@ -359,6 +367,7 @@ runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err)
     clauseName Postcondition isFree = if isFree then "Free postcondition" else "Postcondition"  
     clauseName LoopInvariant isFree = if isFree then "Free loop invariant" else "Loop invariant"  
     clauseName Where True = "Where clause"  -- where clauses cannot be non-free  
+    clauseName Axiom True = "Axiom"  -- axioms cannot be non-free  
     
     defPosition Inline _ = empty
     defPosition LoopInvariant _ = empty
@@ -473,26 +482,31 @@ eval expr = case node expr of
 evalVar id pos = do
   tc <- gets envTypeContext
   case M.lookup id (localScope tc) of
-    Just t -> lookup envLocals setLocal t
+    Just t -> lookupStore envLocals (init (generateValue t pos) setLocal checkWhere)
     Nothing -> case M.lookup id (ctxGlobals tc) of
-      Just t -> lookup envGlobals setGlobal t
+      Just t -> lookupStore envGlobals (init (generateValue t pos) setGlobal checkWhere)
       Nothing -> case M.lookup id (ctxConstants tc) of
-        Just t -> do
-          constants <- gets envConstants
-          case M.lookup id constants of
-            Just e -> eval e
-            Nothing -> lookup envGlobals setGlobal t -- ToDo: check axiom
+        Just t -> lookupStore envGlobals (initConst t)
         Nothing -> (error . show) (text "encountered unknown identifier during execution:" <+> text id) 
   where
-    lookup getter setter t = do
-      vars <- gets getter
-      case M.lookup id vars of
+    -- | Initialize @id@ with a value geberated by @gen@, and then perform @check@
+    init gen set check = do
+      val <- gen
+      modify $ set id val
+      check id pos
+      return val
+    -- | Lookup @id@ in @store@; if occurs return its stored value, otherwise @calculate@
+    lookupStore store calculate = do
+      s <- gets store
+      case M.lookup id s of
         Just val -> return val
-        Nothing -> do
-          val <- generateValue t pos 
-          modify $ setter id val
-          checkWhere id pos
-          return val
+        Nothing -> calculate
+    -- | Initialize constant @id@ of type @t@ using its defininition, if present, and otherwise non-deterministically
+    initConst t = do
+      constants <- gets envConstDefs
+      case M.lookup id constants of
+        Just e -> init (eval e) setGlobal checkConstConstraints
+        Nothing -> init (generateValue t pos) setGlobal checkConstConstraints
   
 evalApplication name args pos = do
   defs <- gets (lookupFunction name)  
@@ -692,7 +706,13 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
   where 
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
 
--- | Assume where clause of variable at a program location pos
+-- | 'checkConstConstraints' @id pos@: Assume constraining axioms of constant @id@ at a program location @pos@
+-- (pos will be reported as the location of the failure instead of the location of the variable definition).    
+checkConstConstraints id pos = do
+  constraints <- gets $ lookupConstConstraints id
+  mapM_ (exec . attachPos pos . Predicate . SpecClause Axiom True) constraints
+
+-- | 'checkWhere' @id pos@: Assume where clause of variable @id@ at a program location pos
 -- (pos will be reported as the location of the failure instead of the location of the variable definition).
 checkWhere id pos = do
   whereClauses <- ctxWhere <$> gets envTypeContext
@@ -731,16 +751,16 @@ processProcedureBody name pos args rets body = do
     paramsRenamed sig = map itwId (psigParams sig) /= (argNames ++ retNames)     
 
 processAxiom expr = do
-  extractConstantDefs expr
+  extractConstantConstraints expr
   extractFunctionDefs expr []
   
 {- Constant and function definitions -}
 
--- | Extract constant definitions from a boolean expression bExpr
-extractConstantDefs :: (Monad m, Functor m) => Expression -> SafeExecution m ()
-extractConstantDefs bExpr = case node bExpr of  
-  BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstantDef c rhs -- c == rhs: remember rhs as a definition for c
-  _ -> return ()
+-- | Extract constant definitions and constraints from a boolean expression bExpr
+extractConstantConstraints :: (Monad m, Functor m) => Expression -> SafeExecution m ()
+extractConstantConstraints bExpr = case node bExpr of  
+  BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstantDef c rhs    -- c == rhs: remember rhs as a definition for c
+  _ -> mapM_ (\c -> modify $ addConstantConstraint c bExpr) (freeVars bExpr)  -- otherwise: remember bExpr as a constraint for all its free variables
 
 -- | Extract function definitions from a boolean expression bExpr, using guards extracted from the exclosing expression.
 -- bExpr of the form "(forall x :: P(x, c) ==> f(x, c) == rhs(x, c) && B) && A",

@@ -112,7 +112,7 @@ type BasicBody = ([IdTypeWhere], Map Id [Statement])
 {- Specs -}
 
 -- | Types of specification clauses
-data SpecType = Inline | Precondition | Postcondition | LoopInvariant | Where
+data SpecType = Inline | Precondition | Postcondition | LoopInvariant | Where | Axiom
   deriving Eq
 
 -- | Specification clause

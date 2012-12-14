@@ -22,7 +22,6 @@
   - Remove sepaation between global and local variables (get from the context)?
   - Support calls to procedures with no implementation
   - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses)  
-  - Extract constant constraints from axioms
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - User-defined types
   - Extends ordering
