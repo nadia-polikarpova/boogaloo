@@ -15,8 +15,8 @@
   
 - Interpreter
   - Backtracking
-    - Add nd-related command-line options
     - Exhaustive generator for maps
+    - Remove limitation on entry points
     - Random generator?
     - Remove tester?
   - Support calls to procedures with no implementation

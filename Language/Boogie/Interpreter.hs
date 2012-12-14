@@ -33,6 +33,10 @@ module Language.Boogie.Interpreter (
   RuntimeFailure (..),  
   FailureKind (..),
   failureKind,
+  -- * Execution outcomes
+  isPass,
+  isInvalid,
+  isFail,
   -- * Executing parts of programs
   eval,
   exec,
@@ -379,6 +383,23 @@ data InternalCode = NotLinear
   deriving Eq
 
 throwInternalFailure code = throwRuntimeFailure (InternalFailure code) noPos
+
+{- Execution outcomes -}
+
+-- | 'isPass' @outcome@: Does @outcome@ belong to a passing execution? (Denotes a valid final state)
+isPass :: Either RuntimeFailure Store -> Bool
+isPass (Right _) =  True
+isPass _ =          False
+
+-- | 'isInvalid' @outcome@: Does @outcome@ belong to an invalid execution? (Denotes an unreachable or non-executable state)
+isInvalid :: Either RuntimeFailure Store -> Bool 
+isInvalid (Left err) 
+  | failureKind err == Unreachable || failureKind err == Nonexecutable  = True
+isInvalid _                                                             = False
+
+-- | 'isFail' @outcome@: Does @outcome@ belong to a failing execution? (Denotes an error state)
+isFail :: Either RuntimeFailure Store -> Bool
+isFail outcome = not (isPass outcome || isInvalid outcome)
 
 {- Expressions -}
 

@@ -32,20 +32,23 @@ releaseDate = fromGregorian 2012 10 25
 main = do
   res <- cmdArgsRun $ mode
   case res of
-    Exec file entry -> executeFromFile file entry
+    Exec file entry btmax keepInvalid outMax -> executeFromFile file entry btmax keepInvalid outMax
     args -> testFromFile (file args) (proc_ args) (testMethod args) (verbose args)
 
 {- Command line arguments -}
 
 data CommandLineArgs
-    = Exec { file :: String, entry :: String }
+    = Exec { file :: String, entry :: String, btmax :: Maybe Int, keep_invalid :: Bool, outmax :: Int }
     | Test { file :: String, proc_ :: [String], limits :: (Integer, Integer), dlimits :: (Integer, Integer), verbose :: Bool  }
     | RTest { file :: String, proc_ :: [String], limits :: (Integer, Integer), dlimits :: (Integer, Integer), tc_count :: Int, seed :: Maybe Int, verbose :: Bool }
       deriving (Data, Typeable, Show, Eq)
 
 execute = Exec {
-  entry = "Main"  &= help "Program entry point (must not have in- or out-parameters)" &= typ "PROCEDURE",
-  file  = ""      &= typFile &= argPos 0
+  entry = "Main"        &= help "Program entry point (default: Main)" &= typ "PROCEDURE",
+  file  = ""            &= typFile &= argPos 0,
+  btmax = Nothing       &= help "Maximum number of times execution is allowed to backtrack (default: unlimited)",
+  keep_invalid = False  &= help "Keep invalid executions in the list of outcomes (default: false)",
+  outmax = 1            &= help "Maximum number of outcomes to display (default: 1)"
   } &= auto &= help "Execute program"
       
 test_ = Test {
@@ -102,18 +105,29 @@ testMethod (RTest _ _ limits dlimits tc_count seed _) program context procNames 
 
 -- | Execute procedure entryPoint from file
 -- | and output either errors or the final values of global variables
-executeFromFile :: String -> String -> IO ()
-executeFromFile file entryPoint = runOnFile printFinalState file
+executeFromFile :: String -> String -> Maybe Int -> Bool -> Int -> IO ()
+executeFromFile file entryPoint btMax keepInvalid outMax = runOnFile printFinalState file
   where
     printFinalState p context = case M.lookup entryPoint (ctxProcedures context) of
       Nothing -> printError (text "Cannot find program entry point" <+> text entryPoint)
       Just sig -> if not (goodEntryPoint sig)
         then printError (text "Program entry point" <+> text entryPoint <+> text "does not have the required signature" <+> doubleQuotes (sigDoc [] []))
-        -- else printOutcome $ executeProgramDet p context entryPoint
-        else mapM_ printOutcome (take 50 (executeProgram p context entryPoint))
+        else if btMax == Just 1 || (keepInvalid && outMax == 1)
+          then printOne 0 $ executeProgramDet p context entryPoint
+          else zipWithM_ printOne [0..] ((take outMax . filter keep . limitBT) (executeProgram p context entryPoint))
+    limitBT = case btMax of
+      Nothing -> id
+      Just n -> take n
+    keep out = if keepInvalid
+      then True
+      else not (isInvalid out)
     printOutcome out = case out of
       Left err -> printError err
-      Right store -> (print . storeDoc) store    
+      Right store -> (print . storeDoc) store
+    printOne n out    = do
+      when (n > 0) $ print newline
+      printAux $ text "Outcome" <+> integer n <+> newline
+      printOutcome out      
     goodEntryPoint sig = null (psigTypeVars sig) && null (psigArgTypes sig) && null (psigRetTypes sig)
 
 -- | Test procedures procNames from file with a testMethod
@@ -144,7 +158,13 @@ runOnFile command file = do
 printError e = do
   setSGR [SetColor Foreground Vivid Red]
   print e
-  setSGR [SetColor Foreground Vivid White]
+  setSGR [Reset]
+  
+-- | Output auxiliary messages in khaki  
+printAux msg = do
+  setSGR [SetColor Foreground Dull Yellow]
+  print msg
+  setSGR [Reset]
       
 {- Helpers for testing internal functions -}      
       
