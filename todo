@@ -19,6 +19,7 @@
     - Remove limitation on entry points
     - Random generator?
     - Remove tester?
+  - Remove sepaation between global and local variables (get from the context)?
   - Support calls to procedures with no implementation
   - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses)  
   - Extract constant constraints from axioms

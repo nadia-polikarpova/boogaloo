@@ -112,9 +112,10 @@ executeFromFile file entryPoint btMax keepInvalid outMax = runOnFile printFinalS
       Nothing -> printError (text "Cannot find program entry point" <+> text entryPoint)
       Just sig -> if not (goodEntryPoint sig)
         then printError (text "Program entry point" <+> text entryPoint <+> text "does not have the required signature" <+> doubleQuotes (sigDoc [] []))
-        else if btMax == Just 1 || (keepInvalid && outMax == 1)
-          then printOne 0 $ executeProgramDet p context entryPoint
-          else zipWithM_ printOne [0..] ((take outMax . filter keep . limitBT) (executeProgram p context entryPoint))
+        else zipWithM_ printOne [0..] $ (take outMax . filter keep . limitBT) (outcomes p context)
+    outcomes p context = if btMax == Just 1 || (keepInvalid && outMax == 1)
+      then [executeProgramDet p context entryPoint]
+      else executeProgram p context entryPoint
     limitBT = case btMax of
       Nothing -> id
       Just n -> take n

@@ -116,7 +116,7 @@ defaultValue (IdType _ _)     = CustomValue 0
 allValues :: Type -> Stream Value
 allValues BoolType        = return (BoolValue False) `mplus` return (BoolValue False)
 allValues IntType         = IntValue <$> allIntegers
-allValues (MapType _ _ _) = MapValue <$> return M.empty
+allValues (MapType _ _ _) = MapValue <$> return M.empty -- Map values are generated lazily
 allValues (IdType _ _)    = CustomValue <$> allIntegers
 
 -- | Pretty-printed value
@@ -481,7 +481,7 @@ evalVar id pos = do
           constants <- gets envConstants
           case M.lookup id constants of
             Just e -> eval e
-            Nothing -> generateValue t pos -- ToDo: cache constant value?
+            Nothing -> lookup envGlobals setGlobal t -- ToDo: check axiom
         Nothing -> (error . show) (text "encountered unknown identifier during execution:" <+> text id) 
   where
     lookup getter setter t = do
