@@ -90,7 +90,7 @@ interpreterSuccess file = do
     Left parseErr -> assertFailure (show parseErr)
     Right p -> case typeCheckProgram p of
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
-      Right context -> case executeProgram p context entryPoint of
+      Right context -> case (head . filter (not . isInvalid)) (executeProgram p context entryPoint) of
         Left err -> assertFailure (show err)
         Right env -> return ()
 
