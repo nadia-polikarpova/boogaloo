@@ -7,6 +7,7 @@ module Language.Boogie.Interpreter (
   executeProgram,
   executeProgramGeneric,
   -- * State
+  Ref,
   Value (..),
   defaultValue,
   allValues,
@@ -96,28 +97,18 @@ executeProgramGeneric p tc gen entryPoint = result <$> runStateT (runErrorT prog
     result (Left err, _) = Left err
     result (_, env)      = Right $ currentStore env
               
-{- State -}
+{- Values -}
+
+-- | Reference (index in the heap)
+type Ref = Integer
 
 -- | Run-time value
 data Value = IntValue Integer |   -- ^ Integer value
   BoolValue Bool |                -- ^ Boolean value
   MapValue (Map [Value] Value) |  -- ^ Value of a map type
-  CustomValue Integer             -- ^ Value of a user-defined type (values with the same code are considered equal)
+  CustomValue Integer |           -- ^ Value of a user-defined type (values with the same code are considered equal)
+  Reference Ref                   -- ^ Reference to a map stored in the heap
   deriving (Eq, Ord)
-      
--- | 'defaultValue' @t@ : Default value of type @t@
-defaultValue :: Type -> Value
-defaultValue BoolType         = BoolValue False  
-defaultValue IntType          = IntValue 0
-defaultValue (MapType _ _ _)  = MapValue M.empty
-defaultValue (IdType _ _)     = CustomValue 0
-
--- | 'allValues' @t@ : List all values of type @t@ exhaustively
-allValues :: Type -> Stream Value
-allValues BoolType        = return (BoolValue False) `mplus` return (BoolValue False)
-allValues IntType         = IntValue <$> allIntegers
-allValues (MapType _ _ _) = MapValue <$> return M.empty -- Map values are generated lazily
-allValues (IdType _ _)    = CustomValue <$> allIntegers
 
 -- | Pretty-printed value
 valueDoc :: Value -> Doc
@@ -127,9 +118,28 @@ valueDoc (BoolValue True) = text "true"
 valueDoc (MapValue m) = brackets (commaSep (map itemDoc (M.toList m)))
   where itemDoc (keys, v) = commaSep (map valueDoc keys) <+> text "->" <+>  valueDoc v
 valueDoc (CustomValue n) = text "custom_" <> integer n
+valueDoc (Reference r) = text "ref_" <> integer r
 
 instance Show Value where
   show v = show (valueDoc v)
+  
+{- Value generators -}  
+  
+-- | 'defaultValue' @t@ : Default value of type @t@
+defaultValue :: Type -> Value
+defaultValue BoolType         = BoolValue False  
+defaultValue IntType          = IntValue 0
+defaultValue (MapType _ _ _)  = error "Map values should be generated lazily"
+defaultValue (IdType _ _)     = CustomValue 0
+
+-- | 'allValues' @t@ : List all values of type @t@ exhaustively
+allValues :: Type -> Stream Value
+allValues BoolType        = return (BoolValue False) `mplus` return (BoolValue False)
+allValues IntType         = IntValue <$> allIntegers
+allValues (MapType _ _ _) = error "Map values should be generated lazily"
+allValues (IdType _ _)    = CustomValue <$> allIntegers
+
+{- Execution state -}  
 
 -- | Store: stores variable values at runtime 
 type Store = Map Id Value
@@ -142,6 +152,27 @@ emptyStore = M.empty
 storeDoc :: Store -> Doc
 storeDoc vars = vsep $ map varDoc (M.toList vars)
   where varDoc (id, val) = text id <+> text "=" <+> valueDoc val
+
+-- | Heap: maps references to values  
+type Heap = Map Ref Value
+
+-- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
+deepDeref :: Heap -> Value -> Value
+deepDeref h v = deepDeref' v
+  where
+    deepDeref' (Reference r) = deepDeref' (h ! r)
+    deepDeref' (MapValue m) = MapValue $ (M.map deepDeref' . M.mapKeys (map deepDeref')) m
+    deepDeref' v = v  
+
+-- | 'flattenStore' @h s@: Store @s@ with all variable values completely dereferenced
+flattenStore :: Heap -> Store -> Store
+flattenStore h s = M.map (deepDeref h) s
+
+-- | 'freshRef' @h@: A reference that does not occur in @h@
+freshRef :: Heap -> Ref
+freshRef h 
+  | M.null h = 0
+  | otherwise = fst (M.findMax h) + 1
   
 -- | Execution state
 data Environment m = Environment
@@ -149,6 +180,7 @@ data Environment m = Environment
     envLocals :: Store,                          -- ^ Local variable store
     envGlobals :: Store,                         -- ^ Global variable store
     envOld :: Store,                             -- ^ Old global variable store (in two-state contexts)
+    envHeap :: Heap,                             -- ^ Heap (used for lazy initialization)
     envConstDefs :: Map Id Expression,           -- ^ Constant names to definitions
     envConstConstraints :: Map Id [Expression],  -- ^ Constant names to constraints
     envFunctions :: Map Id [FDef],               -- ^ Function names to definitions
@@ -163,6 +195,7 @@ initEnv tc gen = Environment
     envLocals = emptyStore,
     envGlobals = emptyStore,
     envOld = emptyStore,
+    envHeap = M.empty,
     envConstDefs = M.empty,
     envConstConstraints = M.empty,
     envFunctions = M.empty,
@@ -173,7 +206,7 @@ initEnv tc gen = Environment
 
 -- | 'currentStore' @env@: Current values of all variables in @env@
 currentStore :: Environment m -> Store
-currentStore env = envLocals env `M.union` envGlobals env
+currentStore env = flattenStore (envHeap env) $ envLocals env `M.union` envGlobals env
 
 -- | 'lookupConstConstraints' @id env@ : All constraints of constant @id@ in @env@
 lookupConstConstraints id env = case M.lookup id (envConstConstraints env) of
@@ -197,6 +230,7 @@ addConstantConstraint id expr env = env { envConstConstraints = M.insert id (loo
 addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction id env ++ defs) (envFunctions env) }
 addProcedureDef id def env = env { envProcedures = M.insert id (lookupProcedure id env ++ [def]) (envProcedures env) } 
 modifyTypeContext f env = env { envTypeContext = f (envTypeContext env) }
+setInHeap r v env = env { envHeap = M.insert r v (envHeap env) }
   
 -- | Pretty-printed set of function definitions
 functionsDoc :: Map Id [FDef] -> Doc  
@@ -252,11 +286,20 @@ setV id val = do
 -- all @ids@ have to be declared in the current type context
 setAll ids vals = zipWithM_ setV ids vals
 
+-- | 'alloc' @v@: store @v@ at a fresh location in the heap and return that location
+alloc :: (Monad m, Functor m) => Value -> Execution m Value
+alloc v = do
+  r <- freshRef <$> gets envHeap
+  modify $ setInHeap r v
+  return $ Reference r
+
 -- | 'generateValue' @t pos@ : choose a value of type @t@ at source position @pos@;
 -- fail if @t@ is a type variable
 generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
 generateValue t pos = case t of
   IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
+  -- | Maps are initializaed lazily, allocate an empty map on the heap:
+  MapType _ _ _ -> alloc $ MapValue M.empty
   _ -> do
     gen <- gets envGenValue
     lift (lift (gen t))
@@ -531,18 +574,21 @@ evalApplication name args pos = do
     
 evalMapSelection m args pos = do 
   tc <- gets envTypeContext
+  h <- gets envHeap
   let rangeType = exprType tc (gen $ MapSelection m args)
-  mV <- eval m
+  Reference mRef <- eval m
+  let mV = h ! mRef
   argsV <- mapM eval args
   case mV of 
     MapValue map -> case M.lookup argsV map of
       Nothing -> do
         val <- generateValue rangeType pos
-        case mapVariable tc (node m) of
-          Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
-          Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
-          -- Decided not to cache map access so far, because it leads to strange effects when the map is passed as an argument and can take a lot of memory 
-          -- Just v -> generateValue rangeType (cache v map argsV) (checkWhere v pos) -- The underlying map comes from a variable: check the where clause and cache the value
+        -- ToDo: where and axiom checks
+        -- case mapVariable tc (node m) of
+          -- Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
+          -- Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
+        modify $ setInHeap mRef (MapValue (M.insert argsV val map))
+        return val
       Just v -> return v
   where
     mapVariable tc (Var v) = if M.member v (allVars tc)
@@ -550,14 +596,15 @@ evalMapSelection m args pos = do
       else Nothing
     mapVariable tc (MapUpdate m _ _) = mapVariable tc (node m)
     mapVariable tc _ = Nothing 
-    -- cache m map args val = setV m (MapValue (M.insert args val map))
     
 evalMapUpdate m args new = do
-  mV <- eval m
+  h <- gets envHeap
+  Reference mRef <- eval m
+  let mV = h ! mRef
   argsV <- mapM eval args
   newV <- eval new
-  case mV of 
-    MapValue map -> return $ MapValue (M.insert argsV newV map)
+  case mV of
+    MapValue map -> alloc $ MapValue (M.insert argsV newV map)
   
 evalIf cond e1 e2 = do
   v <- eval cond

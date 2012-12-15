@@ -11,23 +11,26 @@
 
 - Type checker
   - Data type for type errors (will be easier to evaluate test results)
-  -> Annotate AST with expr types (v0.2)
+  - Annotate AST with expr types
   
 - Interpreter
-  - Backtracking
-    - Exhaustive generator for maps
+  -> Backtracking
+    - Lazy initialization of maps
+      - Consistent map updates
+      - Lazy checking of where clauses and axioms
+      - Garbage collection
     - Remove limitation on entry points
     - Random generator?
     - Remove tester?
-  - Remove sepaation between global and local variables (get from the context)?
-  - Support calls to procedures with no implementation
+  -> Support calls to procedures with no implementation
+  - Remove separation between global and local variables (get from the context)?
   - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses)  
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - User-defined types
   - Extends ordering
   - Extract function constraints from axioms
   - Constraint solving
-  - With better non-determinism: treat maps like functions in testing, and do not generate all possible values for them explicitly?
+  -> With better non-determinism: treat maps like functions in testing, and do not generate all possible values for them explicitly?
   - Call forall
   
 - Tester
