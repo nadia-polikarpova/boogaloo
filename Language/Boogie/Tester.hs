@@ -282,7 +282,7 @@ generateInputValue c (MapType tv domains range) = do
   let polyTypes = generateInputTypes typeRange c { ctxTypeVars = tv } (range : domains)
   -- A polymorphic map is a union of monomorphic maps with all possible instantiations for type variables:
   maps <- combineInputs monomorphicMap polyTypes
-  return $ map (MapValue . M.unions) maps
+  return $ map (MapValue Nothing . M.unions) maps
   where
     monomorphicMap (range : domains) = do 
       -- Domain is always generated deterministically: 

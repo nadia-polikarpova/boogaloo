@@ -103,11 +103,11 @@ executeProgramGeneric p tc gen entryPoint = result <$> runStateT (runErrorT prog
 type Ref = Integer
 
 -- | Run-time value
-data Value = IntValue Integer |   -- ^ Integer value
-  BoolValue Bool |                -- ^ Boolean value
-  MapValue (Map [Value] Value) |  -- ^ Value of a map type
-  CustomValue Integer |           -- ^ Value of a user-defined type (values with the same code are considered equal)
-  Reference Ref                   -- ^ Reference to a map stored in the heap
+data Value = IntValue Integer |               -- ^ Integer value
+  BoolValue Bool |                            -- ^ Boolean value
+  CustomValue Integer |                       -- ^ Value of a user-defined type (values with the same code are considered equal)
+  MapValue (Maybe Ref) (Map [Value] Value) |  -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
+  Reference Ref                               -- ^ Reference to a map stored in the heap
   deriving (Eq, Ord)
 
 -- | Pretty-printed value
@@ -115,7 +115,8 @@ valueDoc :: Value -> Doc
 valueDoc (IntValue n) = integer n
 valueDoc (BoolValue False) = text "false"
 valueDoc (BoolValue True) = text "true"
-valueDoc (MapValue m) = brackets (commaSep (map itemDoc (M.toList m)))
+valueDoc (MapValue mR m) = optionMaybe mR (\r -> text "ref_" <> integer r) <> 
+  brackets (commaSep (map itemDoc (M.toList m)))
   where itemDoc (keys, v) = commaSep (map valueDoc keys) <+> text "->" <+>  valueDoc v
 valueDoc (CustomValue n) = text "custom_" <> integer n
 valueDoc (Reference r) = text "ref_" <> integer r
@@ -161,7 +162,13 @@ deepDeref :: Heap -> Value -> Value
 deepDeref h v = deepDeref' v
   where
     deepDeref' (Reference r) = deepDeref' (h ! r)
-    deepDeref' (MapValue m) = MapValue $ (M.map deepDeref' . M.mapKeys (map deepDeref')) m
+    deepDeref' (MapValue mR m) = let
+      unValue (MapValue Nothing m) = m
+      base = case mR of
+        Nothing -> M.empty
+        Just r -> unValue $ deepDeref' (Reference r)
+      override = (M.map deepDeref' . M.mapKeys (map deepDeref')) m
+      in MapValue Nothing $ M.union override base
     deepDeref' v = v  
 
 -- | 'flattenStore' @h s@: Store @s@ with all variable values completely dereferenced
@@ -206,7 +213,8 @@ initEnv tc gen = Environment
 
 -- | 'currentStore' @env@: Current values of all variables in @env@
 currentStore :: Environment m -> Store
-currentStore env = flattenStore (envHeap env) $ envLocals env `M.union` envGlobals env
+-- currentStore env = flattenStore (envHeap env) $ envLocals env `M.union` envGlobals env
+currentStore env = (envLocals env `M.union` envGlobals env) `M.union` (M.mapKeys show (envHeap env)) -- Debug version
 
 -- | 'lookupConstConstraints' @id env@ : All constraints of constant @id@ in @env@
 lookupConstConstraints id env = case M.lookup id (envConstConstraints env) of
@@ -299,7 +307,7 @@ generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
 generateValue t pos = case t of
   IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
   -- | Maps are initializaed lazily, allocate an empty map on the heap:
-  MapType _ _ _ -> alloc $ MapValue M.empty
+  MapType _ _ _ -> alloc $ MapValue Nothing M.empty
   _ -> do
     gen <- gets envGenValue
     lift (lift (gen t))
@@ -572,25 +580,31 @@ evalApplication name args pos = do
     returnType tc = exprType tc (gen $ Application name args)
     frame = StackFrame pos name
     
-evalMapSelection m args pos = do 
-  tc <- gets envTypeContext
-  h <- gets envHeap
-  let rangeType = exprType tc (gen $ MapSelection m args)
-  Reference mRef <- eval m
-  let mV = h ! mRef
+evalMapSelection m args pos = do   
+  h <- gets envHeap  
+  Reference r <- eval m
   argsV <- mapM eval args
-  case mV of 
-    MapValue map -> case M.lookup argsV map of
-      Nothing -> do
-        val <- generateValue rangeType pos
-        -- ToDo: where and axiom checks
-        -- case mapVariable tc (node m) of
-          -- Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
-          -- Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
-        modify $ setInHeap mRef (MapValue (M.insert argsV val map))
-        return val
-      Just v -> return v
+  case lookupHeap h argsV r of
+    Left v -> return v
+    Right baseRef -> do
+      tc <- gets envTypeContext
+      let rangeType = exprType tc (gen $ MapSelection m args)
+      val <- generateValue rangeType pos
+      -- ToDo: where and axiom checks
+      -- case mapVariable tc (node m) of
+        -- Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
+        -- Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
+      let (MapValue Nothing baseMap) = h ! baseRef
+      modify $ setInHeap baseRef (MapValue Nothing (M.insert argsV val baseMap))
+      return val    
   where
+    lookupHeap :: Heap -> [Value] -> Ref -> Either Value Ref
+    lookupHeap h argsV r = let MapValue mBase map = h ! r in
+      case M.lookup argsV map of
+        Just v -> Left v
+        Nothing -> case mBase of
+          Nothing -> Right r
+          Just baseRef -> lookupHeap h argsV baseRef
     mapVariable tc (Var v) = if M.member v (allVars tc)
       then Just v
       else Nothing
@@ -598,13 +612,10 @@ evalMapSelection m args pos = do
     mapVariable tc _ = Nothing 
     
 evalMapUpdate m args new = do
-  h <- gets envHeap
-  Reference mRef <- eval m
-  let mV = h ! mRef
+  Reference r <- eval m
   argsV <- mapM eval args
   newV <- eval new
-  case mV of
-    MapValue map -> alloc $ MapValue (M.insert argsV newV map)
+  alloc $ MapValue (Just r) (M.singleton argsV newV)
   
 evalIf cond e1 e2 = do
   v <- eval cond

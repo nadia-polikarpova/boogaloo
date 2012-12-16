@@ -16,9 +16,11 @@
 - Interpreter
   -> Backtracking
     - Lazy initialization of maps
-      - Consistent map updates
+      - Equality of maps
       - Lazy checking of where clauses and axioms
       - Garbage collection
+    - Consistent old
+    - Distinguish unreachable and non-executable outcomes
     - Remove limitation on entry points
     - Random generator?
     - Remove tester?
