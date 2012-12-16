@@ -109,6 +109,8 @@ data Value = IntValue Integer |               -- ^ Integer value
   MapValue (Maybe Ref) (Map [Value] Value) |  -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
   Reference Ref                               -- ^ Reference to a map stored in the heap
   deriving (Eq, Ord)
+  
+vnot (BoolValue b) = BoolValue (not b)  
 
 -- | Pretty-printed value
 valueDoc :: Value -> Doc
@@ -157,6 +159,12 @@ storeDoc vars = vsep $ map varDoc (M.toList vars)
 -- | Heap: maps references to values  
 type Heap = Map Ref Value
 
+-- | 'freshRef' @h@: A reference that does not occur in @h@
+freshRef :: Heap -> Ref
+freshRef h 
+  | M.null h = 0
+  | otherwise = fst (M.findMax h) + 1
+  
 -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
 deepDeref :: Heap -> Value -> Value
 deepDeref h v = deepDeref' v
@@ -175,11 +183,29 @@ deepDeref h v = deepDeref' v
 flattenStore :: Heap -> Store -> Store
 flattenStore h s = M.map (deepDeref h) s
 
--- | 'freshRef' @h@: A reference that does not occur in @h@
-freshRef :: Heap -> Ref
-freshRef h 
-  | M.null h = 0
-  | otherwise = fst (M.findMax h) + 1
+-- | 'canonical' @h r@: canonical value for reference @r@ in heap @h@ (a pair of the transitive base reference all all overrides)
+canonical :: Heap -> Ref -> (Ref, Map [Value] Value)
+canonical h r = let (MapValue mBase m) = h ! r in
+  case mBase of
+    Nothing -> (r, M.empty)
+    Just base -> mapSnd (m `M.union`) (canonical h base)    
+
+-- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
+objectEq :: Heap -> Value -> Value -> Maybe Bool
+objectEq h (Reference r1) (Reference r2) = if r1 == r2
+  then Just True -- Equal references point to equal maps
+  else let 
+    (br1, o1) = canonical h r1
+    (br2, o2) = canonical h r2 
+    in if agree h o1 o2
+      then if br1 == br2 && M.keysSet o1 == M.keysSet o2 -- ToDo: keys are compared by ==, and shoul be by objectEq
+        then Just True -- Derived from the same base map and agree on all overridden indexes, must be equal
+        else Nothing -- Derived from different base maps, no conclusion
+      else Just False -- Disagree on some indexes, cannot be equal    
+  where
+    agree h m1 m2 = M.null (M.filter (\v -> v == Nothing || v == Just False) (M.intersectionWith (objectEq h) m1 m2))    
+objectEq _ (MapValue base1 m1) (MapValue base2 m2) = error "Maps cannot be compared directly"
+objectEq _ v1 v2 = Just $ v1 == v2 
   
 -- | Execution state
 data Environment m = Environment
@@ -352,12 +378,13 @@ executeLocally localTC formals actuals computation = do
 {- Runtime failures -}
 
 data FailureSource = 
-  SpecViolation SpecClause |    -- ^ Violation of user-defined specification
-  DivisionByZero |              -- ^ Division by zero  
-  UnsupportedConstruct String | -- ^ Language construct is not yet supported (should disappear in later versions)
-  InfiniteDomain Id Interval |  -- ^ Quantification over an infinite set
-  NoImplementation Id |         -- ^ Call to a procedure with no implementation
-  InternalFailure InternalCode  -- ^ Must be cought inside the interpreter and never reach the user
+  SpecViolation SpecClause |          -- ^ Violation of user-defined specification
+  DivisionByZero |                    -- ^ Division by zero  
+  UnsupportedConstruct String |       -- ^ Language construct is not yet supported (should disappear in later versions)
+  InfiniteDomain Id Interval |        -- ^ Quantification over an infinite set
+  MapEquality Value Value |           -- ^ Equality of two maps cannot be determined
+  NoImplementation Id |               -- ^ Call to a procedure with no implementation
+  InternalFailure InternalCode        -- ^ Must be cought inside the interpreter and never reach the user
   deriving Eq
 
 -- | Information about a procedure or function call  
@@ -410,6 +437,7 @@ runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err)
     failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
     failureSourceDoc (DivisionByZero) = text "Division by zero"
     failureSourceDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
+    failureSourceDoc (MapEquality m1 m2) = text "Cannot determine equality of map values" <+> valueDoc m1 <+> text "and" <+> valueDoc m2
     failureSourceDoc (NoImplementation name) = text "Procedure" <+> text name <+> text "with no implementation called"
     failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
     
@@ -497,8 +525,12 @@ binOp pos Or      (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 || b2)
 binOp pos Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
 binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 >= b2)
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
-binOp pos Eq      v1 v2                         = return $ BoolValue (v1 == v2)
-binOp pos Neq     v1 v2                         = return $ BoolValue (v1 /= v2)
+binOp pos Eq      v1 v2                         = do
+                                                    h <- gets envHeap
+                                                    case objectEq h v1 v2 of
+                                                      Just b -> return $ BoolValue b
+                                                      Nothing -> throwRuntimeFailure (MapEquality (deepDeref h v1) (deepDeref h v2)) pos 
+binOp pos Neq     v1 v2                         = vnot <$> binOp pos Eq v1 v2
 binOp pos Lc      v1 v2                         = throwRuntimeFailure (UnsupportedConstruct "orders") pos
 
 -- | Euclidean division used by Boogie for integer division and modulo
@@ -527,7 +559,6 @@ eval expr = case node expr of
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
   Quantified Lambda _ _ _ -> throwRuntimeFailure (UnsupportedConstruct "lambda expressions") (position expr)
   Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e) (position expr)
-    where vnot (BoolValue b) = BoolValue (not b)
   Quantified Exists tv vars e -> evalExists tv vars e (position expr)
   
 evalVar id pos = do
