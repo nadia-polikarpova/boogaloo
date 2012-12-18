@@ -37,7 +37,9 @@ typeCheckerTests = TestLabel "TypeChecker" $ TestList [
 
 interpreterTests = TestLabel "Interpreter" $ TestList [
   testCase interpreterSuccess "NoGuards",
-  testCase interpreterSuccess "EmptyDomains"
+  testCase interpreterSuccess "EmptyDomains",
+  testCase interpreterSuccess "MapInit",
+  testCase interpreterSuccess "OldND"
   ]
   
 -- | Directory with test programs  

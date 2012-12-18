@@ -16,7 +16,7 @@
 - Interpreter
   -> Backtracking
     - Lazy initialization of maps
-      - Equality of maps
+      - Equality of maps: disallow maps indexed by maps
       - Lazy checking of where clauses and axioms
       - Garbage collection
     - Consistent old

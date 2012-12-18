@@ -175,7 +175,7 @@ deepDeref h v = deepDeref' v
       base = case mR of
         Nothing -> M.empty
         Just r -> unValue $ deepDeref' (Reference r)
-      override = (M.map deepDeref' . M.mapKeys (map deepDeref')) m
+      override = (M.map deepDeref' . M.mapKeys (map deepDeref')) m -- Here we do not assume that keys contain no references, as this is used for error reporting
       in MapValue Nothing $ M.union override base
     deepDeref' v = v  
 
@@ -183,29 +183,37 @@ deepDeref h v = deepDeref' v
 flattenStore :: Heap -> Store -> Store
 flattenStore h s = M.map (deepDeref h) s
 
--- | 'canonical' @h r@: canonical value for reference @r@ in heap @h@ (a pair of the transitive base reference all all overrides)
-canonical :: Heap -> Ref -> (Ref, Map [Value] Value)
-canonical h r = let (MapValue mBase m) = h ! r in
-  case mBase of
-    Nothing -> (r, M.empty)
-    Just base -> mapSnd (m `M.union`) (canonical h base)    
-
 -- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
 objectEq :: Heap -> Value -> Value -> Maybe Bool
 objectEq h (Reference r1) (Reference r2) = if r1 == r2
   then Just True -- Equal references point to equal maps
   else let 
-    (br1, o1) = canonical h r1
-    (br2, o2) = canonical h r2 
-    in if agree h o1 o2
-      then if br1 == br2 && M.keysSet o1 == M.keysSet o2 -- ToDo: keys are compared by ==, and shoul be by objectEq
-        then Just True -- Derived from the same base map and agree on all overridden indexes, must be equal
-        else Nothing -- Derived from different base maps, no conclusion
-      else Just False -- Disagree on some indexes, cannot be equal    
+    (br1, over1) = baseOverride r1
+    (br2, over2) = baseOverride r2
+    in if mustDisagree h over1 over2
+      then Just False -- Must disagree on some indexes, cannot be equal  
+      else if br1 == br2 && mustAgree h over1 over2
+        then Just True -- Derived from the same base map and must agree on all overridden indexes, must be equal
+        else Nothing -- Derived from different base maps or may disagree on some overridden indexes, no conclusion        
   where
-    agree h m1 m2 = M.null (M.filter (\v -> v == Nothing || v == Just False) (M.intersectionWith (objectEq h) m1 m2))    
+    baseOverride r = let (MapValue mBase m) = h ! r in
+      case mBase of
+        Nothing -> (r, M.empty)
+        Just base -> (base, m)
+    mustDisagree h m1 m2 = M.foldl (||) False $ (M.intersectionWith (mustNeq h) m1 m2)
+    mustAgree h m1 m2 = let common = M.intersectionWith (mustEq h) m1 m2 in
+      M.size m1 == M.size common && M.size m2 == M.size common && M.foldl (&&) True common
 objectEq _ (MapValue base1 m1) (MapValue base2 m2) = error "Maps cannot be compared directly"
-objectEq _ v1 v2 = Just $ v1 == v2 
+objectEq _ v1 v2 = Just $ v1 == v2
+
+mustEq h v1 v2 = case objectEq h v1 v2 of
+  Just True -> True
+  _ -> False  
+mustNeq h v1 v2 = case objectEq h v1 v2 of
+  Just False -> True
+  _ -> False  
+mayEq h v1 v2 = not $ mustNeq h v1 v2
+mayNeq h v1 v2 = not $ mustEq h v1 v2
   
 -- | Execution state
 data Environment m = Environment
@@ -643,10 +651,14 @@ evalMapSelection m args pos = do
     mapVariable tc _ = Nothing 
     
 evalMapUpdate m args new = do
+  h <- gets envHeap
   Reference r <- eval m
+  let MapValue mBase o = h ! r
   argsV <- mapM eval args
   newV <- eval new
-  alloc $ MapValue (Just r) (M.singleton argsV newV)
+  case mBase of
+    Nothing -> alloc $ MapValue (Just r) (M.singleton argsV newV)
+    Just base -> alloc $ MapValue (Just base) (M.insert argsV newV o)
   
 evalIf cond e1 e2 = do
   v <- eval cond
