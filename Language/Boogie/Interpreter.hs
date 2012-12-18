@@ -559,7 +559,7 @@ eval expr = case node expr of
   Var id -> evalVar id (position expr)
   Application id args -> evalApplication id args (position expr)
   MapSelection m args -> evalMapSelection m args (position expr)
-  MapUpdate m args new -> evalMapUpdate m args new
+  MapUpdate m args new -> evalMapUpdate m args new (position expr)
   Old e -> old $ eval e
   IfExpr cond e1 e2 -> evalIf cond e1 e2
   Coercion e t -> eval e
@@ -619,10 +619,15 @@ evalApplication name args pos = do
     returnType tc = exprType tc (gen $ Application name args)
     frame = StackFrame pos name
     
+rejectMapIndex pos idx = case idx of
+  Reference r -> throwRuntimeFailure (UnsupportedConstruct "map as an index") pos
+  _ -> return ()    
+    
 evalMapSelection m args pos = do   
   h <- gets envHeap  
   Reference r <- eval m
   argsV <- mapM eval args
+  mapM_ (rejectMapIndex pos) argsV
   case lookupHeap h argsV r of
     Left v -> return v
     Right baseRef -> do
@@ -648,13 +653,14 @@ evalMapSelection m args pos = do
       then Just v
       else Nothing
     mapVariable tc (MapUpdate m _ _) = mapVariable tc (node m)
-    mapVariable tc _ = Nothing 
-    
-evalMapUpdate m args new = do
+    mapVariable tc _ = Nothing
+        
+evalMapUpdate m args new pos = do
   h <- gets envHeap
   Reference r <- eval m
   let MapValue mBase o = h ! r
   argsV <- mapM eval args
+  mapM_ (rejectMapIndex pos) argsV
   newV <- eval new
   case mBase of
     Nothing -> alloc $ MapValue (Just r) (M.singleton argsV newV)
