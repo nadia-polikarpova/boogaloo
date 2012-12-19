@@ -19,8 +19,7 @@ module Language.Boogie.Interpreter (
   lookupFunction,
   lookupProcedure,
   modifyTypeContext,
-  setV,
-  setAll,
+  setAnyVar,
   -- * Executions
   Execution,
   SafeExecution,
@@ -100,7 +99,7 @@ executeProgramGeneric p tc gen entryPoint = result <$> runStateT (runErrorT prog
 {- Values -}
 
 -- | Reference (index in the heap)
-type Ref = Integer
+type Ref = Int
 
 -- | Run-time value
 data Value = IntValue Integer |               -- ^ Integer value
@@ -117,11 +116,11 @@ valueDoc :: Value -> Doc
 valueDoc (IntValue n) = integer n
 valueDoc (BoolValue False) = text "false"
 valueDoc (BoolValue True) = text "true"
-valueDoc (MapValue mR m) = optionMaybe mR (\r -> text "ref_" <> integer r) <> 
+valueDoc (MapValue mR m) = optionMaybe mR (\r -> text "ref_" <> int r) <> 
   brackets (commaSep (map itemDoc (M.toList m)))
   where itemDoc (keys, v) = commaSep (map valueDoc keys) <+> text "->" <+>  valueDoc v
 valueDoc (CustomValue n) = text "custom_" <> integer n
-valueDoc (Reference r) = text "ref_" <> integer r
+valueDoc (Reference r) = text "ref_" <> int r
 
 instance Show Value where
   show v = show (valueDoc v)
@@ -221,7 +220,8 @@ data Environment m = Environment
     envLocals :: Store,                          -- ^ Local variable store
     envGlobals :: Store,                         -- ^ Global variable store
     envOld :: Store,                             -- ^ Old global variable store (in two-state contexts)
-    envHeap :: Heap,                             -- ^ Heap (used for lazy initialization)
+    envHeap :: Heap,                             -- ^ Heap (for lazy initialization)
+    envRefCounts :: Map Ref Int,                 -- ^ For each reference in the heap, number of variables and map locations that use it (for garbage collection)
     envConstDefs :: Map Id Expression,           -- ^ Constant names to definitions
     envConstConstraints :: Map Id [Expression],  -- ^ Constant names to constraints
     envFunctions :: Map Id [FDef],               -- ^ Function names to definitions
@@ -237,6 +237,7 @@ initEnv tc gen = Environment
     envGlobals = emptyStore,
     envOld = emptyStore,
     envHeap = M.empty,
+    envRefCounts = M.empty,
     envConstDefs = M.empty,
     envConstConstraints = M.empty,
     envFunctions = M.empty,
@@ -248,7 +249,12 @@ initEnv tc gen = Environment
 -- | 'currentStore' @env@: Current values of all variables in @env@
 currentStore :: Environment m -> Store
 -- currentStore env = flattenStore (envHeap env) $ envLocals env `M.union` envGlobals env
-currentStore env = (envLocals env `M.union` envGlobals env) `M.union` (M.mapKeys show (envHeap env)) -- Debug version
+currentStore env = (envLocals env `M.union` envGlobals env) `M.union` (M.mapKeys (\r -> show r ++ "{" ++ show (envRefCounts env ! r) ++ "}") (envHeap env)) -- Debug version
+
+-- | 'lookupRefCount' @r env@ : Reference count for @r@ in @env@
+lookupRefCount r env = case M.lookup r (envRefCounts env) of
+  Nothing -> 0
+  Just n -> n
 
 -- | 'lookupConstConstraints' @id env@ : All constraints of constant @id@ in @env@
 lookupConstConstraints id env = case M.lookup id (envConstConstraints env) of
@@ -273,6 +279,7 @@ addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction i
 addProcedureDef id def env = env { envProcedures = M.insert id (lookupProcedure id env ++ [def]) (envProcedures env) } 
 modifyTypeContext f env = env { envTypeContext = f (envTypeContext env) }
 setInHeap r v env = env { envHeap = M.insert r v (envHeap env) }
+setRefCount r n env = env { envRefCounts = M.insert r n (envRefCounts env) }
   
 -- | Pretty-printed set of function definitions
 functionsDoc :: Map Id [FDef] -> Doc  
@@ -314,20 +321,36 @@ instance (Error e, Monad m) => Finalizer (ErrorT e m) where
   finally main cleanup = do
     res <- main `catchError` (\err -> cleanup >> throwError err)
     cleanup
-    return res  
+    return res
+
+-- | 'setVar' @getStore setter id val@ : set value of variable @id@ to @val@ using @setter@;
+-- adjust reference count if needed using @getStore@ to access the current value of @id@  
+setVar getStore setter id val = do
+  case val of
+    Reference rNew -> do
+      store <- gets $ getStore
+      case M.lookup id store of
+        Nothing -> return ()
+        Just (Reference rOld) -> do
+          oldCount <- gets $ lookupRefCount rOld
+          modify $ setRefCount rOld (oldCount - 1)
+      newCount <- gets $ lookupRefCount rNew
+      modify $ setRefCount rNew (newCount + 1)      
+    _ -> return ()
+  modify $ setter id val    
           
--- | 'setV' @id val@ : set value of variable @id@ to @val@;
--- @id@ has to be declared in the current type context
-setV id val = do
+-- | 'setAnyVar' @id val@ : set value of global or local variable @id@ to @val@
+setAnyVar id val = do
   tc <- gets envTypeContext
   if M.member id (localScope tc)
-    then modify $ setLocal id val
-    else modify $ setGlobal id val      
-    
--- | 'setAll' @ids vals@ : set values of variables @ids@ to @vals@;
--- all @ids@ have to be declared in the current type context
-setAll ids vals = zipWithM_ setV ids vals
+    then setVar envLocals setLocal id val
+    else setVar envGlobals setGlobal id val
 
+-- | 'readHeap' @r@: current value of reference @r@ in the heap
+readHeap r = do
+  h <- gets envHeap
+  return $ h ! r
+    
 -- | 'alloc' @v@: store @v@ at a fresh location in the heap and return that location
 alloc :: (Monad m, Functor m) => Value -> Execution m Value
 alloc v = do
@@ -375,7 +398,7 @@ executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Con
 executeLocally localTC formals actuals computation = do
   oldEnv <- get
   modify $ modifyTypeContext localTC
-  setAll formals actuals
+  zipWithM_ (setVar (const emptyStore) setLocal) formals actuals -- All formal are fresh, can use emptyStore for current values
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
@@ -582,7 +605,7 @@ evalVar id pos = do
     -- | Initialize @id@ with a value geberated by @gen@, and then perform @check@
     init gen set check = do
       val <- gen
-      modify $ set id val
+      setVar (const emptyStore) set id val
       check id pos
       return val
     -- | Lookup @id@ in @store@; if occurs return its stored value, otherwise @calculate@
@@ -624,10 +647,10 @@ rejectMapIndex pos idx = case idx of
   _ -> return ()    
     
 evalMapSelection m args pos = do   
-  h <- gets envHeap  
-  Reference r <- eval m
+  Reference r <- eval m  
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
+  h <- gets envHeap
   case lookupHeap h argsV r of
     Left v -> return v
     Right baseRef -> do
@@ -638,17 +661,17 @@ evalMapSelection m args pos = do
       -- case mapVariable tc (node m) of
         -- Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
         -- Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
-      let (MapValue Nothing baseMap) = h ! baseRef
+      MapValue Nothing baseMap <- readHeap baseRef
       modify $ setInHeap baseRef (MapValue Nothing (M.insert argsV val baseMap))
       return val    
   where
     lookupHeap :: Heap -> [Value] -> Ref -> Either Value Ref
     lookupHeap h argsV r = let MapValue mBase map = h ! r in
-      case M.lookup argsV map of
-        Just v -> Left v
-        Nothing -> case mBase of
-          Nothing -> Right r
-          Just baseRef -> lookupHeap h argsV baseRef
+        case M.lookup argsV map of
+          Just v -> Left v
+          Nothing -> case mBase of
+            Nothing -> Right r
+            Just baseRef -> lookupHeap h argsV baseRef
     mapVariable tc (Var v) = if M.member v (allVars tc)
       then Just v
       else Nothing
@@ -656,9 +679,8 @@ evalMapSelection m args pos = do
     mapVariable tc _ = Nothing
         
 evalMapUpdate m args new pos = do
-  h <- gets envHeap
   Reference r <- eval m
-  let MapValue mBase o = h ! r
+  MapValue mBase o <- readHeap r
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
   newV <- eval new
@@ -704,7 +726,7 @@ evalExists' tv vars e = do
     -- | Fix the value of var to val, then evaluate e for each combination of values for the rest of vars
     fixOne :: (Monad m, Functor m) => [Id] -> [Domain] -> Id -> Value -> Execution m [Value]
     fixOne vars doms var val = do
-      setV var val
+      setVar envLocals setLocal var val
       evalForEach vars doms
     isTrue (BoolValue b) = b
     varNames = map fst vars
@@ -733,12 +755,12 @@ execHavoc ids pos = do
   where
     havoc tc id = do
       val <- generateValue (exprType tc . gen . Var $ id) pos
-      setV id val
+      setAnyVar id val
       checkWhere id pos      
     
 execAssign lhss rhss = do
   rVals <- mapM eval rhss'
-  setAll lhss' rVals
+  zipWithM_ setAnyVar lhss' rVals
   where
     lhss' = map fst (zipWith simplifyLeft lhss rhss)
     rhss' = map snd (zipWith simplifyLeft lhss rhss)
@@ -755,7 +777,7 @@ execCall lhss name args pos = do
     def : _ -> do
       let lhssExpr = map (attachPos (ctxPos tc) . Var) lhss
       retsV <- execProcedure (procSig name tc) def args lhssExpr `catchError` addStackFrame frame
-      setAll lhss retsV
+      zipWithM_ setAnyVar lhss retsV
   where
     frame = StackFrame pos name
     

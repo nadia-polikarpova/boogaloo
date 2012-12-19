@@ -262,7 +262,7 @@ testImplementation sig def = do
     -- | inputVars contain some inParams and some globals variables
     testCase :: [Id] -> [Id] -> [Id] -> [Value] -> SafeExecution Identity Outcome
     testCase inParams outParams inputVars inputVals = do
-      setAll inputVars inputVals
+      zipWithM_ setAnyVar inputVars inputVals
       let inExpr = map (gen . Var) inParams
       let outExpr = map (gen . Var) outParams
       execSafely (execProcedure (assumePreconditions sig) def inExpr outExpr >> return Pass) failureReport

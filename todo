@@ -16,7 +16,6 @@
 - Interpreter
   -> Backtracking
     - Lazy initialization of maps
-      - Lazy checking of where clauses and axioms
       - Garbage collection
     - Consistent old
     - Distinguish unreachable and non-executable outcomes
@@ -24,14 +23,13 @@
     - Random generator?
     - Remove tester?
   -> Support calls to procedures with no implementation
+  - Check function and map constraints lazily
   - Remove separation between global and local variables (get from the context)?
   - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses)  
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - User-defined types
   - Extends ordering
-  - Extract function constraints from axioms
   - Constraint solving
-  -> With better non-determinism: treat maps like functions in testing, and do not generate all possible values for them explicitly?
   - Call forall
   
 - Tester
