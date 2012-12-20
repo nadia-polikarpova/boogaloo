@@ -16,12 +16,14 @@
 - Interpreter
   -> Backtracking
     - Lazy initialization of maps
-      - Garbage collection
+      - Reuse garbage?
+    - Cache function applications
     - Consistent old
     - Distinguish unreachable and non-executable outcomes
     - Remove limitation on entry points
     - Random generator?
     - Remove tester?
+  - Refactor executeLocally, execCall and execProcedure
   -> Support calls to procedures with no implementation
   - Check function and map constraints lazily
   - Remove separation between global and local variables (get from the context)?

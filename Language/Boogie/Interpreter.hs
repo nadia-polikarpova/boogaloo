@@ -58,9 +58,12 @@ import Language.Boogie.PrettyPrinter
 import Language.Boogie.TypeChecker
 import Language.Boogie.NormalForm
 import Language.Boogie.BasicBlocks
+import Data.Word
 import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
+import Data.Set (Set)
+import qualified Data.Set as S
 import Control.Monad.Error hiding (join)
 import Control.Applicative hiding (empty)
 import Control.Monad.State hiding (join)
@@ -99,7 +102,11 @@ executeProgramGeneric p tc gen entryPoint = result <$> runStateT (runErrorT prog
 {- Values -}
 
 -- | Reference (index in the heap)
-type Ref = Int
+type Ref = Word
+
+-- | Pretty-printed reference
+refDoc :: Ref -> Doc
+refDoc r = text ("ref_" ++ show r)
 
 -- | Run-time value
 data Value = IntValue Integer |               -- ^ Integer value
@@ -116,11 +123,11 @@ valueDoc :: Value -> Doc
 valueDoc (IntValue n) = integer n
 valueDoc (BoolValue False) = text "false"
 valueDoc (BoolValue True) = text "true"
-valueDoc (MapValue mR m) = optionMaybe mR (\r -> text "ref_" <> int r) <> 
+valueDoc (MapValue mR m) = optionMaybe mR refDoc <> 
   brackets (commaSep (map itemDoc (M.toList m)))
   where itemDoc (keys, v) = commaSep (map valueDoc keys) <+> text "->" <+>  valueDoc v
 valueDoc (CustomValue n) = text "custom_" <> integer n
-valueDoc (Reference r) = text "ref_" <> int r
+valueDoc (Reference r) = refDoc r
 
 instance Show Value where
   show v = show (valueDoc v)
@@ -131,14 +138,14 @@ instance Show Value where
 defaultValue :: Type -> Value
 defaultValue BoolType         = BoolValue False  
 defaultValue IntType          = IntValue 0
-defaultValue (MapType _ _ _)  = error "Map values should be generated lazily"
+defaultValue (MapType _ _ _)  = internalError "Attempt to generate a map value"
 defaultValue (IdType _ _)     = CustomValue 0
 
 -- | 'allValues' @t@ : List all values of type @t@ exhaustively
 allValues :: Type -> Stream Value
 allValues BoolType        = return (BoolValue False) `mplus` return (BoolValue False)
 allValues IntType         = IntValue <$> allIntegers
-allValues (MapType _ _ _) = error "Map values should be generated lazily"
+allValues (MapType _ _ _) = internalError "Attempt to generate a map value"
 allValues (IdType _ _)    = CustomValue <$> allIntegers
 
 {- Execution state -}  
@@ -158,6 +165,17 @@ storeDoc vars = vsep $ map varDoc (M.toList vars)
 -- | Heap: maps references to values  
 type Heap = Map Ref Value
 
+-- | Pretty-printed heap
+heapDoc :: Heap -> Doc
+heapDoc h = vsep $ map entryDoc (M.toList h)
+  where entryDoc (ref, val) = refDoc ref <+> text "->" <+> valueDoc val
+
+-- | 'at' @h r@: value of @r@ in heap @h@ (gives a more descriptive error than ! when @r@ is not present)
+at :: Heap -> Ref -> Value
+at h r = case M.lookup r h of
+  Nothing -> internalError . show $ text "Cannot find reference" <+> refDoc r <+> text "in heap" <+> heapDoc h
+  Just v -> v
+
 -- | 'freshRef' @h@: A reference that does not occur in @h@
 freshRef :: Heap -> Ref
 freshRef h 
@@ -168,7 +186,7 @@ freshRef h
 deepDeref :: Heap -> Value -> Value
 deepDeref h v = deepDeref' v
   where
-    deepDeref' (Reference r) = deepDeref' (h ! r)
+    deepDeref' (Reference r) = deepDeref' (h `at` r)
     deepDeref' (MapValue mR m) = let
       unValue (MapValue Nothing m) = m
       base = case mR of
@@ -195,14 +213,14 @@ objectEq h (Reference r1) (Reference r2) = if r1 == r2
         then Just True -- Derived from the same base map and must agree on all overridden indexes, must be equal
         else Nothing -- Derived from different base maps or may disagree on some overridden indexes, no conclusion        
   where
-    baseOverride r = let (MapValue mBase m) = h ! r in
+    baseOverride r = let (MapValue mBase m) = h `at` r in
       case mBase of
         Nothing -> (r, M.empty)
         Just base -> (base, m)
     mustDisagree h m1 m2 = M.foldl (||) False $ (M.intersectionWith (mustNeq h) m1 m2)
     mustAgree h m1 m2 = let common = M.intersectionWith (mustEq h) m1 m2 in
       M.size m1 == M.size common && M.size m2 == M.size common && M.foldl (&&) True common
-objectEq _ (MapValue base1 m1) (MapValue base2 m2) = error "Maps cannot be compared directly"
+objectEq _ (MapValue base1 m1) (MapValue base2 m2) = internalError "Attempt to compare two maps"
 objectEq _ v1 v2 = Just $ v1 == v2
 
 mustEq h v1 v2 = case objectEq h v1 v2 of
@@ -217,11 +235,15 @@ mayNeq h v1 v2 = not $ mustEq h v1 v2
 -- | Execution state
 data Environment m = Environment
   {
+    -- | Store
     envLocals :: Store,                          -- ^ Local variable store
     envGlobals :: Store,                         -- ^ Global variable store
     envOld :: Store,                             -- ^ Old global variable store (in two-state contexts)
-    envHeap :: Heap,                             -- ^ Heap (for lazy initialization)
+    -- | Heap (used for lazy initialization of maps)
+    envHeap :: Heap,                             -- ^ Heap
     envRefCounts :: Map Ref Int,                 -- ^ For each reference in the heap, number of variables and map locations that use it (for garbage collection)
+    envGarbage :: Set Ref,                       -- ^ Set of unused references (can be calculated from @envRefCounts@, but stored for efficiency) 
+    -- | Static information
     envConstDefs :: Map Id Expression,           -- ^ Constant names to definitions
     envConstConstraints :: Map Id [Expression],  -- ^ Constant names to constraints
     envFunctions :: Map Id [FDef],               -- ^ Function names to definitions
@@ -238,6 +260,7 @@ initEnv tc gen = Environment
     envOld = emptyStore,
     envHeap = M.empty,
     envRefCounts = M.empty,
+    envGarbage = S.empty,
     envConstDefs = M.empty,
     envConstConstraints = M.empty,
     envFunctions = M.empty,
@@ -250,11 +273,6 @@ initEnv tc gen = Environment
 currentStore :: Environment m -> Store
 -- currentStore env = flattenStore (envHeap env) $ envLocals env `M.union` envGlobals env
 currentStore env = (envLocals env `M.union` envGlobals env) `M.union` (M.mapKeys (\r -> show r ++ "{" ++ show (envRefCounts env ! r) ++ "}") (envHeap env)) -- Debug version
-
--- | 'lookupRefCount' @r env@ : Reference count for @r@ in @env@
-lookupRefCount r env = case M.lookup r (envRefCounts env) of
-  Nothing -> 0
-  Just n -> n
 
 -- | 'lookupConstConstraints' @id env@ : All constraints of constant @id@ in @env@
 lookupConstConstraints id env = case M.lookup id (envConstConstraints env) of
@@ -279,7 +297,15 @@ addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction i
 addProcedureDef id def env = env { envProcedures = M.insert id (lookupProcedure id env ++ [def]) (envProcedures env) } 
 modifyTypeContext f env = env { envTypeContext = f (envTypeContext env) }
 setInHeap r v env = env { envHeap = M.insert r v (envHeap env) }
-setRefCount r n env = env { envRefCounts = M.insert r n (envRefCounts env) }
+makeGarbage r env = env {  envRefCounts  = M.insert r 0 (envRefCounts env), 
+                           envGarbage    = S.insert r (envGarbage env) }
+incRefCount r env = let newCount = (envRefCounts env ! r) + 1
+  in env {  envRefCounts  = M.insert r newCount (envRefCounts env),
+            envGarbage    = if newCount == 1 then S.delete r (envGarbage env) else envGarbage env }
+decRefCount r env = let newCount = (envRefCounts env ! r) - 1
+  in env {  envRefCounts  = M.insert r newCount (envRefCounts env),
+            envGarbage    = if newCount == 0 then S.insert r (envGarbage env) else envGarbage env }    
+-- modifyRefCount r f env = env { envRefCounts = M.insert r (f (lookupRefCount r env)) (envRefCounts env) } 
   
 -- | Pretty-printed set of function definitions
 functionsDoc :: Map Id [FDef] -> Doc  
@@ -322,20 +348,22 @@ instance (Error e, Monad m) => Finalizer (ErrorT e m) where
     res <- main `catchError` (\err -> cleanup >> throwError err)
     cleanup
     return res
+    
+-- | 'unsetVar' @getStore id@ : if @id@ was associated with a reference in @getStore@, decrease its reference count
+unsetVar getStore id = do
+  store <- gets $ getStore
+  case M.lookup id store of    
+    Just (Reference r) -> do          
+      modify $ decRefCount r
+    _ -> return ()
 
 -- | 'setVar' @getStore setter id val@ : set value of variable @id@ to @val@ using @setter@;
 -- adjust reference count if needed using @getStore@ to access the current value of @id@  
 setVar getStore setter id val = do
   case val of
-    Reference rNew -> do
-      store <- gets $ getStore
-      case M.lookup id store of
-        Nothing -> return ()
-        Just (Reference rOld) -> do
-          oldCount <- gets $ lookupRefCount rOld
-          modify $ setRefCount rOld (oldCount - 1)
-      newCount <- gets $ lookupRefCount rNew
-      modify $ setRefCount rNew (newCount + 1)      
+    Reference r -> do
+      unsetVar getStore id
+      modify $ incRefCount r
     _ -> return ()
   modify $ setter id val    
           
@@ -349,15 +377,32 @@ setAnyVar id val = do
 -- | 'readHeap' @r@: current value of reference @r@ in the heap
 readHeap r = do
   h <- gets envHeap
-  return $ h ! r
+  return $ h `at` r
     
 -- | 'alloc' @v@: store @v@ at a fresh location in the heap and return that location
 alloc :: (Monad m, Functor m) => Value -> Execution m Value
 alloc v = do
   r <- freshRef <$> gets envHeap
   modify $ setInHeap r v
+  modify $ makeGarbage r
   return $ Reference r
-
+  
+-- | Remove unused reference from the heap  
+collectGarbage :: (Monad m, Functor m) => Execution m ()  
+collectGarbage = do
+  g <- gets envGarbage
+  unless (S.null g) (do
+    let (r, g') = S.deleteFindMin g
+    MapValue mBase _ <- readHeap r
+    h' <- M.delete r <$> gets envHeap
+    rc' <- M.delete r <$> gets envRefCounts
+    modify $ \env -> env { envHeap = h', envRefCounts = rc', envGarbage = g' }
+    case mBase of
+      Nothing -> return ()
+      Just base -> modify $ decRefCount base
+    collectGarbage
+    )
+        
 -- | 'generateValue' @t pos@ : choose a value of type @t@ at source position @pos@;
 -- fail if @t@ is a type variable
 generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
@@ -403,8 +448,10 @@ executeLocally localTC formals actuals computation = do
   where
     -- | Restore type context and the values of local variables 
     unwind oldEnv = do
-      env <- get
-      put env { envTypeContext = envTypeContext oldEnv, envLocals = envLocals oldEnv }
+      tc <- gets envTypeContext
+      let oldTC = envTypeContext oldEnv
+      mapM_ (unsetVar envLocals) (M.keys $ localScope tc `M.difference` localScope oldTC) 
+      modify $ \env -> env { envTypeContext = oldTC, envLocals = envLocals oldEnv }
                 
 {- Runtime failures -}
 
@@ -415,7 +462,7 @@ data FailureSource =
   InfiniteDomain Id Interval |        -- ^ Quantification over an infinite set
   MapEquality Value Value |           -- ^ Equality of two maps cannot be determined
   NoImplementation Id |               -- ^ Call to a procedure with no implementation
-  InternalFailure InternalCode        -- ^ Must be cought inside the interpreter and never reach the user
+  InternalException InternalCode      -- ^ Must be cought inside the interpreter and never reach the user
   deriving Eq
 
 -- | Information about a procedure or function call  
@@ -501,7 +548,9 @@ instance Show RuntimeFailure where
 data InternalCode = NotLinear
   deriving Eq
 
-throwInternalFailure code = throwRuntimeFailure (InternalFailure code) noPos
+throwInternalException code = throwRuntimeFailure (InternalException code) noPos
+
+internalError msg = error $ "Internal interpreter error (consider submitting a bug report):\n" ++ msg 
 
 {- Execution outcomes -}
 
@@ -600,7 +649,7 @@ evalVar id pos = do
       Just t -> lookupStore envGlobals (init (generateValue t pos) setGlobal checkWhere)
       Nothing -> case M.lookup id (ctxConstants tc) of
         Just t -> lookupStore envGlobals (initConst t)
-        Nothing -> (error . show) (text "encountered unknown identifier during execution:" <+> text id) 
+        Nothing -> (internalError . show) (text "Encountered unknown identifier during execution:" <+> text id) 
   where
     -- | Initialize @id@ with a value geberated by @gen@, and then perform @check@
     init gen set check = do
@@ -650,7 +699,7 @@ evalMapSelection m args pos = do
   Reference r <- eval m  
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
-  h <- gets envHeap
+  h <- gets envHeap  
   case lookupHeap h argsV r of
     Left v -> return v
     Right baseRef -> do
@@ -666,7 +715,7 @@ evalMapSelection m args pos = do
       return val    
   where
     lookupHeap :: Heap -> [Value] -> Ref -> Either Value Ref
-    lookupHeap h argsV r = let MapValue mBase map = h ! r in
+    lookupHeap h argsV r = let MapValue mBase map = h `at` r in
         case M.lookup argsV map of
           Just v -> Left v
           Nothing -> case mBase of
@@ -684,9 +733,9 @@ evalMapUpdate m args new pos = do
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
   newV <- eval new
-  case mBase of
-    Nothing -> alloc $ MapValue (Just r) (M.singleton argsV newV)
-    Just base -> alloc $ MapValue (Just base) (M.insert argsV newV o)
+  let (base, over) = case mBase of Nothing -> (r, M.singleton argsV newV); Just b -> (b, M.insert argsV newV o)
+  modify $ incRefCount base
+  alloc $ MapValue (Just base) over
   
 evalIf cond e1 e2 = do
   v <- eval cond
@@ -737,11 +786,12 @@ evalExists' tv vars e = do
 -- (no jump, if or while statements allowed)
 exec :: (Monad m, Functor m) => Statement -> Execution m ()
 exec stmt = case node stmt of
-  Predicate specClause -> execPredicate specClause (position stmt)
-  Havoc ids -> execHavoc ids (position stmt)
-  Assign lhss rhss -> execAssign lhss rhss
-  Call lhss name args -> execCall lhss name args (position stmt)
-  CallForall name args -> return () -- ToDo: assume (forall args :: pre ==> post)?
+    Predicate specClause -> execPredicate specClause (position stmt)
+    Havoc ids -> execHavoc ids (position stmt)
+    Assign lhss rhss -> execAssign lhss rhss
+    Call lhss name args -> execCall lhss name args (position stmt)
+    CallForall name args -> return () -- ToDo: assume (forall args :: pre ==> post)?
+  >> collectGarbage
   
 execPredicate specClause pos = do
   b <- eval $ specExpr specClause
@@ -1010,7 +1060,7 @@ inferInterval boolExpr constraints x = (case node boolExpr of
     greaterEqual int  | isBottom int = bot
                       | otherwise = Interval (lower int) Inf
     handleNotLinear err = case rtfSource err of
-      InternalFailure NotLinear -> return top
+      InternalException NotLinear -> return top
       _ -> throwError err                      
 
 -- | Linear form (A, B) represents a set of expressions a*x + b, where a in A and b in B
@@ -1028,10 +1078,10 @@ toLinearForm aExpr constraints x = case node aExpr of
       Nothing -> const aExpr
   Application name args -> if null $ M.keys constraints `intersect` freeVars aExpr
     then const aExpr
-    else throwInternalFailure NotLinear
+    else throwInternalException NotLinear
   MapSelection m args -> if null $ M.keys constraints `intersect` freeVars aExpr
     then const aExpr
-    else throwInternalFailure NotLinear
+    else throwInternalException NotLinear
   Old e -> old $ toLinearForm e constraints x
   UnaryExpression Neg e -> do
     (a, b) <- toLinearForm e constraints x
@@ -1049,5 +1099,5 @@ toLinearForm aExpr constraints x = case node aExpr of
     combineBinOp Minus  (a1, b1) (a2, b2) = return (a1 - a2, b1 - b2)
     combineBinOp Times  (a, b)   (0, k)   = return (k * a, k * b)
     combineBinOp Times  (0, k)   (a, b)   = return (k * a, k * b)
-    combineBinOp _ _ _ = throwInternalFailure NotLinear                      
+    combineBinOp _ _ _ = throwInternalException NotLinear                      
   
