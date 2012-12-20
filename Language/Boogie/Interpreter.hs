@@ -289,6 +289,7 @@ lookupProcedure id env = case M.lookup id (envProcedures env) of
   Nothing -> []
   Just defs -> defs 
 
+-- Environment modifications  
 setGlobal id val env = env { envGlobals = M.insert id val (envGlobals env) }    
 setLocal id val env = env { envLocals = M.insert id val (envLocals env) }
 addConstantDef id def env = env { envConstDefs = M.insert id def (envConstDefs env) }
@@ -296,6 +297,8 @@ addConstantConstraint id expr env = env { envConstConstraints = M.insert id (loo
 addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction id env ++ defs) (envFunctions env) }
 addProcedureDef id def env = env { envProcedures = M.insert id (lookupProcedure id env ++ [def]) (envProcedures env) } 
 modifyTypeContext f env = env { envTypeContext = f (envTypeContext env) }
+
+-- Heap modifications
 setInHeap r v env = env { envHeap = M.insert r v (envHeap env) }
 makeGarbage r env = env {  envRefCounts  = M.insert r 0 (envRefCounts env), 
                            envGarbage    = S.insert r (envGarbage env) }
@@ -305,7 +308,6 @@ incRefCount r env = let newCount = (envRefCounts env ! r) + 1
 decRefCount r env = let newCount = (envRefCounts env ! r) - 1
   in env {  envRefCounts  = M.insert r newCount (envRefCounts env),
             envGarbage    = if newCount == 0 then S.insert r (envGarbage env) else envGarbage env }    
--- modifyRefCount r f env = env { envRefCounts = M.insert r (f (lookupRefCount r env)) (envRefCounts env) } 
   
 -- | Pretty-printed set of function definitions
 functionsDoc :: Map Id [FDef] -> Doc  
@@ -349,71 +351,6 @@ instance (Error e, Monad m) => Finalizer (ErrorT e m) where
     cleanup
     return res
     
--- | 'unsetVar' @getStore id@ : if @id@ was associated with a reference in @getStore@, decrease its reference count
-unsetVar getStore id = do
-  store <- gets $ getStore
-  case M.lookup id store of    
-    Just (Reference r) -> do          
-      modify $ decRefCount r
-    _ -> return ()
-
--- | 'setVar' @getStore setter id val@ : set value of variable @id@ to @val@ using @setter@;
--- adjust reference count if needed using @getStore@ to access the current value of @id@  
-setVar getStore setter id val = do
-  case val of
-    Reference r -> do
-      unsetVar getStore id
-      modify $ incRefCount r
-    _ -> return ()
-  modify $ setter id val    
-          
--- | 'setAnyVar' @id val@ : set value of global or local variable @id@ to @val@
-setAnyVar id val = do
-  tc <- gets envTypeContext
-  if M.member id (localScope tc)
-    then setVar envLocals setLocal id val
-    else setVar envGlobals setGlobal id val
-
--- | 'readHeap' @r@: current value of reference @r@ in the heap
-readHeap r = do
-  h <- gets envHeap
-  return $ h `at` r
-    
--- | 'alloc' @v@: store @v@ at a fresh location in the heap and return that location
-alloc :: (Monad m, Functor m) => Value -> Execution m Value
-alloc v = do
-  r <- freshRef <$> gets envHeap
-  modify $ setInHeap r v
-  modify $ makeGarbage r
-  return $ Reference r
-  
--- | Remove unused reference from the heap  
-collectGarbage :: (Monad m, Functor m) => Execution m ()  
-collectGarbage = do
-  g <- gets envGarbage
-  unless (S.null g) (do
-    let (r, g') = S.deleteFindMin g
-    MapValue mBase _ <- readHeap r
-    h' <- M.delete r <$> gets envHeap
-    rc' <- M.delete r <$> gets envRefCounts
-    modify $ \env -> env { envHeap = h', envRefCounts = rc', envGarbage = g' }
-    case mBase of
-      Nothing -> return ()
-      Just base -> modify $ decRefCount base
-    collectGarbage
-    )
-        
--- | 'generateValue' @t pos@ : choose a value of type @t@ at source position @pos@;
--- fail if @t@ is a type variable
-generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
-generateValue t pos = case t of
-  IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
-  -- | Maps are initializaed lazily, allocate an empty map on the heap:
-  MapType _ _ _ -> alloc $ MapValue Nothing M.empty
-  _ -> do
-    gen <- gets envGenValue
-    lift (lift (gen t))
-
 -- | Run execution in the old environment
 old :: (Monad m, Functor m) => Execution m a -> Execution m a
 old execution = do
@@ -452,7 +389,7 @@ executeLocally localTC formals actuals computation = do
       let oldTC = envTypeContext oldEnv
       mapM_ (unsetVar envLocals) (M.keys $ localScope tc `M.difference` localScope oldTC) 
       modify $ \env -> env { envTypeContext = oldTC, envLocals = envLocals oldEnv }
-                
+                        
 {- Runtime failures -}
 
 data FailureSource = 
@@ -568,6 +505,73 @@ isInvalid _                                                             = False
 -- | 'isFail' @outcome@: Does @outcome@ belong to a failing execution? (Denotes an error state)
 isFail :: Either RuntimeFailure Store -> Bool
 isFail outcome = not (isPass outcome || isInvalid outcome)
+
+{- Basic executions -}      
+      
+-- | 'generateValue' @t pos@ : choose a value of type @t@ at source position @pos@;
+-- fail if @t@ is a type variable
+generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
+generateValue t pos = case t of
+  IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
+  -- | Maps are initializaed lazily, allocate an empty map on the heap:
+  MapType _ _ _ -> alloc $ MapValue Nothing M.empty
+  _ -> do
+    gen <- gets envGenValue
+    lift (lift (gen t))      
+    
+-- | 'unsetVar' @getStore id@ : if @id@ was associated with a reference in @getStore@, decrease its reference count
+unsetVar getStore id = do
+  store <- gets $ getStore
+  case M.lookup id store of    
+    Just (Reference r) -> do          
+      modify $ decRefCount r
+    _ -> return ()
+
+-- | 'setVar' @getStore setter id val@ : set value of variable @id@ to @val@ using @setter@;
+-- adjust reference count if needed using @getStore@ to access the current value of @id@  
+setVar getStore setter id val = do
+  case val of
+    Reference r -> do
+      unsetVar getStore id
+      modify $ incRefCount r
+    _ -> return ()
+  modify $ setter id val    
+          
+-- | 'setAnyVar' @id val@ : set value of global or local variable @id@ to @val@
+setAnyVar id val = do
+  tc <- gets envTypeContext
+  if M.member id (localScope tc)
+    then setVar envLocals setLocal id val
+    else setVar envGlobals setGlobal id val
+
+-- | 'readHeap' @r@: current value of reference @r@ in the heap
+readHeap r = do
+  h <- gets envHeap
+  return $ h `at` r
+    
+-- | 'alloc' @v@: store @v@ at a fresh location in the heap and return that location
+alloc :: (Monad m, Functor m) => Value -> Execution m Value
+alloc v = do
+  r <- freshRef <$> gets envHeap
+  modify $ setInHeap r v
+  modify $ makeGarbage r
+  return $ Reference r
+  
+-- | Remove unused reference from the heap  
+collectGarbage :: (Monad m, Functor m) => Execution m ()  
+collectGarbage = do
+  g <- gets envGarbage
+  unless (S.null g) (do
+    let (r, g') = S.deleteFindMin g
+    MapValue mBase _ <- readHeap r
+    h' <- M.delete r <$> gets envHeap
+    rc' <- M.delete r <$> gets envRefCounts
+    modify $ \env -> env { envHeap = h', envRefCounts = rc', envGarbage = g' }
+    case mBase of
+      Nothing -> return ()
+      Just base -> modify $ decRefCount base
+    collectGarbage
+    )
 
 {- Expressions -}
 
