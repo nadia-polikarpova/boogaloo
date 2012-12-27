@@ -11,21 +11,22 @@
 
 - Type checker
   - Data type for type errors (will be easier to evaluate test results)
-  - Annotate AST with expr types
+  -? Annotate AST with expr types
   
 - Interpreter
   -> Backtracking
     - Lazy initialization of maps
-      - Reuse garbage?
-    - Cache function applications
+      - More abstract interface to the heap (try not to access it directly except for basic executions?)
+    - Cache function applications (only for functions without a body; the same for constants?)
     - Consistent old
     - Distinguish unreachable and non-executable outcomes
     - Remove limitation on entry points
     - Random generator?
     - Remove tester?
-  - Refactor executeLocally, execCall and execProcedure
   -> Support calls to procedures with no implementation
-  - Check function and map constraints lazily
+  -> Bounded checking of quantification
+  -? Check function and map constraints lazily
+  - Refactor executeLocally, execCall and execProcedure
   - Remove separation between global and local variables (get from the context)?
   - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses)  
   - Turn source positions into spans; use the end of the span to report postcondition violations  
@@ -40,6 +41,5 @@
 - User interface
   - pass more information with failures other than spec violations, so that relevant variables can be determined
   - settings for disabling checking of different specs
-  - settings for bounding domains to be checked in quantified expressions
   - interactive sessions
   - debugger

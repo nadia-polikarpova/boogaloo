@@ -175,12 +175,6 @@ at :: Heap -> Ref -> Value
 at h r = case M.lookup r h of
   Nothing -> internalError . show $ text "Cannot find reference" <+> refDoc r <+> text "in heap" <+> heapDoc h
   Just v -> v
-
--- | 'freshRef' @h@: A reference that does not occur in @h@
-freshRef :: Heap -> Ref
-freshRef h 
-  | M.null h = 0
-  | otherwise = fst (M.findMax h) + 1
   
 -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
 deepDeref :: Heap -> Value -> Value
@@ -243,6 +237,7 @@ data Environment m = Environment
     envHeap :: Heap,                             -- ^ Heap
     envRefCounts :: Map Ref Int,                 -- ^ For each reference in the heap, number of variables and map locations that use it (for garbage collection)
     envGarbage :: Set Ref,                       -- ^ Set of unused references (can be calculated from @envRefCounts@, but stored for efficiency) 
+    envFree :: Set Ref,                          -- ^ Set of collected references, free to reuse (can be calculated from @envHeap@, but stored for efficiency)
     -- | Static information
     envConstDefs :: Map Id Expression,           -- ^ Constant names to definitions
     envConstConstraints :: Map Id [Expression],  -- ^ Constant names to constraints
@@ -261,6 +256,7 @@ initEnv tc gen = Environment
     envHeap = M.empty,
     envRefCounts = M.empty,
     envGarbage = S.empty,
+    envFree = S.empty,
     envConstDefs = M.empty,
     envConstConstraints = M.empty,
     envFunctions = M.empty,
@@ -552,10 +548,21 @@ readHeap r = do
 -- | 'alloc' @v@: store @v@ at a fresh location in the heap and return that location
 alloc :: (Monad m, Functor m) => Value -> Execution m Value
 alloc v = do
-  r <- freshRef <$> gets envHeap
+  noFree <- S.null <$> gets envFree
+  r <- if noFree
+    then freshRef <$> gets envHeap
+    else getFree
   modify $ setInHeap r v
   modify $ makeGarbage r
   return $ Reference r
+  where
+    freshRef h 
+      | M.null h = 0
+      | otherwise = fst (M.findMax h) + 1
+    getFree = do
+      (r, f') <- S.deleteFindMin <$> gets envFree
+      modify $ \env -> env { envFree = f' }
+      return r
   
 -- | Remove unused reference from the heap  
 collectGarbage :: (Monad m, Functor m) => Execution m ()  
@@ -566,7 +573,8 @@ collectGarbage = do
     MapValue mBase _ <- readHeap r
     h' <- M.delete r <$> gets envHeap
     rc' <- M.delete r <$> gets envRefCounts
-    modify $ \env -> env { envHeap = h', envRefCounts = rc', envGarbage = g' }
+    f' <- S.insert r <$> gets envFree
+    modify $ \env -> env { envHeap = h', envRefCounts = rc', envGarbage = g', envFree = f' }
     case mBase of
       Nothing -> return ()
       Just base -> modify $ decRefCount base
