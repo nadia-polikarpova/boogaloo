@@ -8,6 +8,7 @@ import Language.Boogie.Position
 import qualified Language.Boogie.Parser as Parser (program)
 import Language.Boogie.TypeChecker
 import Language.Boogie.PrettyPrinter
+import Language.Boogie.Heap
 import Language.Boogie.Interpreter
 import Language.Boogie.Tester
 import System.Environment
@@ -32,13 +33,13 @@ releaseDate = fromGregorian 2012 10 25
 main = do
   res <- cmdArgsRun $ mode
   case res of
-    Exec file entry btmax keepInvalid outMax -> executeFromFile file entry btmax keepInvalid outMax
+    Exec file entry btmax keepInvalid outMax debug -> executeFromFile file entry btmax keepInvalid outMax debug
     args -> testFromFile (file args) (proc_ args) (testMethod args) (verbose args)
 
 {- Command line arguments -}
 
 data CommandLineArgs
-    = Exec { file :: String, entry :: String, btmax :: Maybe Int, keep_invalid :: Bool, outmax :: Int }
+    = Exec { file :: String, entry :: String, btmax :: Maybe Int, keep_invalid :: Bool, outmax :: Int, debug :: Bool }
     | Test { file :: String, proc_ :: [String], limits :: (Integer, Integer), dlimits :: (Integer, Integer), verbose :: Bool  }
     | RTest { file :: String, proc_ :: [String], limits :: (Integer, Integer), dlimits :: (Integer, Integer), tc_count :: Int, seed :: Maybe Int, verbose :: Bool }
       deriving (Data, Typeable, Show, Eq)
@@ -48,7 +49,8 @@ execute = Exec {
   file  = ""            &= typFile &= argPos 0,
   btmax = Nothing       &= help "Maximum number of times execution is allowed to backtrack (default: unlimited)",
   keep_invalid = False  &= help "Keep invalid executions in the list of outcomes (default: false)",
-  outmax = 1            &= help "Maximum number of outcomes to display (default: 1)"
+  outmax = 1            &= help "Maximum number of outcomes to display (default: 1)",
+  debug = False         &= help "Debug output (default: false)"
   } &= auto &= help "Execute program"
       
 test_ = Test {
@@ -105,8 +107,8 @@ testMethod (RTest _ _ limits dlimits tc_count seed _) program context procNames 
 
 -- | Execute procedure entryPoint from file
 -- | and output either errors or the final values of global variables
-executeFromFile :: String -> String -> Maybe Int -> Bool -> Int -> IO ()
-executeFromFile file entryPoint btMax keepInvalid outMax = runOnFile printFinalState file
+executeFromFile :: String -> String -> Maybe Int -> Bool -> Int -> Bool -> IO ()
+executeFromFile file entryPoint btMax keepInvalid outMax debug = runOnFile printFinalState file
   where
     printFinalState p context = case M.lookup entryPoint (ctxProcedures context) of
       Nothing -> printError (text "Cannot find program entry point" <+> text entryPoint)
@@ -127,7 +129,9 @@ executeFromFile file entryPoint btMax keepInvalid outMax = runOnFile printFinalS
       else not (isInvalid out)
     printOutcome out = case out of
       Left err -> printError err
-      Right store -> (print . storeDoc) store
+      Right (store, heap) -> if debug
+        then (print . storeDoc) store >> (print . heapDoc) heap
+        else print . storeDoc $ M.map (deepDeref heap) store
     printOne n out    = do
       when (n > 0) $ print newline
       printAux $ text "Outcome" <+> integer n <+> newline
@@ -177,4 +181,4 @@ harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
       let env = head (toList (execStateT (collectDefinitions p) (initEnv context allValues)))
-      print $ (storeDoc . currentStore) env
+      print $ (storeDoc . flatStore) env

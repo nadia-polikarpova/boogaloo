@@ -12,9 +12,10 @@ module Language.Boogie.Interpreter (
   allValues,
   Store,
   emptyStore,
+  deepDeref,
   Environment (..),
   initEnv,
-  currentStore,
+  flatStore,
   lookupFunction,
   lookupProcedure,
   modifyTypeContext,
@@ -74,27 +75,27 @@ import Text.PrettyPrint
 -- Execute program @p@ /non-deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return an infinite list of possible outcomes (each either runtime failure or the final variable store).
 -- Whenever a value is unspecified, all values of the required type are tried exhaustively.
-executeProgram :: Program -> Context -> Id -> [Either RuntimeFailure Store]
+executeProgram :: Program -> Context -> Id -> [Either RuntimeFailure (Store, Heap Value)]
 executeProgram p tc entryPoint = toList $ executeProgramGeneric p tc allValues entryPoint
 
 -- | 'executeProgramDet' @p tc entryPoint@ :
 -- Execute program @p@ /deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return a single outcome.
 -- Whenever a value is unspecified, a default value of the required type is used.
-executeProgramDet :: Program -> Context -> Id -> Either RuntimeFailure Store
+executeProgramDet :: Program -> Context -> Id -> Either RuntimeFailure (Store, Heap Value)
 executeProgramDet p tc entryPoint = runIdentity $ executeProgramGeneric p tc (Identity . defaultValue) entryPoint
       
 -- | 'executeProgramGeneric' @p tc gen entryPoint@ :
 -- Execute program @p@ in type context @tc@ with value generator @gen@, starting from procedure @entryPoint@,
 -- and return the outcome(s) embedded into the value generator's monad.
-executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> (Type -> m Value) -> Id -> m (Either RuntimeFailure Store)
+executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> (Type -> m Value) -> Id -> m (Either RuntimeFailure (Store, Heap Value))
 executeProgramGeneric p tc gen entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc gen)
   where
     programExecution = do
       execUnsafely $ collectDefinitions p
       execCall [] entryPoint [] noPos
     result (Left err, _) = Left err
-    result (_, env)      = Right $ currentStore env
+    result (_, env)      = Right (envLocals env `M.union` envGlobals env, envHeap env)
     
 {- Values -}
 
@@ -166,10 +167,6 @@ deepDeref h v = deepDeref' v
       in MapValue Nothing $ M.union override base
     deepDeref' v = v  
 
--- | 'flattenStore' @h s@: Store @s@ with all variable values completely dereferenced
-flattenStore :: Heap Value -> Store -> Store
-flattenStore h s = M.map (deepDeref h) s
-
 -- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
 objectEq :: Heap Value -> Value -> Value -> Maybe Bool
 objectEq h (Reference r1) (Reference r2) = if r1 == r2
@@ -235,10 +232,9 @@ initEnv tc gen = Environment
     envGenValue = gen
   }
 
--- | 'currentStore' @env@: Current values of all variables in @env@
-currentStore :: Environment m -> Store
--- currentStore env = flattenStore (envHeap env) $ envLocals env `M.union` envGlobals env
-currentStore env = (envLocals env `M.union` envGlobals env) --`M.union` (M.mapKeys (\r -> show r ++ "{" ++ show (envRefCounts env ! r) ++ "}") (envHeap env)) -- Debug version --ToDo
+-- | 'flatStore' @env@: Current values of all variables in @env@ (with references dereferenced)
+flatStore :: Environment m -> Store
+flatStore env = M.map (deepDeref (envHeap env)) $ envLocals env `M.union` envGlobals env
 
 -- | 'lookupConstConstraints' @id env@ : All constraints of constant @id@ in @env@
 lookupConstConstraints id env = case M.lookup id (envConstConstraints env) of
@@ -377,7 +373,7 @@ data RuntimeFailure = RuntimeFailure {
 
 -- | Throw a run-time failure
 throwRuntimeFailure source pos = do
-  store <- gets currentStore
+  store <- gets flatStore
   throwError (RuntimeFailure source pos store [])
 
 -- | Push frame on the stack trace of a runtime failure
@@ -447,18 +443,18 @@ throwInternalException code = throwRuntimeFailure (InternalException code) noPos
 {- Execution outcomes -}
 
 -- | 'isPass' @outcome@: Does @outcome@ belong to a passing execution? (Denotes a valid final state)
-isPass :: Either RuntimeFailure Store -> Bool
+isPass :: Either RuntimeFailure (Store, Heap Value) -> Bool
 isPass (Right _) =  True
 isPass _ =          False
 
 -- | 'isInvalid' @outcome@: Does @outcome@ belong to an invalid execution? (Denotes an unreachable or non-executable state)
-isInvalid :: Either RuntimeFailure Store -> Bool 
-isInvalid (Left err) 
+isInvalid :: Either RuntimeFailure (Store, Heap Value) -> Bool 
+isInvalid (Left err)
   | failureKind err == Unreachable || failureKind err == Nonexecutable  = True
 isInvalid _                                                             = False
 
 -- | 'isFail' @outcome@: Does @outcome@ belong to a failing execution? (Denotes an error state)
-isFail :: Either RuntimeFailure Store -> Bool
+isFail :: Either RuntimeFailure (Store, Heap Value) -> Bool
 isFail outcome = not (isPass outcome || isInvalid outcome)
 
 {- Basic executions -}      

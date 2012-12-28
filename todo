@@ -17,13 +17,15 @@
   -> Backtracking
     - Lazy initialization of maps
       - GC for Maps that store maps
-    - Output heap in debug mode
+    - Check if outcomes appear one by one
     - Cache function applications (only for functions without a body; the same for constants?)
     - Consistent old
     - Distinguish unreachable and non-executable outcomes
     - Remove limitation on entry points
-    - Random generator?
-    - Remove tester?
+    - Random generator
+    - Generators with limits
+    - Remove tester
+    - Type Outcome for (Store, Heap Value)
   - Printable class?
   -> Support calls to procedures with no implementation
   -> Bounded checking of quantification
