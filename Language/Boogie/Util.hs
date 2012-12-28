@@ -47,7 +47,8 @@ module Language.Boogie.Util (
   mapBoth,
   changeState,
   withLocalState,
-  allIntegers
+  allIntegers,
+  internalError
 ) where
 
 import Language.Boogie.AST
@@ -378,3 +379,5 @@ allIntegers = (return 0) `mplus` genNonZero
         then return $ -x  
         else return $ -x + 1
       )
+      
+internalError msg = error $ "Internal interpreter error (consider submitting a bug report):\n" ++ msg      

@@ -7,7 +7,6 @@ module Language.Boogie.Interpreter (
   executeProgram,
   executeProgramGeneric,
   -- * State
-  Ref,
   Value (..),
   defaultValue,
   allValues,
@@ -51,6 +50,7 @@ module Language.Boogie.Interpreter (
 
 import Language.Boogie.AST
 import Language.Boogie.Util
+import Language.Boogie.Heap
 import Language.Boogie.Intervals
 import Language.Boogie.Position
 import Language.Boogie.Tokens (nonIdChar)
@@ -58,12 +58,9 @@ import Language.Boogie.PrettyPrinter
 import Language.Boogie.TypeChecker
 import Language.Boogie.NormalForm
 import Language.Boogie.BasicBlocks
-import Data.Word
 import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
-import Data.Set (Set)
-import qualified Data.Set as S
 import Control.Monad.Error hiding (join)
 import Control.Applicative hiding (empty)
 import Control.Monad.State hiding (join)
@@ -98,15 +95,8 @@ executeProgramGeneric p tc gen entryPoint = result <$> runStateT (runErrorT prog
       execCall [] entryPoint [] noPos
     result (Left err, _) = Left err
     result (_, env)      = Right $ currentStore env
-              
+    
 {- Values -}
-
--- | Reference (index in the heap)
-type Ref = Word
-
--- | Pretty-printed reference
-refDoc :: Ref -> Doc
-refDoc r = text ("ref_" ++ show r)
 
 -- | Run-time value
 data Value = IntValue Integer |               -- ^ Integer value
@@ -131,7 +121,7 @@ valueDoc (Reference r) = refDoc r
 
 instance Show Value where
   show v = show (valueDoc v)
-  
+    
 {- Value generators -}  
   
 -- | 'defaultValue' @t@ : Default value of type @t@
@@ -161,23 +151,9 @@ emptyStore = M.empty
 storeDoc :: Store -> Doc
 storeDoc vars = vsep $ map varDoc (M.toList vars)
   where varDoc (id, val) = text id <+> text "=" <+> valueDoc val
-
--- | Heap: maps references to values  
-type Heap = Map Ref Value
-
--- | Pretty-printed heap
-heapDoc :: Heap -> Doc
-heapDoc h = vsep $ map entryDoc (M.toList h)
-  where entryDoc (ref, val) = refDoc ref <+> text "->" <+> valueDoc val
-
--- | 'at' @h r@: value of @r@ in heap @h@ (gives a more descriptive error than ! when @r@ is not present)
-at :: Heap -> Ref -> Value
-at h r = case M.lookup r h of
-  Nothing -> internalError . show $ text "Cannot find reference" <+> refDoc r <+> text "in heap" <+> heapDoc h
-  Just v -> v
   
 -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
-deepDeref :: Heap -> Value -> Value
+deepDeref :: Heap Value -> Value -> Value
 deepDeref h v = deepDeref' v
   where
     deepDeref' (Reference r) = deepDeref' (h `at` r)
@@ -191,11 +167,11 @@ deepDeref h v = deepDeref' v
     deepDeref' v = v  
 
 -- | 'flattenStore' @h s@: Store @s@ with all variable values completely dereferenced
-flattenStore :: Heap -> Store -> Store
+flattenStore :: Heap Value -> Store -> Store
 flattenStore h s = M.map (deepDeref h) s
 
 -- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
-objectEq :: Heap -> Value -> Value -> Maybe Bool
+objectEq :: Heap Value -> Value -> Value -> Maybe Bool
 objectEq h (Reference r1) (Reference r2) = if r1 == r2
   then Just True -- Equal references point to equal maps
   else let 
@@ -224,7 +200,7 @@ mustNeq h v1 v2 = case objectEq h v1 v2 of
   Just False -> True
   _ -> False  
 mayEq h v1 v2 = not $ mustNeq h v1 v2
-mayNeq h v1 v2 = not $ mustEq h v1 v2
+mayNeq h v1 v2 = not $ mustEq h v1 v2    
   
 -- | Execution state
 data Environment m = Environment
@@ -234,10 +210,7 @@ data Environment m = Environment
     envGlobals :: Store,                         -- ^ Global variable store
     envOld :: Store,                             -- ^ Old global variable store (in two-state contexts)
     -- | Heap (used for lazy initialization of maps)
-    envHeap :: Heap,                             -- ^ Heap
-    envRefCounts :: Map Ref Int,                 -- ^ For each reference in the heap, number of variables and map locations that use it (for garbage collection)
-    envGarbage :: Set Ref,                       -- ^ Set of unused references (can be calculated from @envRefCounts@, but stored for efficiency) 
-    envFree :: Set Ref,                          -- ^ Set of collected references, free to reuse (can be calculated from @envHeap@, but stored for efficiency)
+    envHeap :: Heap Value,                       -- ^ Heap
     -- | Static information
     envConstDefs :: Map Id Expression,           -- ^ Constant names to definitions
     envConstConstraints :: Map Id [Expression],  -- ^ Constant names to constraints
@@ -253,10 +226,7 @@ initEnv tc gen = Environment
     envLocals = emptyStore,
     envGlobals = emptyStore,
     envOld = emptyStore,
-    envHeap = M.empty,
-    envRefCounts = M.empty,
-    envGarbage = S.empty,
-    envFree = S.empty,
+    envHeap = emptyHeap,
     envConstDefs = M.empty,
     envConstConstraints = M.empty,
     envFunctions = M.empty,
@@ -268,7 +238,7 @@ initEnv tc gen = Environment
 -- | 'currentStore' @env@: Current values of all variables in @env@
 currentStore :: Environment m -> Store
 -- currentStore env = flattenStore (envHeap env) $ envLocals env `M.union` envGlobals env
-currentStore env = (envLocals env `M.union` envGlobals env) `M.union` (M.mapKeys (\r -> show r ++ "{" ++ show (envRefCounts env ! r) ++ "}") (envHeap env)) -- Debug version
+currentStore env = (envLocals env `M.union` envGlobals env) --`M.union` (M.mapKeys (\r -> show r ++ "{" ++ show (envRefCounts env ! r) ++ "}") (envHeap env)) -- Debug version --ToDo
 
 -- | 'lookupConstConstraints' @id env@ : All constraints of constant @id@ in @env@
 lookupConstConstraints id env = case M.lookup id (envConstConstraints env) of
@@ -293,18 +263,9 @@ addConstantConstraint id expr env = env { envConstConstraints = M.insert id (loo
 addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction id env ++ defs) (envFunctions env) }
 addProcedureDef id def env = env { envProcedures = M.insert id (lookupProcedure id env ++ [def]) (envProcedures env) } 
 modifyTypeContext f env = env { envTypeContext = f (envTypeContext env) }
+withHeap f env = let (res, h') = f (envHeap env) in (res, env { envHeap = h' })  
+withHeap_ f env = env { envHeap = f (envHeap env) }  
 
--- Heap modifications
-setInHeap r v env = env { envHeap = M.insert r v (envHeap env) }
-makeGarbage r env = env {  envRefCounts  = M.insert r 0 (envRefCounts env), 
-                           envGarbage    = S.insert r (envGarbage env) }
-incRefCount r env = let newCount = (envRefCounts env ! r) + 1
-  in env {  envRefCounts  = M.insert r newCount (envRefCounts env),
-            envGarbage    = if newCount == 1 then S.delete r (envGarbage env) else envGarbage env }
-decRefCount r env = let newCount = (envRefCounts env ! r) - 1
-  in env {  envRefCounts  = M.insert r newCount (envRefCounts env),
-            envGarbage    = if newCount == 0 then S.insert r (envGarbage env) else envGarbage env }    
-  
 -- | Pretty-printed set of function definitions
 functionsDoc :: Map Id [FDef] -> Doc  
 functionsDoc funcs = vsep $ map funcDoc (M.toList funcs)
@@ -385,7 +346,7 @@ executeLocally localTC formals actuals computation = do
       let oldTC = envTypeContext oldEnv
       mapM_ (unsetVar envLocals) (M.keys $ localScope tc `M.difference` localScope oldTC) 
       modify $ \env -> env { envTypeContext = oldTC, envLocals = envLocals oldEnv }
-                        
+                              
 {- Runtime failures -}
 
 data FailureSource = 
@@ -483,8 +444,6 @@ data InternalCode = NotLinear
 
 throwInternalException code = throwRuntimeFailure (InternalException code) noPos
 
-internalError msg = error $ "Internal interpreter error (consider submitting a bug report):\n" ++ msg 
-
 {- Execution outcomes -}
 
 -- | 'isPass' @outcome@: Does @outcome@ belong to a passing execution? (Denotes a valid final state)
@@ -510,7 +469,7 @@ generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
 generateValue t pos = case t of
   IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
   -- | Maps are initializaed lazily, allocate an empty map on the heap:
-  MapType _ _ _ -> alloc $ MapValue Nothing M.empty
+  MapType _ _ _ -> allocate $ MapValue Nothing M.empty
   _ -> do
     gen <- gets envGenValue
     lift (lift (gen t))      
@@ -520,7 +479,7 @@ unsetVar getStore id = do
   store <- gets $ getStore
   case M.lookup id store of    
     Just (Reference r) -> do          
-      modify $ decRefCount r
+      modify . withHeap_ $ decRefCount r
     _ -> return ()
 
 -- | 'setVar' @getStore setter id val@ : set value of variable @id@ to @val@ using @setter@;
@@ -529,7 +488,7 @@ setVar getStore setter id val = do
   case val of
     Reference r -> do
       unsetVar getStore id
-      modify $ incRefCount r
+      modify . withHeap_ $ incRefCount r
     _ -> return ()
   modify $ setter id val    
           
@@ -541,45 +500,22 @@ setAnyVar id val = do
     else setVar envGlobals setGlobal id val
 
 -- | 'readHeap' @r@: current value of reference @r@ in the heap
-readHeap r = do
-  h <- gets envHeap
-  return $ h `at` r
+readHeap r = flip at r <$> gets envHeap
     
--- | 'alloc' @v@: store @v@ at a fresh location in the heap and return that location
-alloc :: (Monad m, Functor m) => Value -> Execution m Value
-alloc v = do
-  noFree <- S.null <$> gets envFree
-  r <- if noFree
-    then freshRef <$> gets envHeap
-    else getFree
-  modify $ setInHeap r v
-  modify $ makeGarbage r
-  return $ Reference r
-  where
-    freshRef h 
-      | M.null h = 0
-      | otherwise = fst (M.findMax h) + 1
-    getFree = do
-      (r, f') <- S.deleteFindMin <$> gets envFree
-      modify $ \env -> env { envFree = f' }
-      return r
+-- | 'allocate' @v@: store @v@ at a fresh location in the heap and return that location
+allocate :: (Monad m, Functor m) => Value -> Execution m Value
+allocate v = Reference <$> (state . withHeap . alloc) v
   
--- | Remove unused reference from the heap  
+-- | Remove all unused references from the heap  
 collectGarbage :: (Monad m, Functor m) => Execution m ()  
 collectGarbage = do
-  g <- gets envGarbage
-  unless (S.null g) (do
-    let (r, g') = S.deleteFindMin g
-    MapValue mBase _ <- readHeap r
-    h' <- M.delete r <$> gets envHeap
-    rc' <- M.delete r <$> gets envRefCounts
-    f' <- S.insert r <$> gets envFree
-    modify $ \env -> env { envHeap = h', envRefCounts = rc', envGarbage = g', envFree = f' }
+  h <- gets envHeap
+  when (hasGarbage h) (do
+    MapValue mBase _ <- state $ withHeap dealloc
     case mBase of
       Nothing -> return ()
-      Just base -> modify $ decRefCount base
-    collectGarbage
-    )
+      Just base -> modify . withHeap_ $ decRefCount base
+    collectGarbage)
 
 {- Expressions -}
 
@@ -723,16 +659,16 @@ evalMapSelection m args pos = do
         -- Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
         -- Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
       MapValue Nothing baseMap <- readHeap baseRef
-      modify $ setInHeap baseRef (MapValue Nothing (M.insert argsV val baseMap))
+      modify . withHeap_ $ update baseRef (MapValue Nothing (M.insert argsV val baseMap))
       return val    
   where
-    lookupHeap :: Heap -> [Value] -> Ref -> Either Value Ref
+    lookupHeap :: Heap Value -> [Value] -> Ref -> Either Value Ref
     lookupHeap h argsV r = let MapValue mBase map = h `at` r in
-        case M.lookup argsV map of
-          Just v -> Left v
-          Nothing -> case mBase of
-            Nothing -> Right r
-            Just baseRef -> lookupHeap h argsV baseRef
+      case M.lookup argsV map of
+        Just v -> Left v
+        Nothing -> case mBase of
+          Nothing -> Right r
+          Just baseRef -> lookupHeap h argsV baseRef
     mapVariable tc (Var v) = if M.member v (allVars tc)
       then Just v
       else Nothing
@@ -746,8 +682,8 @@ evalMapUpdate m args new pos = do
   mapM_ (rejectMapIndex pos) argsV
   newV <- eval new
   let (base, over) = case mBase of Nothing -> (r, M.singleton argsV newV); Just b -> (b, M.insert argsV newV o)
-  modify $ incRefCount base
-  alloc $ MapValue (Just base) over
+  modify . withHeap_ $ incRefCount base
+  allocate $ MapValue (Just base) over
   
 evalIf cond e1 e2 = do
   v <- eval cond
