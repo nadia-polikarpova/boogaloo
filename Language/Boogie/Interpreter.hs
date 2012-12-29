@@ -507,11 +507,16 @@ collectGarbage :: (Monad m, Functor m) => Execution m ()
 collectGarbage = do
   h <- gets envHeap
   when (hasGarbage h) (do
-    MapValue mBase _ <- state $ withHeap dealloc
+    MapValue mBase over <- state $ withHeap dealloc
     case mBase of
       Nothing -> return ()
       Just base -> modify . withHeap_ $ decRefCount base
+    mapM_ decElem (M.elems over)
     collectGarbage)
+  where
+    decElem v = case v of
+      Reference r -> modify . withHeap_ $ decRefCount r
+      _ -> return ()    
 
 {- Expressions -}
 
@@ -654,6 +659,9 @@ evalMapSelection m args pos = do
       -- case mapVariable tc (node m) of
         -- Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
         -- Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
+      case val of
+        Reference r' -> modify . withHeap_ $ incRefCount r'
+        _ -> return ()
       MapValue Nothing baseMap <- readHeap baseRef
       modify . withHeap_ $ update baseRef (MapValue Nothing (M.insert argsV val baseMap))
       return val    
@@ -677,6 +685,9 @@ evalMapUpdate m args new pos = do
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
   newV <- eval new
+  case newV of
+    Reference r' -> modify . withHeap_ $ incRefCount r'
+    _ -> return ()
   let (base, over) = case mBase of Nothing -> (r, M.singleton argsV newV); Just b -> (b, M.insert argsV newV o)
   modify . withHeap_ $ incRefCount base
   allocate $ MapValue (Just base) over

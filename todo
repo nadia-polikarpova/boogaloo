@@ -15,9 +15,6 @@
   
 - Interpreter
   -> Backtracking
-    - Lazy initialization of maps
-      - GC for Maps that store maps
-    - Check if outcomes appear one by one
     - Cache function applications (only for functions without a body; the same for constants?)
     - Consistent old
     - Distinguish unreachable and non-executable outcomes
