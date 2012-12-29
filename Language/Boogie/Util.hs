@@ -35,6 +35,7 @@ module Language.Boogie.Util (
   psigEnsures,
   psigType,
   PDef (..),
+  pdefLocals,
   -- * Code generation
   num, eneg, enot,
   (|+|), (|-|), (|*|), (|/|), (|%|), (|=|), (|!=|), (|<|), (|<=|), (|>|), (|>=|), (|&|), (|||), (|=>|), (|<=>|),
@@ -42,6 +43,7 @@ module Language.Boogie.Util (
   -- * Misc
   interval,
   fromRight,
+  deleteAll,
   mapFst,
   mapSnd,
   mapBoth,
@@ -314,6 +316,9 @@ data PDef = PDef {
     pdefBody :: BasicBody,      -- ^ Body
     pdefPos :: SourcePos        -- ^ Location of the (first line of the) procedure definition in the source
   }
+  
+-- | All local names of a procedure definition  
+pdefLocals def = pdefIns def ++ pdefOuts def ++ map itwId (fst (pdefBody def))   
 
 {- Code generation -}
 

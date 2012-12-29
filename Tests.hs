@@ -39,6 +39,7 @@ interpreterTests = TestLabel "Interpreter" $ TestList [
   testCase interpreterSuccess "NoGuards",
   testCase interpreterSuccess "EmptyDomains",
   testCase interpreterSuccess "MapInit",
+  testCase interpreterSuccess "MapLocals",
   testCase interpreterSuccess "OldND"
   ]
   

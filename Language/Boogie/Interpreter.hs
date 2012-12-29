@@ -329,19 +329,18 @@ restoreOld olds = do
 -- | Enter local scope (apply localTC to the type context and assign actuals to formals),
 -- execute computation,
 -- then restore type context and local variables to their initial values
-executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> s a -> s a
-executeLocally localTC formals actuals computation = do
+executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Id] -> [Value] -> s a -> s a
+executeLocally localTC locals formals actuals computation = do
   oldEnv <- get
   modify $ modifyTypeContext localTC
-  zipWithM_ (setVar (const emptyStore) setLocal) formals actuals -- All formal are fresh, can use emptyStore for current values
+  modify $ \env -> env { envLocals = deleteAll locals (envLocals env) }
+  zipWithM_ (setVar (const emptyStore){-envLocals-} setLocal) formals actuals -- All formals are fresh, can use emptyStore for current values
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
     unwind oldEnv = do
-      tc <- gets envTypeContext
-      let oldTC = envTypeContext oldEnv
-      mapM_ (unsetVar envLocals) (M.keys $ localScope tc `M.difference` localScope oldTC) 
-      modify $ \env -> env { envTypeContext = oldTC, envLocals = envLocals oldEnv }
+      mapM_ (unsetVar envLocals) locals
+      modify $ \env -> env { envTypeContext = envTypeContext oldEnv, envLocals = deleteAll locals (envLocals env) `M.union` envLocals oldEnv }
                               
 {- Runtime failures -}
 
@@ -636,7 +635,7 @@ evalApplication name args pos = do
         BoolValue False -> evalDefs defs
     evalLocally formals actuals expr = do
       sig <- funSig name <$> gets envTypeContext
-      executeLocally (enterFunction sig formals args) formals actuals (eval expr)
+      executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)
     returnType tc = exprType tc (gen $ Application name args)
     frame = StackFrame pos name
     
@@ -717,7 +716,7 @@ evalExists tv vars e pos = do
 
 evalExists' :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> Execution m Value    
 evalExists' tv vars e = do
-  results <- executeLocally (enterQuantified tv vars) [] [] evalWithDomains
+  results <- executeLocally (enterQuantified tv vars) (map fst vars) [] [] evalWithDomains
   return $ BoolValue (any isTrue results)
   where
     evalWithDomains = do
@@ -826,7 +825,7 @@ execProcedure sig def args lhss = let
     mapM (eval . attachPos (pdefPos def) . Var) outs
   in do
     argsV <- mapM eval args
-    executeLocally (enterProcedure sig def args lhss) ins argsV execBody
+    executeLocally (enterProcedure sig def args lhss) (pdefLocals def) ins argsV execBody
     
 {- Specs -}
 
@@ -934,7 +933,7 @@ extractFunctionDefs' (BinaryExpression Implies cond bExpr) outerGuards = extract
 extractFunctionDefs' (BinaryExpression And bExpr1 bExpr2) outerGuards = do
   extractFunctionDefs bExpr1 outerGuards
   extractFunctionDefs bExpr2 outerGuards
-extractFunctionDefs' (Quantified Forall tv vars bExpr) outerGuards = executeLocally (enterQuantified tv vars) [] [] (extractFunctionDefs bExpr outerGuards)
+extractFunctionDefs' (Quantified Forall tv vars bExpr) outerGuards = executeLocally (enterQuantified tv vars) (map fst vars) [] [] (extractFunctionDefs bExpr outerGuards)
 extractFunctionDefs' _ _ = return ()
    
 {- Quantification -}
