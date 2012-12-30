@@ -15,7 +15,6 @@
   
 - Interpreter
   -> Backtracking
-    - Cache function applications (only for functions without a body; the same for constants?)
     - Consistent old
     - Distinguish unreachable and non-executable outcomes
     - Remove limitation on entry points

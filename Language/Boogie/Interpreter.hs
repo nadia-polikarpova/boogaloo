@@ -617,16 +617,20 @@ evalVar id pos = do
       case M.lookup id constants of
         Just e -> init (eval e) setGlobal checkConstConstraints
         Nothing -> init (generateValue t pos) setGlobal checkConstConstraints
+        
+functionCacheName name = name ++ (nonIdChar : "cache")
   
 evalApplication name args pos = do
   defs <- gets (lookupFunction name)  
   evalDefs defs
   where
-    -- | If the guard of one of function definitions evaluates to true, apply that definition; otherwise return the default value
+    -- | If the guard of one of function definitions evaluates to true, apply that definition; otherwise treat an an undefined constant map
     evalDefs :: (Monad m, Functor m) => [FDef] -> Execution m Value
     evalDefs [] = do
-      tc <- gets envTypeContext
-      generateValue (returnType tc) pos
+      sig <- funSig name <$> gets envTypeContext
+      let mapName = functionCacheName name
+      modify $ modifyTypeContext (\tc -> tc { ctxConstants = M.insert mapName (fsigType sig) (ctxConstants tc) })
+      evalMapSelection ((gen . Var) mapName) args pos
     evalDefs (FDef formals guard body : defs) = do
       argsV <- mapM eval args
       applicable <- evalLocally formals argsV guard `catchError` addStackFrame frame
