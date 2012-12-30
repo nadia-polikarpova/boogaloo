@@ -12,14 +12,16 @@ module Language.Boogie.Interpreter (
   allValues,
   Store,
   emptyStore,
-  deepDeref,
   Environment (..),
   initEnv,
-  flatStore,
   lookupFunction,
   lookupProcedure,
   modifyTypeContext,
   setAnyVar,
+  Memory,
+  memory,
+  debugMemoryDoc,
+  userMemoryDoc,
   -- * Executions
   Execution,
   SafeExecution,
@@ -75,27 +77,27 @@ import Text.PrettyPrint
 -- Execute program @p@ /non-deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return an infinite list of possible outcomes (each either runtime failure or the final variable store).
 -- Whenever a value is unspecified, all values of the required type are tried exhaustively.
-executeProgram :: Program -> Context -> Id -> [Either RuntimeFailure (Store, Heap Value)]
+executeProgram :: Program -> Context -> Id -> [Either RuntimeFailure Memory]
 executeProgram p tc entryPoint = toList $ executeProgramGeneric p tc allValues entryPoint
 
 -- | 'executeProgramDet' @p tc entryPoint@ :
 -- Execute program @p@ /deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return a single outcome.
 -- Whenever a value is unspecified, a default value of the required type is used.
-executeProgramDet :: Program -> Context -> Id -> Either RuntimeFailure (Store, Heap Value)
+executeProgramDet :: Program -> Context -> Id -> Either RuntimeFailure Memory
 executeProgramDet p tc entryPoint = runIdentity $ executeProgramGeneric p tc (Identity . defaultValue) entryPoint
       
 -- | 'executeProgramGeneric' @p tc gen entryPoint@ :
 -- Execute program @p@ in type context @tc@ with value generator @gen@, starting from procedure @entryPoint@,
 -- and return the outcome(s) embedded into the value generator's monad.
-executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> (Type -> m Value) -> Id -> m (Either RuntimeFailure (Store, Heap Value))
+executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> (Type -> m Value) -> Id -> m (Either RuntimeFailure Memory)
 executeProgramGeneric p tc gen entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc gen)
   where
     programExecution = do
       execUnsafely $ collectDefinitions p
       execCall [] entryPoint [] noPos
     result (Left err, _) = Left err
-    result (_, env)      = Right (envLocals env `M.union` envGlobals env, envHeap env)
+    result (_, env)      = Right $ memory env
     
 {- Values -}
 
@@ -197,7 +199,13 @@ mustNeq h v1 v2 = case objectEq h v1 v2 of
   Just False -> True
   _ -> False  
 mayEq h v1 v2 = not $ mustNeq h v1 v2
-mayNeq h v1 v2 = not $ mustEq h v1 v2    
+mayNeq h v1 v2 = not $ mustEq h v1 v2
+
+-- | 'functionCacheName' @name@ : name of a constant that stores cached applications of function @name@
+functionCacheName name = name ++ (nonIdChar : "cache")
+
+-- | 'isAuxName' @name@ : is @name@ and auxiliary variable/constant introduced by the inetrpreter?
+isAuxName name = nonIdChar `elem` name
   
 -- | Execution state
 data Environment m = Environment
@@ -231,10 +239,6 @@ initEnv tc gen = Environment
     envTypeContext = tc,
     envGenValue = gen
   }
-
--- | 'flatStore' @env@: Current values of all variables in @env@ (with references dereferenced)
-flatStore :: Environment m -> Store
-flatStore env = M.map (deepDeref (envHeap env)) $ envLocals env `M.union` envGlobals env
 
 -- | 'lookupConstConstraints' @id env@ : All constraints of constant @id@ in @env@
 lookupConstConstraints id env = case M.lookup id (envConstConstraints env) of
@@ -270,6 +274,31 @@ functionsDoc funcs = vsep $ map funcDoc (M.toList funcs)
     funcsDefDoc id (FDef formals guard body) = exprDoc guard <+> text "->" <+> 
       text id <> parens (commaSep (map text formals)) <+> text "=" <+> exprDoc body
       
+-- | View of the environment that contains information relevant to the user
+data Memory = Memory Store (Heap Value)
+
+-- | Memory state of an environment
+memory :: Environment m -> Memory
+memory env = Memory (envLocals env `M.union` envGlobals env) (envHeap env)
+
+-- | Empty memory
+emptyMemory = Memory emptyStore emptyHeap
+
+-- | 'debugMemoryDoc' @mem@ : implementation-specific representation of @mem@
+debugMemoryDoc :: Memory -> Doc
+debugMemoryDoc (Memory store heap) = storeDoc store $+$ heapDoc heap
+
+-- | 'userMemoryDoc' @mem isRelevant@ : representation of @mem@ on the abstraction level of the Boogie semantics,
+-- restricted to variables that satisfy @isRelevant@
+userMemoryDoc :: Memory -> (Id -> Bool) -> Doc
+userMemoryDoc (Memory store heap) isRelevant = storeDoc $ flatten filtered
+  where
+    filtered = M.filterWithKey (\k _ -> not (isAuxName k) && isRelevant k) store
+    flatten s = M.map (deepDeref heap) s
+    
+instance Show Memory where
+  show mem = show $ debugMemoryDoc mem
+            
 {- Executions -}
 
 -- | Computations with 'Environment' as state, which can result in either @a@ or 'RuntimeFailure'
@@ -366,17 +395,17 @@ type StackTrace = [StackFrame]
 data RuntimeFailure = RuntimeFailure {
   rtfSource :: FailureSource,   -- ^ Source of the failure
   rtfPos :: SourcePos,          -- ^ Location where the failure occurred
-  rtfStore :: Store,            -- ^ Variable values at the time of failure
+  rtfMemory :: Memory,          -- ^ Memory state at the time of failure
   rtfTrace :: StackTrace        -- ^ Stack trace from the program entry point to the procedure where the failure occurred
 }
 
 -- | Throw a run-time failure
 throwRuntimeFailure source pos = do
-  store <- gets flatStore
-  throwError (RuntimeFailure source pos store [])
+  mem <- gets memory
+  throwError (RuntimeFailure source pos mem [])
 
 -- | Push frame on the stack trace of a runtime failure
-addStackFrame frame (RuntimeFailure source pos store trace) = throwError (RuntimeFailure source pos store (frame : trace))
+addStackFrame frame (RuntimeFailure source pos mem trace) = throwError (RuntimeFailure source pos mem (frame : trace))
 
 -- | Kinds of run-time failures
 data FailureKind = Error | -- ^ Error state reached (assertion violation)
@@ -393,12 +422,12 @@ failureKind err = case rtfSource err of
   _ -> Nonexecutable
   
 instance Error RuntimeFailure where
-  noMsg    = RuntimeFailure (UnsupportedConstruct "unknown") noPos emptyStore []
-  strMsg s = RuntimeFailure (UnsupportedConstruct s) noPos emptyStore []
+  noMsg    = RuntimeFailure (UnsupportedConstruct "unknown") noPos emptyMemory []
+  strMsg s = RuntimeFailure (UnsupportedConstruct s) noPos emptyMemory []
   
 -- | Pretty-printed run-time failure
 runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) $+$
-  option (not (M.null revelantVars)) (text "with" <+> storeDoc revelantVars) $+$
+  userMemoryDoc (rtfMemory err) isRelevant $+$
   vsep (map stackFrameDoc (reverse (rtfTrace err)))
   where
     failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
@@ -419,8 +448,6 @@ runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err)
     defPosition LoopInvariant _ = empty
     defPosition _ e = text "defined" <+> posDoc (position e)
     
-    revelantVars = M.filterWithKey (\k _ -> isRelevant k) (rtfStore err)
-      
     isRelevant k = case rtfSource err of
       SpecViolation (SpecClause _ _ expr) -> k `elem` freeVars expr
       _ -> False
@@ -442,18 +469,18 @@ throwInternalException code = throwRuntimeFailure (InternalException code) noPos
 {- Execution outcomes -}
 
 -- | 'isPass' @outcome@: Does @outcome@ belong to a passing execution? (Denotes a valid final state)
-isPass :: Either RuntimeFailure (Store, Heap Value) -> Bool
+isPass :: Either RuntimeFailure Memory -> Bool
 isPass (Right _) =  True
 isPass _ =          False
 
 -- | 'isInvalid' @outcome@: Does @outcome@ belong to an invalid execution? (Denotes an unreachable or non-executable state)
-isInvalid :: Either RuntimeFailure (Store, Heap Value) -> Bool 
+isInvalid :: Either RuntimeFailure Memory -> Bool 
 isInvalid (Left err)
   | failureKind err == Unreachable || failureKind err == Nonexecutable  = True
 isInvalid _                                                             = False
 
 -- | 'isFail' @outcome@: Does @outcome@ belong to a failing execution? (Denotes an error state)
-isFail :: Either RuntimeFailure (Store, Heap Value) -> Bool
+isFail :: Either RuntimeFailure Memory -> Bool
 isFail outcome = not (isPass outcome || isInvalid outcome)
 
 {- Basic executions -}      
@@ -617,8 +644,6 @@ evalVar id pos = do
       case M.lookup id constants of
         Just e -> init (eval e) setGlobal checkConstConstraints
         Nothing -> init (generateValue t pos) setGlobal checkConstConstraints
-        
-functionCacheName name = name ++ (nonIdChar : "cache")
   
 evalApplication name args pos = do
   defs <- gets (lookupFunction name)  

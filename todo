@@ -21,7 +21,6 @@
     - Random generator
     - Generators with limits
     - Remove tester
-    - Type Outcome for (Store, Heap Value)
   - Printable class?
   -> Support calls to procedures with no implementation
   -> Bounded checking of quantification
@@ -39,6 +38,7 @@
   - Which failing test cases should be considered unique in summaries? If a postcondition or inline assertion is violated it's enough to comare the error, if a precondition is violated we need the caller. Preconditions should be checked at the call site?
   
 - User interface
+  - possibility to output memory in runtime failures in debug format
   - pass more information with failures other than spec violations, so that relevant variables can be determined
   - settings for disabling checking of different specs
   - interactive sessions

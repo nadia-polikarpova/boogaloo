@@ -129,9 +129,9 @@ executeFromFile file entryPoint btMax keepInvalid outMax debug = runOnFile print
       else not (isInvalid out)
     printOutcome out = case out of
       Left err -> printError err
-      Right (store, heap) -> if debug
-        then (print . storeDoc) store >> (print . heapDoc) heap
-        else print . storeDoc $ M.map (deepDeref heap) store
+      Right mem -> if debug
+        then print $ debugMemoryDoc mem
+        else print $ userMemoryDoc mem (const True)
     printOne n out    = do
       when (n > 0) $ print newline
       printAux $ text "Outcome" <+> integer n <+> newline
@@ -181,4 +181,4 @@ harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
       let env = head (toList (execStateT (collectDefinitions p) (initEnv context allValues)))
-      print $ (storeDoc . flatStore) env
+      print $ (debugMemoryDoc . memory) env
