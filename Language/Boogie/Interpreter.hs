@@ -256,7 +256,8 @@ lookupProcedure id env = case M.lookup id (envProcedures env) of
   Just defs -> defs 
 
 -- Environment modifications  
-setGlobal id val env = env { envGlobals = M.insert id val (envGlobals env) }    
+setGlobal id val env = env { envGlobals = M.insert id val (envGlobals env) }
+setGlobalTwoState id val env = env { envGlobals = M.insert id val (envGlobals env), envOld = M.insert id val (envOld env) }    
 setLocal id val env = env { envLocals = M.insert id val (envLocals env) }
 addConstantDef id def env = env { envConstDefs = M.insert id def (envConstDefs env) }
 addConstantConstraint id expr env = env { envConstConstraints = M.insert id (lookupConstConstraints id env ++ [expr]) (envConstConstraints env) }
@@ -339,7 +340,8 @@ old execution = do
   env <- get
   put env { envGlobals = envOld env }
   res <- execution
-  put env
+  globals' <- gets envGlobals
+  put env { envOld = globals', envGlobals = envGlobals env `M.union` globals' } -- Include freshly initialized globals into both old and new states
   return res
 
 -- | Save current values of global variables in the "old" environment, return the previous "old" environment
@@ -353,7 +355,7 @@ saveOld = do
 restoreOld :: (Monad m, Functor m) => Map Id Value -> Execution m ()  
 restoreOld olds = do
   env <- get
-  put env { envOld = olds }
+  put env { envOld = olds `M.union` envOld env } -- Add freshly initialized olds
   
 -- | Enter local scope (apply localTC to the type context and assign actuals to formals),
 -- execute computation,
@@ -621,7 +623,7 @@ evalVar id pos = do
   case M.lookup id (localScope tc) of
     Just t -> lookupStore envLocals (init (generateValue t pos) setLocal checkWhere)
     Nothing -> case M.lookup id (ctxGlobals tc) of
-      Just t -> lookupStore envGlobals (init (generateValue t pos) setGlobal checkWhere)
+      Just t -> lookupStore envGlobals (init (generateValue t pos) setGlobalTwoState checkWhere)
       Nothing -> case M.lookup id (ctxConstants tc) of
         Just t -> lookupStore envGlobals (initConst t)
         Nothing -> (internalError . show) (text "Encountered unknown identifier during execution:" <+> text id) 
