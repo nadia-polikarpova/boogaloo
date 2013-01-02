@@ -22,6 +22,7 @@ module Language.Boogie.Util (
   postconditions,
   modifies,
   assumePreconditions,
+  assumePostconditions,
   -- * Funstions and procedures
   FSig (..),
   fsigType,
@@ -262,6 +263,13 @@ assumePreconditions sig = sig { psigContracts = map assumePrecondition (psigCont
   where
     assumePrecondition (Requires _ e) = Requires True e
     assumePrecondition c = c
+    
+-- | Make all postconditions in contracts free  
+assumePostconditions :: PSig -> PSig
+assumePostconditions sig = sig { psigContracts = map assumePostcondition (psigContracts sig) }
+  where
+    assumePostcondition (Ensures _ e) = Ensures True e
+    assumePostcondition c = c    
 
 {- Functions and procedures -}
 
@@ -318,7 +326,7 @@ data PDef = PDef {
   }
   
 -- | All local names of a procedure definition  
-pdefLocals def = pdefIns def ++ pdefOuts def ++ map itwId (fst (pdefBody def))   
+pdefLocals def = pdefIns def ++ pdefOuts def ++ map itwId (fst (pdefBody def))
 
 {- Code generation -}
 

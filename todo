@@ -20,7 +20,6 @@
     - Generators with limits
     - Remove tester
   - Printable class?
-  -> Support calls to procedures with no implementation
   -> Bounded checking of quantification
   -? Check function and map constraints lazily
   -> User-defined types

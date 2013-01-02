@@ -390,7 +390,6 @@ data FailureSource =
   UnsupportedConstruct String |       -- ^ Language construct is not yet supported (should disappear in later versions)
   InfiniteDomain Id Interval |        -- ^ Quantification over an infinite set
   MapEquality Value Value |           -- ^ Equality of two maps cannot be determined
-  NoImplementation Id |               -- ^ Call to a procedure with no implementation
   InternalException InternalCode      -- ^ Must be cought inside the interpreter and never reach the user
   deriving Eq
 
@@ -445,7 +444,6 @@ runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err)
     failureSourceDoc (DivisionByZero) = text "Division by zero"
     failureSourceDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
     failureSourceDoc (MapEquality m1 m2) = text "Cannot determine equality of map values" <+> valueDoc m1 <+> text "and" <+> valueDoc m2
-    failureSourceDoc (NoImplementation name) = text "Procedure" <+> text name <+> text "with no implementation called"
     failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
     
     clauseName Inline isFree = if isFree then "Assumption" else "Assertion"  
@@ -799,7 +797,7 @@ exec stmt = case node stmt of
     Havoc ids -> execHavoc ids (position stmt)
     Assign lhss rhss -> execAssign lhss rhss
     Call lhss name args -> execCall lhss name args (position stmt)
-    CallForall name args -> return () -- ToDo: assume (forall args :: pre ==> post)?
+    CallForall name args -> return ()
   >> collectGarbage
   
 execPredicate specClause pos = do
@@ -830,14 +828,23 @@ execAssign lhss rhss = do
     
 execCall lhss name args pos = do
   tc <- gets envTypeContext
-  defs <- gets (lookupProcedure name)
-  case defs of
-    [] -> throwRuntimeFailure (NoImplementation name) pos
-    def : _ -> do
-      let lhssExpr = map (attachPos (ctxPos tc) . Var) lhss
-      retsV <- execProcedure (procSig name tc) def args lhssExpr `catchError` addStackFrame frame
-      zipWithM_ setAnyVar lhss retsV
+  let sig = procSig name tc
+  defs <- gets $ lookupProcedure name
+  let (def, sig') = if null defs 
+      then (dummyDef sig, assumePostconditions sig)
+      else (head defs, sig)
+  let lhssExpr = map (attachPos (ctxPos tc) . Var) lhss
+  retsV <- execProcedure sig' def args lhssExpr `catchError` addStackFrame frame
+  zipWithM_ setAnyVar lhss retsV
   where
+    -- For procedures with no implementation: dummy definition that just havocs all modifiable globals
+    dummyDef sig = PDef {
+        pdefIns = map itwId (psigArgs sig),
+        pdefOuts = map itwId (psigRets sig),
+        pdefParamsRenamed = False,
+        pdefBody = ([], (M.fromList . toBasicBlocks . singletonBlock . gen . Havoc . psigModifies) sig),
+        pdefPos = noPos
+      }  
     frame = StackFrame pos name
     
 -- | Execute program consisting of blocks starting from the block labeled label.
@@ -928,7 +935,7 @@ processFunctionBody name args body = let
   where
     formalName Nothing = dummyFArg 
     formalName (Just n) = n    
-
+    
 processProcedureBody name pos args rets body = do
   sig <- procSig name <$> gets envTypeContext
   modify $ addProcedureDef name (PDef argNames retNames (paramsRenamed sig) (flatten body) pos) 
