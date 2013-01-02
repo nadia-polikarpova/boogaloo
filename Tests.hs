@@ -40,7 +40,8 @@ interpreterTests = TestLabel "Interpreter" $ TestList [
   testCase interpreterSuccess "EmptyDomains",
   testCase interpreterSuccess "MapInit",
   testCase interpreterSuccess "MapLocals",
-  testCase interpreterSuccess "OldND"
+  testCase interpreterSuccess "OldND",
+  testCase interpreterSuccess "OldMaps"
   ]
   
 -- | Directory with test programs  

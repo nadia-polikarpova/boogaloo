@@ -222,7 +222,9 @@ data Environment m = Environment
     envFunctions :: Map Id [FDef],               -- ^ Function names to definitions
     envProcedures :: Map Id [PDef],              -- ^ Procedure names to definitions
     envTypeContext :: Context,                   -- ^ Type context    
-    envGenValue :: Type -> m Value               -- ^ Value generator (used any time a value must be chosen non-deterministically)
+    envGenValue :: Type -> m Value,              -- ^ Value generator (used any time a value must be chosen non-deterministically)
+    -- | Scope information
+    envInOld :: Bool                             -- ^ Is an old expression currently being evaluated?
   }
    
 -- | 'initEnv' @tc gen@: Initial environment in a type context @tc@ with a value generator @gen@  
@@ -237,7 +239,8 @@ initEnv tc gen = Environment
     envFunctions = M.empty,
     envProcedures = M.empty,
     envTypeContext = tc,
-    envGenValue = gen
+    envGenValue = gen,
+    envInOld = False
   }
 
 -- | 'lookupConstConstraints' @id env@ : All constraints of constant @id@ in @env@
@@ -257,8 +260,8 @@ lookupProcedure id env = case M.lookup id (envProcedures env) of
 
 -- Environment modifications  
 setGlobal id val env = env { envGlobals = M.insert id val (envGlobals env) }
-setGlobalTwoState id val env = env { envGlobals = M.insert id val (envGlobals env), envOld = M.insert id val (envOld env) }    
 setLocal id val env = env { envLocals = M.insert id val (envLocals env) }
+setOld id val env = env { envOld = M.insert id val (envOld env) }    
 addConstantDef id def env = env { envConstDefs = M.insert id def (envConstDefs env) }
 addConstantConstraint id expr env = env { envConstConstraints = M.insert id (lookupConstConstraints id env ++ [expr]) (envConstConstraints env) }
 addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction id env ++ defs) (envFunctions env) }
@@ -280,7 +283,9 @@ data Memory = Memory Store (Heap Value)
 
 -- | Memory state of an environment
 memory :: Environment m -> Memory
-memory env = Memory (envLocals env `M.union` envGlobals env) (envHeap env)
+memory env = Memory (envLocals env `M.union` envGlobals env `M.union` M.mapKeys oldName (envOld env)) (envHeap env)
+  where
+    oldName var = var ++ (nonIdChar : "old")
 
 -- | Empty memory
 emptyMemory = Memory emptyStore emptyHeap
@@ -338,24 +343,27 @@ instance (Error e, Monad m) => Finalizer (ErrorT e m) where
 old :: (Monad m, Functor m) => Execution m a -> Execution m a
 old execution = do
   env <- get
-  put env { envGlobals = envOld env }
+  put env { envGlobals = envOld env, envInOld = True }
   res <- execution
-  globals' <- gets envGlobals
-  put env { envOld = globals', envGlobals = envGlobals env `M.union` globals' } -- Include freshly initialized globals into both old and new states
+  modify $ \env' -> env' { envOld = envGlobals env', envGlobals = envGlobals env `M.union` envGlobals env', envInOld = envInOld env } -- Include freshly initialized globals into both old and new states
   return res
 
 -- | Save current values of global variables in the "old" environment, return the previous "old" environment
-saveOld :: (Monad m, Functor m) => Execution m (Map Id Value)  
+saveOld :: (Monad m, Functor m) => Execution m (Environment m)  
 saveOld = do
   env <- get
-  put env { envOld = envGlobals env }
-  return $ envOld env
+  let globals = envGlobals env  
+  put env { envOld = globals }
+  mapM_ incRefCountValue (M.elems globals) -- Each value stored in globals is now pointed by an additional (old) variable
+  return $ env
 
 -- | Set the "old" environment to olds  
-restoreOld :: (Monad m, Functor m) => Map Id Value -> Execution m ()  
-restoreOld olds = do
-  env <- get
-  put env { envOld = olds `M.union` envOld env } -- Add freshly initialized olds
+restoreOld :: (Monad m, Functor m) => Environment m -> Execution m ()  
+restoreOld env = do
+  env' <- get
+  let (oldOlds, newOlds) = M.partitionWithKey (\var _ -> M.member var (envGlobals env)) (envOld env')  
+  put env' { envOld = envOld env `M.union` newOlds } -- Add old values for freshly initialized globals (they are valid up until the program entry point, so could be accessed until the end of the program)
+  mapM_ decRefCountValue (M.elems oldOlds) -- Old values for previously initialized varibles go out of scope
   
 -- | Enter local scope (apply localTC to the type context and assign actuals to formals),
 -- execute computation,
@@ -365,7 +373,7 @@ executeLocally localTC locals formals actuals computation = do
   oldEnv <- get
   modify $ modifyTypeContext localTC
   modify $ \env -> env { envLocals = deleteAll locals (envLocals env) }
-  zipWithM_ (setVar (const emptyStore){-envLocals-} setLocal) formals actuals -- All formals are fresh, can use emptyStore for current values
+  zipWithM_ (setVar (const emptyStore) setLocal) formals actuals -- All formals are fresh, can use emptyStore for current values
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
@@ -496,7 +504,17 @@ generateValue t pos = case t of
   MapType _ _ _ -> allocate $ MapValue Nothing M.empty
   _ -> do
     gen <- gets envGenValue
-    lift (lift (gen t))      
+    lift (lift (gen t))
+
+-- | 'incRefCountValue' @val@ : if @val@ is a reference, increase its count
+incRefCountValue val = case val of
+  Reference r -> modify . withHeap_ $ incRefCount r
+  _ -> return ()    
+
+-- | 'decRefCountValue' @val@ : if @val@ is a reference, decrease its count  
+decRefCountValue val = case val of
+  Reference r -> modify . withHeap_ $ decRefCount r
+  _ -> return ()     
     
 -- | 'unsetVar' @getStore id@ : if @id@ was associated with a reference in @getStore@, decrease its reference count
 unsetVar getStore id = do
@@ -621,17 +639,20 @@ eval expr = case node expr of
 evalVar id pos = do
   tc <- gets envTypeContext
   case M.lookup id (localScope tc) of
-    Just t -> lookupStore envLocals (init (generateValue t pos) setLocal checkWhere)
+    Just t -> lookupStore envLocals (init (generateValue t pos) [setLocal] checkWhere)
     Nothing -> case M.lookup id (ctxGlobals tc) of
-      Just t -> lookupStore envGlobals (init (generateValue t pos) setGlobalTwoState checkWhere)
+      Just t -> do
+        inOld <- gets envInOld
+        let setters = if inOld then [setGlobal] else [setGlobal, setOld]
+        lookupStore envGlobals (init (generateValue t pos) setters checkWhere)
       Nothing -> case M.lookup id (ctxConstants tc) of
         Just t -> lookupStore envGlobals (initConst t)
         Nothing -> (internalError . show) (text "Encountered unknown identifier during execution:" <+> text id) 
   where
     -- | Initialize @id@ with a value geberated by @gen@, and then perform @check@
-    init gen set check = do
+    init gen sets check = do
       val <- gen
-      setVar (const emptyStore) set id val
+      mapM_ (\set -> setVar (const emptyStore) set id val) sets
       check id pos
       return val
     -- | Lookup @id@ in @store@; if occurs return its stored value, otherwise @calculate@
@@ -644,8 +665,8 @@ evalVar id pos = do
     initConst t = do
       constants <- gets envConstDefs
       case M.lookup id constants of
-        Just e -> init (eval e) setGlobal checkConstConstraints
-        Nothing -> init (generateValue t pos) setGlobal checkConstConstraints
+        Just e -> init (eval e) [setGlobal] checkConstConstraints
+        Nothing -> init (generateValue t pos) [setGlobal] checkConstConstraints
   
 evalApplication name args pos = do
   defs <- gets (lookupFunction name)  
@@ -689,9 +710,7 @@ evalMapSelection m args pos = do
       -- case mapVariable tc (node m) of
         -- Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
         -- Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
-      case val of
-        Reference r' -> modify . withHeap_ $ incRefCount r'
-        _ -> return ()
+      incRefCountValue val
       MapValue Nothing baseMap <- readHeap baseRef
       modify . withHeap_ $ update baseRef (MapValue Nothing (M.insert argsV val baseMap))
       return val    
@@ -715,9 +734,7 @@ evalMapUpdate m args new pos = do
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
   newV <- eval new
-  case newV of
-    Reference r' -> modify . withHeap_ $ incRefCount r'
-    _ -> return ()
+  incRefCountValue newV
   let (base, over) = case mBase of Nothing -> (r, M.singleton argsV newV); Just b -> (b, M.insert argsV newV o)
   modify . withHeap_ $ incRefCount base
   allocate $ MapValue (Just base) over
@@ -849,10 +866,10 @@ execProcedure sig def args lhss = let
     else pos          -- A return statement inside the body
   execBody = do
     checkPreconditions sig def
-    olds <- saveOld
+    env <- saveOld
     pos <- exitPoint <$> execBlock blocks startLabel
     checkPostonditions sig def pos
-    restoreOld olds
+    restoreOld env
     mapM (eval . attachPos (pdefPos def) . Var) outs
   in do
     argsV <- mapM eval args

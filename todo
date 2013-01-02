@@ -15,7 +15,6 @@
   
 - Interpreter
   -> Backtracking
-    - Consistent old: maps?
     - Distinguish unreachable and non-executable outcomes
     - Remove limitation on entry points
     - Random generator
