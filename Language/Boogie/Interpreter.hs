@@ -79,20 +79,20 @@ import Text.PrettyPrint
 -- and return an infinite list of possible outcomes (each either runtime failure or the final variable store).
 -- Whenever a value is unspecified, all values of the required type are tried exhaustively.
 executeProgram :: Program -> Context -> Id -> [Either RuntimeFailure Memory]
-executeProgram p tc entryPoint = toList $ executeProgramGeneric p tc allValues entryPoint
+executeProgram p tc entryPoint = toList $ executeProgramGeneric p tc allValues boundedNaturals entryPoint
 
 -- | 'executeProgramDet' @p tc entryPoint@ :
 -- Execute program @p@ /deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return a single outcome.
 -- Whenever a value is unspecified, a default value of the required type is used.
 executeProgramDet :: Program -> Context -> Id -> Either RuntimeFailure Memory
-executeProgramDet p tc entryPoint = runIdentity $ executeProgramGeneric p tc (Identity . defaultValue) entryPoint
+executeProgramDet p tc entryPoint = runIdentity $ executeProgramGeneric p tc (Identity . defaultValue) (Identity . const 0) entryPoint
       
--- | 'executeProgramGeneric' @p tc gen entryPoint@ :
--- Execute program @p@ in type context @tc@ with value generator @gen@, starting from procedure @entryPoint@,
+-- | 'executeProgramGeneric' @p tc genValue genIndex entryPoint@ :
+-- Execute program @p@ in type context @tc@ with value generator @genValue@ and index generator @genIndex@, starting from procedure @entryPoint@,
 -- and return the outcome(s) embedded into the value generator's monad.
-executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> (Type -> m Value) -> Id -> m (Either RuntimeFailure Memory)
-executeProgramGeneric p tc gen entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc gen)
+executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> (Type -> m Value) -> (Int -> m Int) -> Id -> m (Either RuntimeFailure Memory)
+executeProgramGeneric p tc genValue genIndex entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc genValue genIndex)
   where
     programExecution = do
       execUnsafely $ collectDefinitions p
@@ -224,12 +224,13 @@ data Environment m = Environment
     envProcedures :: Map Id [PDef],              -- ^ Procedure names to definitions
     envTypeContext :: Context,                   -- ^ Type context    
     envGenValue :: Type -> m Value,              -- ^ Value generator (used any time a value must be chosen non-deterministically)
+    envGenIndex :: Int -> m Int,                 -- ^ Index generator (used any time something must be chosen non-deterministically from a finite list)
     -- | Scope information
     envInOld :: Bool                             -- ^ Is an old expression currently being evaluated?
   }
    
 -- | 'initEnv' @tc gen@: Initial environment in a type context @tc@ with a value generator @gen@  
-initEnv tc gen = Environment
+initEnv tc genValue genIndex = Environment
   {
     envLocals = emptyStore,
     envGlobals = emptyStore,
@@ -240,7 +241,8 @@ initEnv tc gen = Environment
     envFunctions = M.empty,
     envProcedures = M.empty,
     envTypeContext = tc,
-    envGenValue = gen,
+    envGenValue = genValue,
+    envGenIndex = genIndex,
     envInOld = False
   }
 
@@ -510,6 +512,13 @@ generateValue t pos = case t of
   _ -> do
     gen <- gets envGenValue
     lift (lift (gen t))
+    
+-- | 'generateIndex' @n@ : choose an integer from 0 to @n@ - 1;
+-- (@n@ must be positive)
+generateIndex :: (Monad m, Functor m) => Int -> Execution m Int
+generateIndex n = do
+  gen <- gets envGenIndex
+  lift (lift (gen n))    
 
 -- | 'incRefCountValue' @val@ : if @val@ is a reference, increase its count
 incRefCountValue val = case val of
@@ -828,15 +837,16 @@ execAssign lhss rhss = do
     
 execCall lhss name args pos = do
   tc <- gets envTypeContext
-  let sig = procSig name tc
   defs <- gets $ lookupProcedure name
-  let (def, sig') = if null defs 
-      then (dummyDef sig, assumePostconditions sig)
-      else (head defs, sig)
+  (sig', def) <- selectDef (procSig name tc) defs
   let lhssExpr = map (attachPos (ctxPos tc) . Var) lhss
   retsV <- execProcedure sig' def args lhssExpr `catchError` addStackFrame frame
   zipWithM_ setAnyVar lhss retsV
   where
+    selectDef sig [] = return (assumePostconditions sig, dummyDef sig)
+    selectDef sig defs = do
+      i <- generateIndex $ length defs
+      return (sig, defs !! i)
     -- For procedures with no implementation: dummy definition that just havocs all modifiable globals
     dummyDef sig = PDef {
         pdefIns = map itwId (psigArgs sig),

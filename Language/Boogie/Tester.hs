@@ -43,7 +43,7 @@ import Text.PrettyPrint
 -- Test all implementations of all procedures @procNames@ from program @p@ in type context @tc@;
 -- requires that all @procNames@ exist in @tc@
 testProgram :: TestSettings s => s -> Program -> Context -> [Id] -> [TestCase]
-testProgram settings p tc procNames = evalState testExecution (settings, initEnv tc (Identity . defaultValue))
+testProgram settings p tc procNames = evalState testExecution (settings, initEnv tc (Identity . defaultValue) (Identity . const 0))
   where
     testExecution = do
       changeState snd (mapSnd . const) $ collectDefinitions p

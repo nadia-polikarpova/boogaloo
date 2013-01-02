@@ -196,5 +196,5 @@ printAux msg = do
 harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
-      let env = head (toList (execStateT (collectDefinitions p) (initEnv context allValues)))
+      let env = head (toList (execStateT (collectDefinitions p) (initEnv context allValues boundedNaturals)))
       print $ (debugMemoryDoc . memory) env

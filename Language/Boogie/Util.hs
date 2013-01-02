@@ -51,6 +51,7 @@ module Language.Boogie.Util (
   changeState,
   withLocalState,
   allIntegers,
+  boundedNaturals,
   internalError
 ) where
 
@@ -392,5 +393,11 @@ allIntegers = (return 0) `mplus` genNonZero
         then return $ -x  
         else return $ -x + 1
       )
+
+-- | 'boundedNaturals' @n@ : stream of @n@ first naturals; 
+-- (@n@ must be non-negative)
+boundedNaturals :: Int -> Stream Int
+boundedNaturals 0 = mzero
+boundedNaturals n = foldl1 mplus (map return [0 .. n - 1])
       
 internalError msg = error $ "Internal interpreter error (consider submitting a bug report):\n" ++ msg      
