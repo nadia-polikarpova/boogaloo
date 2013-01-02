@@ -15,7 +15,6 @@
   
 - Interpreter
   -> Backtracking
-    - Distinguish unreachable and non-executable outcomes
     - Remove limitation on entry points
     - Random generator
     - Generators with limits
@@ -24,11 +23,10 @@
   -> Support calls to procedures with no implementation
   -> Bounded checking of quantification
   -? Check function and map constraints lazily
+  -> User-defined types
   - Refactor executeLocally, execCall and execProcedure
-  - Remove separation between global and local variables (get from the context)?
-  - Lambda expressions: cause problems with equality of Value (needed for evaluation of equality and for map acceses)  
+  - Lambda expressions
   - Turn source positions into spans; use the end of the span to report postcondition violations  
-  - User-defined types
   - Extends ordering
   - Constraint solving
   - Call forall

@@ -33,13 +33,23 @@ releaseDate = fromGregorian 2012 10 25
 main = do
   res <- cmdArgsRun $ mode
   case res of
-    Exec file entry btmax keepInvalid outMax debug -> executeFromFile file entry btmax keepInvalid outMax debug
+    Exec file entry btmax invalid nexec pass fail outMax debug -> executeFromFile file entry btmax invalid nexec pass fail outMax debug
     args -> testFromFile (file args) (proc_ args) (testMethod args) (verbose args)
 
 {- Command line arguments -}
 
 data CommandLineArgs
-    = Exec { file :: String, entry :: String, btmax :: Maybe Int, keep_invalid :: Bool, outmax :: Int, debug :: Bool }
+    = Exec { 
+        file :: String, 
+        entry :: String, 
+        btmax :: Maybe Int, 
+        invalid :: Bool, 
+        nexec :: Bool,
+        pass :: Bool,
+        fail_ :: Bool,
+        outmax :: Int, 
+        debug :: Bool
+      }
     | Test { file :: String, proc_ :: [String], limits :: (Integer, Integer), dlimits :: (Integer, Integer), verbose :: Bool  }
     | RTest { file :: String, proc_ :: [String], limits :: (Integer, Integer), dlimits :: (Integer, Integer), tc_count :: Int, seed :: Maybe Int, verbose :: Bool }
       deriving (Data, Typeable, Show, Eq)
@@ -48,7 +58,10 @@ execute = Exec {
   entry = "Main"        &= help "Program entry point (default: Main)" &= typ "PROCEDURE",
   file  = ""            &= typFile &= argPos 0,
   btmax = Nothing       &= help "Maximum number of times execution is allowed to backtrack (default: unlimited)",
-  keep_invalid = False  &= help "Keep invalid executions in the list of outcomes (default: false)",
+  invalid = False       &= help "Keep unreachable states in the list of outcomes (default: false)",
+  nexec = True          &= help "Keep non-executable states in the list of outcomes (default: true)",
+  pass = True           &= help "Keep passing states in the list of outcomes (default: true)",
+  fail_ = True          &= help "Keep failing states in the list of outcomes (default: true)",
   outmax = 1            &= help "Maximum number of outcomes to display (default: 1)",
   debug = False         &= help "Debug output (default: false)"
   } &= auto &= help "Execute program"
@@ -107,8 +120,8 @@ testMethod (RTest _ _ limits dlimits tc_count seed _) program context procNames 
 
 -- | Execute procedure entryPoint from file
 -- | and output either errors or the final values of global variables
-executeFromFile :: String -> String -> Maybe Int -> Bool -> Int -> Bool -> IO ()
-executeFromFile file entryPoint btMax keepInvalid outMax debug = runOnFile printFinalState file
+executeFromFile :: String -> String -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Int -> Bool -> IO ()
+executeFromFile file entryPoint btMax invalid nexec pass fail outMax debug = runOnFile printFinalState file
   where
     printFinalState p context = case M.lookup entryPoint (ctxProcedures context) of
       Nothing -> printError (text "Cannot find program entry point" <+> text entryPoint)
@@ -118,15 +131,18 @@ executeFromFile file entryPoint btMax keepInvalid outMax debug = runOnFile print
           if null outs
             then printAux $ text "No outcomes to display"
             else zipWithM_ printOne [0..] outs
-    outcomes p context = if btMax == Just 1 || (keepInvalid && outMax == 1)
+    outcomes p context = if btMax == Just 1 || (keepAll && outMax == 1)
       then [executeProgramDet p context entryPoint]
       else executeProgram p context entryPoint
+    keepAll = invalid && nexec && pass && fail
     limitBT = case btMax of
       Nothing -> id
       Just n -> take n
-    keep out = if keepInvalid
-      then True
-      else not (isInvalid out)
+    keep out = 
+      (if invalid then True else not (isInvalid out)) &&
+      (if nexec then True else not (isNonexecutable out)) &&
+      (if pass then True else not (isPass out)) &&
+      (if fail then True else not (isFail out))
     printOutcome out = case out of
       Left err -> printError err
       Right mem -> if debug

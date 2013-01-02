@@ -38,6 +38,7 @@ module Language.Boogie.Interpreter (
   -- * Execution outcomes
   isPass,
   isInvalid,
+  isNonexecutable,
   isFail,
   -- * Executing parts of programs
   eval,
@@ -483,15 +484,21 @@ isPass :: Either RuntimeFailure Memory -> Bool
 isPass (Right _) =  True
 isPass _ =          False
 
--- | 'isInvalid' @outcome@: Does @outcome@ belong to an invalid execution? (Denotes an unreachable or non-executable state)
+-- | 'isInvalid' @outcome@: Does @outcome@ belong to an invalid execution? (Denotes an unreachable state)
 isInvalid :: Either RuntimeFailure Memory -> Bool 
 isInvalid (Left err)
-  | failureKind err == Unreachable || failureKind err == Nonexecutable  = True
-isInvalid _                                                             = False
+  | failureKind err == Unreachable = True
+isInvalid _                        = False
+
+-- | 'isNonexecutable' @outcome@: Does @outcome@ belong to an execution that cannot be carried out completely by the interpreter? (Denotes a non-executable state)
+isNonexecutable :: Either RuntimeFailure Memory -> Bool 
+isNonexecutable (Left err)
+  | failureKind err == Nonexecutable  = True
+isNonexecutable _                     = False
 
 -- | 'isFail' @outcome@: Does @outcome@ belong to a failing execution? (Denotes an error state)
 isFail :: Either RuntimeFailure Memory -> Bool
-isFail outcome = not (isPass outcome || isInvalid outcome)
+isFail outcome = not (isPass outcome || isInvalid outcome || isNonexecutable outcome)
 
 {- Basic executions -}      
       
