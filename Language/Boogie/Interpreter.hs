@@ -96,7 +96,7 @@ executeProgramGeneric p tc genValue genIndex entryPoint = result <$> runStateT (
   where
     programExecution = do
       execUnsafely $ collectDefinitions p
-      execCall [] entryPoint [] noPos
+      execRootCall entryPoint
     result (Left err, _) = Left err
     result (_, env)      = Right $ memory env
     
@@ -805,7 +805,7 @@ exec stmt = case node stmt of
     Predicate specClause -> execPredicate specClause (position stmt)
     Havoc ids -> execHavoc ids (position stmt)
     Assign lhss rhss -> execAssign lhss rhss
-    Call lhss name args -> execCall lhss name args (position stmt)
+    Call lhss name args -> execCall name lhss args (position stmt)
     CallForall name args -> return ()
   >> collectGarbage
   
@@ -835,11 +835,14 @@ execAssign lhss rhss = do
     mapUpdate e [args] rhs = gen $ MapUpdate e args rhs
     mapUpdate e (args1 : argss) rhs = gen $ MapUpdate e args1 (mapUpdate (gen $ MapSelection e args1) argss rhs)
     
-execCall lhss name args pos = do
-  tc <- gets envTypeContext
-  defs <- gets $ lookupProcedure name
-  (sig', def) <- selectDef (procSig name tc) defs
-  let lhssExpr = map (attachPos (ctxPos tc) . Var) lhss
+execCall name lhss args pos = do
+  sig <- procSig name <$> gets envTypeContext
+  execCallBySig sig lhss args pos
+    
+execCallBySig sig lhss args pos = do
+  defs <- gets $ lookupProcedure (psigName sig)
+  (sig', def) <- selectDef sig defs
+  lhssExpr <- (\tc -> map (attachPos (ctxPos tc) . Var) lhss) <$> gets envTypeContext
   retsV <- execProcedure sig' def args lhssExpr `catchError` addStackFrame frame
   zipWithM_ setAnyVar lhss retsV
   where
@@ -855,7 +858,14 @@ execCall lhss name args pos = do
         pdefBody = ([], (M.fromList . toBasicBlocks . singletonBlock . gen . Havoc . psigModifies) sig),
         pdefPos = noPos
       }  
-    frame = StackFrame pos name
+    frame = StackFrame pos (psigName sig)
+    
+execRootCall name = do
+  -- ToDo: instantiate generic types
+  sig <- procSig name <$> gets envTypeContext
+  let params = psigParams sig
+  modify $ modifyTypeContext (setLocals (M.fromList $ zip (map itwId params) (map itwType params)))
+  execCallBySig (assumePreconditions sig) (map itwId (psigRets sig)) (map (gen . Var . itwId) (psigArgs sig)) noPos    
     
 -- | Execute program consisting of blocks starting from the block labeled label.
 -- Return the location of the exit point.

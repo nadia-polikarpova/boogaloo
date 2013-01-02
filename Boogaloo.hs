@@ -125,12 +125,10 @@ executeFromFile file entryPoint btMax invalid nexec pass fail outMax debug = run
   where
     printFinalState p context = case M.lookup entryPoint (ctxProcedures context) of
       Nothing -> printError (text "Cannot find program entry point" <+> text entryPoint)
-      Just sig -> if not (goodEntryPoint sig)
-        then printError (text "Program entry point" <+> text entryPoint <+> text "does not have the required signature" <+> doubleQuotes (sigDoc [] []))
-        else let outs = (take outMax . filter keep . limitBT) (outcomes p context) in
-          if null outs
-            then printAux $ text "No outcomes to display"
-            else zipWithM_ printOne [0..] outs
+      Just _ -> let outs = (take outMax . filter keep . limitBT) (outcomes p context) in
+        if null outs
+          then printAux $ text "No outcomes to display"
+          else zipWithM_ printOne [0..] outs
     outcomes p context = if btMax == Just 1 || (keepAll && outMax == 1)
       then [executeProgramDet p context entryPoint]
       else executeProgram p context entryPoint
