@@ -18,7 +18,7 @@
     - Remove limitation on entry points
     - Random generator
     - Generators with limits
-    - Remove tester
+    - Remove tester and live var analysis
   - Printable class?
   -> Bounded checking of quantification
   -? Check function and map constraints lazily

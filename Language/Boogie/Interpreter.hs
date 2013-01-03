@@ -137,7 +137,7 @@ defaultValue (IdType _ _)     = CustomValue 0
 
 -- | 'allValues' @t@ : List all values of type @t@ exhaustively
 allValues :: Type -> Stream Value
-allValues BoolType        = return (BoolValue False) `mplus` return (BoolValue False)
+allValues BoolType        = return (BoolValue False) `mplus` return (BoolValue True)
 allValues IntType         = IntValue <$> allIntegers
 allValues (MapType _ _ _) = internalError "Attempt to generate a map value"
 allValues (IdType _ _)    = CustomValue <$> allIntegers
