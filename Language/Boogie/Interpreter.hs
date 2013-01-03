@@ -77,8 +77,8 @@ import Text.PrettyPrint
 -- Execute program @p@ /non-deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return an infinite list of possible outcomes (each either runtime failure or the final variable store).
 -- Whenever a value is unspecified, all values of the required type are tried exhaustively.
-executeProgram :: Program -> Context -> Id -> [Either RuntimeFailure Memory]
-executeProgram p tc entryPoint = toList $ executeProgramGeneric p tc exhaustiveGenerator entryPoint
+executeProgram :: Program -> Context -> Generator Stream -> Id -> [Either RuntimeFailure Memory]
+executeProgram p tc gen entryPoint = toList $ executeProgramGeneric p tc gen entryPoint
 
 -- | 'executeProgramDet' @p tc entryPoint@ :
 -- Execute program @p@ /deterministically/ in type context @tc@ starting from procedure @entryPoint@ 

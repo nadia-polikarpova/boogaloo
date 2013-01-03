@@ -4,6 +4,7 @@ import Language.Boogie.Parser
 import Language.Boogie.PrettyPrinter
 import Language.Boogie.TypeChecker
 import Language.Boogie.Interpreter
+import Language.Boogie.Generator
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import System.FilePath
@@ -94,7 +95,7 @@ interpreterSuccess file = do
     Left parseErr -> assertFailure (show parseErr)
     Right p -> case typeCheckProgram p of
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
-      Right context -> case (head . filter (not . isInvalid)) (executeProgram p context entryPoint) of
+      Right context -> case (head . filter (not . isInvalid)) (executeProgram p context exhaustiveGenerator entryPoint) of
         Left err -> assertFailure (show err)
         Right env -> return ()
 
