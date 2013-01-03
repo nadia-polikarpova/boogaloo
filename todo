@@ -15,7 +15,6 @@
   
 - Interpreter
   -> Backtracking
-    - Remove limitation on entry points
     - Random generator
     - Generators with limits
     - Remove tester and live var analysis

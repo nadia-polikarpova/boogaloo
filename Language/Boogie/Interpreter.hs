@@ -97,6 +97,14 @@ executeProgramGeneric p tc genValue genIndex entryPoint = result <$> runStateT (
     programExecution = do
       execUnsafely $ collectDefinitions p
       execRootCall entryPoint
+    execRootCall name = do
+      sig <- procSig name <$> gets envTypeContext
+      let params = psigParams sig
+      let defaultBinding = M.fromList $ zip (psigTypeVars sig) (repeat defaultType)
+      let paramTypes = map (typeSubst defaultBinding) (map itwType params)
+      modify $ modifyTypeContext (setLocals (M.fromList $ zip (map itwId params) paramTypes))
+      execCallBySig (assumePreconditions sig) (map itwId (psigRets sig)) (map (gen . Var . itwId) (psigArgs sig)) noPos
+    defaultType = BoolType      
     result (Left err, _) = Left err
     result (_, env)      = Right $ memory env
     
@@ -859,14 +867,7 @@ execCallBySig sig lhss args pos = do
         pdefPos = noPos
       }  
     frame = StackFrame pos (psigName sig)
-    
-execRootCall name = do
-  -- ToDo: instantiate generic types
-  sig <- procSig name <$> gets envTypeContext
-  let params = psigParams sig
-  modify $ modifyTypeContext (setLocals (M.fromList $ zip (map itwId params) (map itwType params)))
-  execCallBySig (assumePreconditions sig) (map itwId (psigRets sig)) (map (gen . Var . itwId) (psigArgs sig)) noPos    
-    
+        
 -- | Execute program consisting of blocks starting from the block labeled label.
 -- Return the location of the exit point.
 execBlock :: (Monad m, Functor m) => Map Id [Statement] -> Id -> Execution m SourcePos
