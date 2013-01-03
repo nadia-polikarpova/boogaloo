@@ -11,6 +11,7 @@ import Language.Boogie.PrettyPrinter
 import Language.Boogie.Heap
 import Language.Boogie.Interpreter
 import Language.Boogie.Tester
+import Language.Boogie.Generator
 import System.Environment
 import System.Console.CmdArgs
 import System.Console.ANSI
@@ -194,5 +195,5 @@ printAux msg = do
 harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
-      let env = head (toList (execStateT (collectDefinitions p) (initEnv context allValues boundedNaturals)))
-      print $ (debugMemoryDoc . memory) env
+      let env = head (toList (execStateT (collectDefinitions p) (initEnv context exhaustiveGenerator)))
+      print $ (debugMemoryDoc . memory) env           

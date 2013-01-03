@@ -26,6 +26,7 @@ import Language.Boogie.Tokens
 import Language.Boogie.PrettyPrinter
 import Language.Boogie.Interpreter
 import Language.Boogie.DataFlow
+import Language.Boogie.Generator
 import System.Random
 import Data.Maybe
 import Data.List
@@ -43,7 +44,7 @@ import Text.PrettyPrint
 -- Test all implementations of all procedures @procNames@ from program @p@ in type context @tc@;
 -- requires that all @procNames@ exist in @tc@
 testProgram :: TestSettings s => s -> Program -> Context -> [Id] -> [TestCase]
-testProgram settings p tc procNames = evalState testExecution (settings, initEnv tc (Identity . defaultValue) (Identity . const 0))
+testProgram settings p tc procNames = evalState testExecution (settings, initEnv tc defaultGenerator)
   where
     testExecution = do
       changeState snd (mapSnd . const) $ collectDefinitions p

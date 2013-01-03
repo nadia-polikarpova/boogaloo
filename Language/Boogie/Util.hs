@@ -50,8 +50,6 @@ module Language.Boogie.Util (
   mapBoth,
   changeState,
   withLocalState,
-  allIntegers,
-  boundedNaturals,
   internalError
 ) where
 
@@ -382,22 +380,5 @@ changeState getter modifier e = do
 -- Execute @e@ in current state modified by @localState@, and then restore current state
 withLocalState :: Monad m => (s -> t) -> StateT t m a -> StateT s m a
 withLocalState localState e = changeState localState (flip const) e
-
--- | Infinite stream that produces all values of type Integer in the order [0, 1, -1, 2, -2, ...]
-allIntegers :: Stream Integer
-allIntegers = (return 0) `mplus` genNonZero
-  where 
-    genNonZero = (return 1) `mplus` (do
-      x <- genNonZero
-      if x > 0 
-        then return $ -x  
-        else return $ -x + 1
-      )
-
--- | 'boundedNaturals' @n@ : stream of @n@ first naturals; 
--- (@n@ must be non-negative)
-boundedNaturals :: Int -> Stream Int
-boundedNaturals 0 = mzero
-boundedNaturals n = foldl1 mplus (map return [0 .. n - 1])
       
 internalError msg = error $ "Internal interpreter error (consider submitting a bug report):\n" ++ msg      

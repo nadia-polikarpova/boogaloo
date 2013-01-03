@@ -8,8 +8,6 @@ module Language.Boogie.Interpreter (
   executeProgramGeneric,
   -- * State
   Value (..),
-  defaultValue,
-  allValues,
   Store,
   emptyStore,
   Environment (..),
@@ -55,6 +53,7 @@ module Language.Boogie.Interpreter (
 import Language.Boogie.AST
 import Language.Boogie.Util
 import Language.Boogie.Heap
+import Language.Boogie.Generator
 import Language.Boogie.Intervals
 import Language.Boogie.Position
 import Language.Boogie.Tokens (nonIdChar)
@@ -79,20 +78,20 @@ import Text.PrettyPrint
 -- and return an infinite list of possible outcomes (each either runtime failure or the final variable store).
 -- Whenever a value is unspecified, all values of the required type are tried exhaustively.
 executeProgram :: Program -> Context -> Id -> [Either RuntimeFailure Memory]
-executeProgram p tc entryPoint = toList $ executeProgramGeneric p tc allValues boundedNaturals entryPoint
+executeProgram p tc entryPoint = toList $ executeProgramGeneric p tc exhaustiveGenerator entryPoint
 
 -- | 'executeProgramDet' @p tc entryPoint@ :
 -- Execute program @p@ /deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return a single outcome.
 -- Whenever a value is unspecified, a default value of the required type is used.
 executeProgramDet :: Program -> Context -> Id -> Either RuntimeFailure Memory
-executeProgramDet p tc entryPoint = runIdentity $ executeProgramGeneric p tc (Identity . defaultValue) (Identity . const 0) entryPoint
+executeProgramDet p tc entryPoint = runIdentity $ executeProgramGeneric p tc defaultGenerator entryPoint
       
 -- | 'executeProgramGeneric' @p tc genValue genIndex entryPoint@ :
--- Execute program @p@ in type context @tc@ with value generator @genValue@ and index generator @genIndex@, starting from procedure @entryPoint@,
--- and return the outcome(s) embedded into the value generator's monad.
-executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> (Type -> m Value) -> (Int -> m Int) -> Id -> m (Either RuntimeFailure Memory)
-executeProgramGeneric p tc genValue genIndex entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc genValue genIndex)
+-- Execute program @p@ in type context @tc@ with input generator @generator@, starting from procedure @entryPoint@,
+-- and return the outcome(s) embedded into the generator's monad.
+executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> Generator m -> Id -> m (Either RuntimeFailure Memory)
+executeProgramGeneric p tc generator entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc generator)
   where
     programExecution = do
       execUnsafely $ collectDefinitions p
@@ -133,22 +132,6 @@ valueDoc (Reference r) = refDoc r
 
 instance Show Value where
   show v = show (valueDoc v)
-    
-{- Value generators -}  
-  
--- | 'defaultValue' @t@ : Default value of type @t@
-defaultValue :: Type -> Value
-defaultValue BoolType         = BoolValue False  
-defaultValue IntType          = IntValue 0
-defaultValue (MapType _ _ _)  = internalError "Attempt to generate a map value"
-defaultValue (IdType _ _)     = CustomValue 0
-
--- | 'allValues' @t@ : List all values of type @t@ exhaustively
-allValues :: Type -> Stream Value
-allValues BoolType        = return (BoolValue False) `mplus` return (BoolValue True)
-allValues IntType         = IntValue <$> allIntegers
-allValues (MapType _ _ _) = internalError "Attempt to generate a map value"
-allValues (IdType _ _)    = CustomValue <$> allIntegers
 
 {- Execution state -}  
 
@@ -230,15 +213,14 @@ data Environment m = Environment
     envConstConstraints :: Map Id [Expression],  -- ^ Constant names to constraints
     envFunctions :: Map Id [FDef],               -- ^ Function names to definitions
     envProcedures :: Map Id [PDef],              -- ^ Procedure names to definitions
-    envTypeContext :: Context,                   -- ^ Type context    
-    envGenValue :: Type -> m Value,              -- ^ Value generator (used any time a value must be chosen non-deterministically)
-    envGenIndex :: Int -> m Int,                 -- ^ Index generator (used any time something must be chosen non-deterministically from a finite list)
+    envTypeContext :: Context,                   -- ^ Type context
+    envGenerator :: Generator m,                 -- ^ Input generator (used for non-deterministic choices)
     -- | Scope information
     envInOld :: Bool                             -- ^ Is an old expression currently being evaluated?
   }
    
 -- | 'initEnv' @tc gen@: Initial environment in a type context @tc@ with a value generator @gen@  
-initEnv tc genValue genIndex = Environment
+initEnv tc gen = Environment
   {
     envLocals = emptyStore,
     envGlobals = emptyStore,
@@ -249,8 +231,7 @@ initEnv tc genValue genIndex = Environment
     envFunctions = M.empty,
     envProcedures = M.empty,
     envTypeContext = tc,
-    envGenValue = genValue,
-    envGenIndex = genIndex,
+    envGenerator = gen,
     envInOld = False
   }
 
@@ -509,25 +490,24 @@ isFail :: Either RuntimeFailure Memory -> Bool
 isFail outcome = not (isPass outcome || isInvalid outcome || isNonexecutable outcome)
 
 {- Basic executions -}      
+
+-- | 'generate' @f@ : computation that extracts @f@ from the generator
+generate :: (Monad m, Functor m) => (Generator m -> m a) -> Execution m a
+generate f = do    
+  gen <- gets envGenerator
+  lift (lift (f gen))
       
 -- | 'generateValue' @t pos@ : choose a value of type @t@ at source position @pos@;
 -- fail if @t@ is a type variable
 generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
 generateValue t pos = case t of
-  IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
-  -- | Maps are initializaed lazily, allocate an empty map on the heap:
-  MapType _ _ _ -> allocate $ MapValue Nothing M.empty
-  _ -> do
-    gen <- gets envGenValue
-    lift (lift (gen t))
-    
--- | 'generateIndex' @n@ : choose an integer from 0 to @n@ - 1;
--- (@n@ must be positive)
-generateIndex :: (Monad m, Functor m) => Int -> Execution m Int
-generateIndex n = do
-  gen <- gets envGenIndex
-  lift (lift (gen n))    
-
+    IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
+    -- | Maps are initializaed lazily, allocate an empty map on the heap:
+    MapType _ _ _ -> allocate $ MapValue Nothing M.empty
+    BoolType -> BoolValue <$> generate genBool
+    IntType -> IntValue <$> generate genInteger
+    IdType _ _ -> CustomValue <$> generate genInteger
+        
 -- | 'incRefCountValue' @val@ : if @val@ is a reference, increase its count
 incRefCountValue val = case val of
   Reference r -> modify . withHeap_ $ incRefCount r
@@ -856,7 +836,7 @@ execCallBySig sig lhss args pos = do
   where
     selectDef sig [] = return (assumePostconditions sig, dummyDef sig)
     selectDef sig defs = do
-      i <- generateIndex $ length defs
+      i <- generate (`genIndex` length defs)
       return (sig, defs !! i)
     -- For procedures with no implementation: dummy definition that just havocs all modifiable globals
     dummyDef sig = PDef {
