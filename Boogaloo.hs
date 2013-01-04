@@ -34,7 +34,8 @@ releaseDate = fromGregorian 2012 10 25
 main = do
   res <- cmdArgsRun $ mode
   case res of
-    Exec file entry random seed btmax invalid nexec pass fail outMax debug -> executeFromFile file entry random seed btmax invalid nexec pass fail outMax debug
+    Exec file entry bounds unbounded random seed btmax invalid nexec pass fail outMax debug -> 
+      executeFromFile file entry (if unbounded then Nothing else Just bounds) random seed btmax invalid nexec pass fail outMax debug
     args -> testFromFile (file args) (proc_ args) (testMethod args) (verbose args)
 
 {- Command line arguments -}
@@ -43,6 +44,8 @@ data CommandLineArgs
     = Exec { 
         file :: String, 
         entry :: String,
+        bounds :: (Integer, Integer),
+        unbounded :: Bool,
         random_ :: Bool,
         seed :: Maybe Int,
         btmax :: Maybe Int, 
@@ -56,19 +59,23 @@ data CommandLineArgs
     | Test { file :: String, proc_ :: [String], limits :: (Integer, Integer), dlimits :: (Integer, Integer), verbose :: Bool  }
     | RTest { file :: String, proc_ :: [String], limits :: (Integer, Integer), dlimits :: (Integer, Integer), tc_count :: Int, seed :: Maybe Int, verbose :: Bool }
       deriving (Data, Typeable, Show, Eq)
+      
+defaultBounds = (-64, 64)      
 
 execute = Exec {
-  entry     = "Main"    &= help "Program entry point (default: Main)" &= typ "PROCEDURE",
-  file      = ""        &= typFile &= argPos 0,
-  random_   = False     &= help "Make non-deterministic choices randomly (default: false)",
-  seed      = Nothing   &= help "Seed for the random number generator" &= typ "NUM",
-  btmax     = Nothing   &= help "Maximum number of times execution is allowed to backtrack (default: unlimited)",
-  invalid   = False     &= help "Keep unreachable states in the list of outcomes (default: false)",
-  nexec     = True      &= help "Keep non-executable states in the list of outcomes (default: true)",
-  pass      = True      &= help "Keep passing states in the list of outcomes (default: true)",
-  fail_     = True      &= help "Keep failing states in the list of outcomes (default: true)",
-  outmax    = 1         &= help "Maximum number of outcomes to display (default: 1)",
-  debug     = False     &= help "Debug output (default: false)"
+  entry     = "Main"          &= help "Program entry point (default: Main)" &= typ "PROCEDURE",
+  file      = ""              &= typFile &= argPos 0,
+  bounds    = defaultBounds   &= help ("Minimum and maximum integer value to be chosen non-deterministically (default: " ++ show defaultBounds ++ ")") &= typ "NUM, NUM",
+  unbounded = False           &= help "Ignore bounds; any integer value can be chosen (default: false)",
+  random_   = False           &= help "Make non-deterministic choices randomly (default: false)",
+  seed      = Nothing         &= help "Seed for the random number generator" &= typ "NUM",
+  btmax     = Nothing         &= help "Maximum number of times execution is allowed to backtrack (default: unlimited)",
+  invalid   = False           &= help "Keep unreachable states in the list of outcomes (default: false)",
+  nexec     = True            &= help "Keep non-executable states in the list of outcomes (default: true)",
+  pass      = True            &= help "Keep passing states in the list of outcomes (default: true)",
+  fail_     = True            &= help "Keep failing states in the list of outcomes (default: true)",
+  outmax    = 1               &= help "Maximum number of outcomes to display (default: 1)",
+  debug     = False           &= help "Debug output (default: false)"
   } &= auto &= help "Execute program"
       
 test_ = Test {
@@ -125,8 +132,8 @@ testMethod (RTest _ _ limits dlimits tc_count seed _) program context procNames 
 
 -- | Execute procedure entryPoint from file
 -- | and output either errors or the final values of global variables
-executeFromFile :: String -> String -> Bool -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Int -> Bool -> IO ()
-executeFromFile file entryPoint random seed btMax invalid nexec pass fail outMax debug = runOnFile printFinalState file
+executeFromFile :: String -> String -> Maybe (Integer, Integer) -> Bool -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Int -> Bool -> IO ()
+executeFromFile file entryPoint bounds random seed btMax invalid nexec pass fail outMax debug = runOnFile printFinalState file
   where
     printFinalState p context = case M.lookup entryPoint (ctxProcedures context) of
       Nothing -> printError (text "Cannot find program entry point" <+> text entryPoint)
@@ -134,7 +141,7 @@ executeFromFile file entryPoint random seed btMax invalid nexec pass fail outMax
         rGen <- case seed of
           Nothing -> getStdGen
           Just s -> return $ mkStdGen s      
-        let generator = if random then randomGenerator rGen else exhaustiveGenerator
+        let generator = if random then randomGenerator rGen bounds else exhaustiveGenerator bounds
         let outs = (take outMax . filter keep . limitBT) (outcomes p context generator)
         if null outs
           then printAux $ text "No outcomes to display"
@@ -204,5 +211,5 @@ printAux msg = do
 harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
-      let env = head (toList (execStateT (collectDefinitions p) (initEnv context exhaustiveGenerator)))
+      let env = head (toList (execStateT (collectDefinitions p) (initEnv context (exhaustiveGenerator (Just defaultBounds)))))
       print $ (debugMemoryDoc . memory) env           

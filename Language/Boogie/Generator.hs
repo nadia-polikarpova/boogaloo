@@ -21,28 +21,31 @@ defaultGenerator = Generator {
 }
 
 -- | Generates all possible values once, in a predefined order
-exhaustiveGenerator :: Generator Stream
-exhaustiveGenerator = Generator {
+exhaustiveGenerator :: Maybe (Integer, Integer) -> Generator Stream
+exhaustiveGenerator mBounds = Generator {
   genBool = return False `mplus` return True,
-  genInteger = allIntegers,
-  genIndex = \n -> foldr1 mplus (map return [0 .. n - 1])
+  genInteger = case mBounds of
+    Nothing -> allIntegers
+    Just (a, b) -> fromInterval a b,
+  genIndex = \n -> fromList [0 .. n - 1]
 }
+  where
+    allIntegers = fromList [0, -1..] `mplus` fromList [1..]
+    fromInterval a b 
+      | b < a = mzero
+      | a >= 0 || b <= 0 = fromList [a..b]
+      | otherwise = fromList [0, -1..a] `mplus` fromList [1..b]
 
 -- | Generated values randomly; the same value can be generated multiple times
-randomGenerator :: StdGen -> Generator Stream
-randomGenerator rGen = Generator {
-  genBool = foldr1 mplus (map return (randoms rGen)),
-  genInteger = foldr1 mplus (map return (randoms rGen)),
-  genIndex = \n -> foldr1 mplus (map return (randomRs (0, n - 1) rGen))
+randomGenerator :: StdGen -> Maybe (Integer, Integer) -> Generator Stream
+randomGenerator rGen mBounds = Generator {
+  genBool = fromList $ randoms rGen,
+  genInteger = fromList $ case mBounds of
+    Nothing -> randoms rGen
+    Just bounds -> randomRs bounds rGen,
+  genIndex = \n -> fromList $ randomRs (0, n - 1) rGen
 }
 
--- | Infinite stream that produces all values of type Integer in the order [0, 1, -1, 2, -2, ...]
-allIntegers :: Stream Integer
-allIntegers = (return 0) `mplus` genNonZero
-  where 
-    genNonZero = (return 1) `mplus` (do
-      x <- genNonZero
-      if x > 0 
-        then return $ -x  
-        else return $ -x + 1
-      )
+-- | Convert a (possibly infinite) nonempty list into a stream      
+fromList :: [a] -> Stream a
+fromList xs = foldr1 mplus (map return xs)
