@@ -387,7 +387,8 @@ data FailureSource =
 -- | Information about a procedure or function call  
 data StackFrame = StackFrame {
   callPos :: SourcePos, -- ^ Source code position of the call
-  callName :: Id        -- ^ Name of procedure or function
+  callName :: Id,       -- ^ Name of procedure or function
+  callArgs :: [Value]   -- ^ Arguments of the call
 } deriving Eq
 
 type StackTrace = [StackFrame]
@@ -452,7 +453,7 @@ runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err)
       SpecViolation (SpecClause _ _ expr) -> k `elem` freeVars expr
       _ -> False
     
-    stackFrameDoc f = text "in call to" <+> text (callName f) <+> posDoc (callPos f)
+    stackFrameDoc f = text "in call to" <+> text (callName f) <> parens (commaSep (map valueDoc (callArgs f))) <+> posDoc (callPos f)
     posDoc pos
       | pos == noPos = text "from the environment"
       | otherwise = text "at" <+> text (sourceName pos) <+> text "line" <+> int (sourceLine pos)
@@ -683,15 +684,16 @@ evalApplication name args pos = do
       evalMapSelection ((gen . Var) mapName) args pos
     evalDefs (FDef formals guard body : defs) = do
       argsV <- mapM eval args
-      applicable <- evalLocally formals argsV guard `catchError` addStackFrame frame
+      h <- gets envHeap
+      applicable <- evalLocally formals argsV guard `catchError` addStackFrame (frame (map (deepDeref h) argsV))
       case applicable of
-        BoolValue True -> evalLocally formals argsV body `catchError` addStackFrame frame 
+        BoolValue True -> evalLocally formals argsV body `catchError` addStackFrame (frame (map (deepDeref h) argsV))
         BoolValue False -> evalDefs defs
     evalLocally formals actuals expr = do
       sig <- funSig name <$> gets envTypeContext
       executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)
     returnType tc = exprType tc (gen $ Application name args)
-    frame = StackFrame pos name
+    frame argsV = StackFrame pos name argsV
     
 rejectMapIndex pos idx = case idx of
   Reference r -> throwRuntimeFailure (UnsupportedConstruct "map as an index") pos
@@ -831,7 +833,7 @@ execCallBySig sig lhss args pos = do
   defs <- gets $ lookupProcedure (psigName sig)
   (sig', def) <- selectDef sig defs
   lhssExpr <- (\tc -> map (attachPos (ctxPos tc) . Var) lhss) <$> gets envTypeContext
-  retsV <- execProcedure sig' def args lhssExpr `catchError` addStackFrame frame
+  retsV <- execProcedure sig' def args lhssExpr `catchError` addFrame
   zipWithM_ setAnyVar lhss retsV
   where
     selectDef sig [] = return (assumePostconditions sig, dummyDef sig)
@@ -845,8 +847,11 @@ execCallBySig sig lhss args pos = do
         pdefParamsRenamed = False,
         pdefBody = ([], (M.fromList . toBasicBlocks . singletonBlock . gen . Havoc . psigModifies) sig),
         pdefPos = noPos
-      }  
-    frame = StackFrame pos (psigName sig)
+      }
+    addFrame err = do
+      argsV <- mapM eval args
+      h <- gets envHeap
+      addStackFrame (StackFrame pos (psigName sig) (map (deepDeref h) argsV)) err
         
 -- | Execute program consisting of blocks starting from the block labeled label.
 -- Return the location of the exit point.

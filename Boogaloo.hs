@@ -167,7 +167,6 @@ executeFromFile file entryPoint bounds random seed btMax invalid nexec pass fail
       when (n > 0) $ print newline
       printAux $ text "Outcome" <+> integer n <+> newline
       printOutcome out      
-    goodEntryPoint sig = null (psigTypeVars sig) && null (psigArgTypes sig) && null (psigRetTypes sig)
 
 -- | Test procedures procNames from file with a testMethod
 -- | and output the test outcomes
