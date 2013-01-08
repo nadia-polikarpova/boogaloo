@@ -168,8 +168,8 @@ data Outcome = Pass | Fail RuntimeFailure | Invalid RuntimeFailure
 -- | Pretty-printed outcome  
 outcomeDoc :: Outcome -> Doc
 outcomeDoc Pass = text "passed"
-outcomeDoc (Fail err) = text "failed: " <+> runtimeFailureDoc err
-outcomeDoc (Invalid err) = text "invalid: " <+> runtimeFailureDoc err
+outcomeDoc (Fail err) = text "failed: " <+> runtimeFailureDoc False err
+outcomeDoc (Invalid err) = text "invalid: " <+> runtimeFailureDoc False err
 
 instance Show Outcome where show o = show (outcomeDoc o)
 

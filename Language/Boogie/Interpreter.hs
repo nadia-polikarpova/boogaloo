@@ -18,8 +18,7 @@ module Language.Boogie.Interpreter (
   setAnyVar,
   Memory,
   memory,
-  debugMemoryDoc,
-  userMemoryDoc,
+  memoryDoc,
   -- * Executions
   Execution,
   SafeExecution,
@@ -272,6 +271,7 @@ functionsDoc funcs = vsep $ map funcDoc (M.toList funcs)
       
 -- | View of the environment that contains information relevant to the user
 data Memory = Memory Store (Heap Value)
+  deriving Eq
 
 -- | Memory state of an environment
 memory :: Environment m -> Memory
@@ -282,20 +282,20 @@ memory env = Memory (envLocals env `M.union` envGlobals env `M.union` M.mapKeys 
 -- | Empty memory
 emptyMemory = Memory emptyStore emptyHeap
 
--- | 'debugMemoryDoc' @mem@ : implementation-specific representation of @mem@
-debugMemoryDoc :: Memory -> Doc
-debugMemoryDoc (Memory store heap) = storeDoc store $+$ heapDoc heap
-
--- | 'userMemoryDoc' @mem isRelevant@ : representation of @mem@ on the abstraction level of the Boogie semantics,
--- restricted to variables that satisfy @isRelevant@
-userMemoryDoc :: Memory -> (Id -> Bool) -> Doc
-userMemoryDoc (Memory store heap) isRelevant = storeDoc $ flatten filtered
+-- | 'memoryDoc' @debug isRelevant mem@ : representation of @mem@, which is either on the abstraction level of the Boogie semantics,
+-- restricted to variables that satisfy @isRelevant@,
+-- or implementation-specific    
+memoryDoc :: Bool -> (Id -> Bool) -> Memory -> Doc
+memoryDoc debug isRelevant (Memory store heap) = if debug
+  then storeDoc filtered $+$ heapDoc heap
+  else storeDoc $ flatten filtered
   where
-    filtered = M.filterWithKey (\k _ -> not (isAuxName k) && isRelevant k) store
-    flatten s = M.map (deepDeref heap) s
+    filter k _ = (debug || not (isAuxName k)) && isRelevant k
+    filtered = M.filterWithKey filter store
+    flatten s = M.map (deepDeref heap) s  
     
 instance Show Memory where
-  show mem = show $ debugMemoryDoc mem
+  show mem = show $ memoryDoc True (const True) mem
             
 {- Executions -}
 
@@ -386,9 +386,9 @@ data FailureSource =
 
 -- | Information about a procedure or function call  
 data StackFrame = StackFrame {
-  callPos :: SourcePos, -- ^ Source code position of the call
-  callName :: Id,       -- ^ Name of procedure or function
-  callArgs :: [Value]   -- ^ Arguments of the call
+  callPos :: SourcePos,    -- ^ Source code position of the call
+  callName :: Id,          -- ^ Name of procedure or function
+  callerMemory :: Memory   -- ^ Memory state of the caller at the time of the call
 } deriving Eq
 
 type StackTrace = [StackFrame]
@@ -428,8 +428,9 @@ instance Error RuntimeFailure where
   strMsg s = RuntimeFailure (UnsupportedConstruct s) noPos emptyMemory []
   
 -- | Pretty-printed run-time failure
-runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) $+$
-  userMemoryDoc (rtfMemory err) isRelevant $+$
+runtimeFailureDoc debug err = let memDoc = memoryDoc debug isRelevant (rtfMemory err) in
+  failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) <+> 
+  (if isEmpty memDoc then empty else text "with") $+$ nest 2 memDoc $+$
   vsep (map stackFrameDoc (reverse (rtfTrace err)))
   where
     failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
@@ -453,13 +454,13 @@ runtimeFailureDoc err = failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err)
       SpecViolation (SpecClause _ _ expr) -> k `elem` freeVars expr
       _ -> False
     
-    stackFrameDoc f = text "in call to" <+> text (callName f) <> parens (commaSep (map valueDoc (callArgs f))) <+> posDoc (callPos f)
+    stackFrameDoc f = text "in call to" <+> text (callName f) <+> posDoc (callPos f)
     posDoc pos
       | pos == noPos = text "from the environment"
       | otherwise = text "at" <+> text (sourceName pos) <+> text "line" <+> int (sourceLine pos)
 
 instance Show RuntimeFailure where
-  show err = show (runtimeFailureDoc err)
+  show err = show (runtimeFailureDoc True err)
   
 -- | Internal error codes 
 data InternalCode = NotLinear
@@ -684,16 +685,18 @@ evalApplication name args pos = do
       evalMapSelection ((gen . Var) mapName) args pos
     evalDefs (FDef formals guard body : defs) = do
       argsV <- mapM eval args
-      h <- gets envHeap
-      applicable <- evalLocally formals argsV guard `catchError` addStackFrame (frame (map (deepDeref h) argsV))
+      applicable <- evalLocally formals argsV guard `catchError` addFrame
       case applicable of
-        BoolValue True -> evalLocally formals argsV body `catchError` addStackFrame (frame (map (deepDeref h) argsV))
+        BoolValue True -> evalLocally formals argsV body `catchError` addFrame
         BoolValue False -> evalDefs defs
     evalLocally formals actuals expr = do
       sig <- funSig name <$> gets envTypeContext
       executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)
     returnType tc = exprType tc (gen $ Application name args)
-    frame argsV = StackFrame pos name argsV
+    addFrame err = do
+      mem <- gets memory
+      addStackFrame (StackFrame pos name mem) err
+
     
 rejectMapIndex pos idx = case idx of
   Reference r -> throwRuntimeFailure (UnsupportedConstruct "map as an index") pos
@@ -849,9 +852,8 @@ execCallBySig sig lhss args pos = do
         pdefPos = noPos
       }
     addFrame err = do
-      argsV <- mapM eval args
-      h <- gets envHeap
-      addStackFrame (StackFrame pos (psigName sig) (map (deepDeref h) argsV)) err
+      mem <- gets memory
+      addStackFrame (StackFrame pos (psigName sig) mem) err
         
 -- | Execute program consisting of blocks starting from the block labeled label.
 -- Return the location of the exit point.

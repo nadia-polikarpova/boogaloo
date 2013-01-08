@@ -159,10 +159,8 @@ executeFromFile file entryPoint bounds random seed btMax invalid nexec pass fail
       (if pass then True else not (isPass out)) &&
       (if fail then True else not (isFail out))
     printOutcome out = case out of
-      Left err -> printError err
-      Right mem -> if debug
-        then print $ debugMemoryDoc mem
-        else print $ userMemoryDoc mem (const True)
+      Left err -> printError $ runtimeFailureDoc debug err
+      Right mem -> print $ memoryDoc debug (const True) mem
     printOne n out    = do
       when (n > 0) $ print newline
       printAux $ text "Outcome" <+> integer n <+> newline
@@ -211,4 +209,4 @@ harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
       let env = head (toList (execStateT (collectDefinitions p) (initEnv context (exhaustiveGenerator (Just defaultBounds)))))
-      print $ (debugMemoryDoc . memory) env           
+      print $ ((memoryDoc True (const True)) . memory) env           

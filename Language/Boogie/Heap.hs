@@ -38,7 +38,7 @@ data Heap a = Heap {
   hGarbage :: Set Ref,              -- | Set of unused references (exactly those references for which snd hValCounts = 0, stored for efficiency)
   hFree :: Set Ref,                 -- | Set of references that have been removed from the heap and are ready to be reused (stored for efficiency)
   hFresh :: Ref                     -- | Smallest reference that has never been used
-}
+} deriving Eq
 
 {- Initialization -}
 
