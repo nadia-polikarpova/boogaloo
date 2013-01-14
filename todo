@@ -22,6 +22,7 @@
   -> Bounded checking of quantification
   -? Check function and map constraints lazily
   -> User-defined types
+  - Lazy initialization of arguments (in execLocally only copy those args that are already initialize, at the end propage the initizlization back with assume)
   - Refactor executeLocally, execCall and execProcedure
   - Lambda expressions
   - Turn source positions into spans; use the end of the span to report postcondition violations  

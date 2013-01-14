@@ -33,10 +33,13 @@ module Language.Boogie.Interpreter (
   FailureKind (..),
   failureKind,
   -- * Execution outcomes
+  TestCase (..),
   isPass,
   isInvalid,
   isNonexecutable,
   isFail,
+  testCaseSummary,  
+  finalStateDoc,
   -- * Executing parts of programs
   eval,
   exec,
@@ -76,36 +79,36 @@ import Text.PrettyPrint
 -- Execute program @p@ /non-deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return an infinite list of possible outcomes (each either runtime failure or the final variable store).
 -- Whenever a value is unspecified, all values of the required type are tried exhaustively.
-executeProgram :: Program -> Context -> Generator Stream -> Id -> [Either RuntimeFailure Memory]
+executeProgram :: Program -> Context -> Generator Stream -> Id -> [TestCase]
 executeProgram p tc gen entryPoint = toList $ executeProgramGeneric p tc gen entryPoint
 
 -- | 'executeProgramDet' @p tc entryPoint@ :
 -- Execute program @p@ /deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return a single outcome.
 -- Whenever a value is unspecified, a default value of the required type is used.
-executeProgramDet :: Program -> Context -> Id -> Either RuntimeFailure Memory
+executeProgramDet :: Program -> Context -> Id -> TestCase
 executeProgramDet p tc entryPoint = runIdentity $ executeProgramGeneric p tc defaultGenerator entryPoint
       
 -- | 'executeProgramGeneric' @p tc genValue genIndex entryPoint@ :
 -- Execute program @p@ in type context @tc@ with input generator @generator@, starting from procedure @entryPoint@,
 -- and return the outcome(s) embedded into the generator's monad.
-executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> Generator m -> Id -> m (Either RuntimeFailure Memory)
+executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> Generator m -> Id -> m (TestCase)
 executeProgramGeneric p tc generator entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc generator)
   where
     programExecution = do
       execUnsafely $ collectDefinitions p
-      execRootCall entryPoint
-    execRootCall name = do
-      sig <- procSig name <$> gets envTypeContext
+      execRootCall
+    sig = procSig entryPoint tc
+    execRootCall = do
       let params = psigParams sig
       let defaultBinding = M.fromList $ zip (psigTypeVars sig) (repeat defaultType)
       let paramTypes = map (typeSubst defaultBinding) (map itwType params)
       modify $ modifyTypeContext (setLocals (M.fromList $ zip (map itwId params) paramTypes))
       execCallBySig (assumePreconditions sig) (map itwId (psigRets sig)) (map (gen . Var . itwId) (psigArgs sig)) noPos
     defaultType = BoolType      
-    result (Left err, _) = Left err
-    result (_, env)      = Right $ memory env
-    
+    result (Left err, env) = TestCase sig (memory env) (Just err)
+    result (_, env)      = TestCase sig (memory env) Nothing
+        
 {- Values -}
 
 -- | Run-time value
@@ -158,7 +161,11 @@ deepDeref h v = deepDeref' v
         Just r -> unValue $ deepDeref' (Reference r)
       override = (M.map deepDeref' . M.mapKeys (map deepDeref')) m -- Here we do not assume that keys contain no references, as this is used for error reporting
       in MapValue Nothing $ M.union override base
-    deepDeref' v = v  
+    deepDeref' v = v
+
+-- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@
+userStore :: Heap Value -> Store -> Store
+userStore heap store = M.map (deepDeref heap) store
 
 -- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
 objectEq :: Heap Value -> Value -> Value -> Maybe Bool
@@ -193,19 +200,17 @@ mayEq h v1 v2 = not $ mustNeq h v1 v2
 mayNeq h v1 v2 = not $ mustEq h v1 v2
 
 -- | 'functionCacheName' @name@ : name of a constant that stores cached applications of function @name@
-functionCacheName name = name ++ (nonIdChar : "cache")
-
--- | 'isAuxName' @name@ : is @name@ and auxiliary variable/constant introduced by the inetrpreter?
-isAuxName name = nonIdChar `elem` name
+-- (must be distinct from all global names)
+functionCacheName name = "function " ++ name
   
 -- | Execution state
 data Environment m = Environment
   {
-    -- | Store
+      -- | Dynamic information 
     envLocals :: Store,                          -- ^ Local variable store
     envGlobals :: Store,                         -- ^ Global variable store
     envOld :: Store,                             -- ^ Old global variable store (in two-state contexts)
-    -- | Heap (used for lazy initialization of maps)
+    envConstants :: Store,                       -- ^ Constant and function cache
     envHeap :: Heap Value,                       -- ^ Heap
     -- | Static information
     envConstDefs :: Map Id Expression,           -- ^ Constant names to definitions
@@ -224,6 +229,7 @@ initEnv tc gen = Environment
     envLocals = emptyStore,
     envGlobals = emptyStore,
     envOld = emptyStore,
+    envConstants = emptyStore,
     envHeap = emptyHeap,
     envConstDefs = M.empty,
     envConstConstraints = M.empty,
@@ -253,13 +259,14 @@ lookupProcedure id env = case M.lookup id (envProcedures env) of
 setGlobal id val env = env { envGlobals = M.insert id val (envGlobals env) }
 setLocal id val env = env { envLocals = M.insert id val (envLocals env) }
 setOld id val env = env { envOld = M.insert id val (envOld env) }    
+setConst id val env = env { envConstants = M.insert id val (envConstants env) }
 addConstantDef id def env = env { envConstDefs = M.insert id def (envConstDefs env) }
 addConstantConstraint id expr env = env { envConstConstraints = M.insert id (lookupConstConstraints id env ++ [expr]) (envConstConstraints env) }
 addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction id env ++ defs) (envFunctions env) }
 addProcedureDef id def env = env { envProcedures = M.insert id (lookupProcedure id env ++ [def]) (envProcedures env) } 
 modifyTypeContext f env = env { envTypeContext = f (envTypeContext env) }
 withHeap f env = let (res, h') = f (envHeap env) in (res, env { envHeap = h' })  
-withHeap_ f env = env { envHeap = f (envHeap env) }  
+withHeap_ f env = env { envHeap = f (envHeap env) }
 
 -- | Pretty-printed set of function definitions
 functionsDoc :: Map Id [FDef] -> Doc  
@@ -269,33 +276,42 @@ functionsDoc funcs = vsep $ map funcDoc (M.toList funcs)
     funcsDefDoc id (FDef formals guard body) = exprDoc guard <+> text "->" <+> 
       text id <> parens (commaSep (map text formals)) <+> text "=" <+> exprDoc body
       
--- | View of the environment that contains information relevant to the user
-data Memory = Memory Store (Heap Value)
-  deriving Eq
-
--- | Memory state of an environment
-memory :: Environment m -> Memory
-memory env = Memory (envLocals env `M.union` envGlobals env `M.union` M.mapKeys oldName (envOld env)) (envHeap env)
-  where
-    oldName var = var ++ (nonIdChar : "old")
+-- | Dynamic part of the environment
+data Memory = Memory {
+  memLocals :: Store,                          -- ^ Local variable store
+  memGlobals :: Store,                         -- ^ Global variable store
+  memOld :: Store,                             -- ^ Old global variable store (in two-state contexts)
+  memConstants :: Store,                       -- ^ Constant and function cache
+  memHeap :: Heap Value                       -- ^ Heap
+} deriving Eq
 
 -- | Empty memory
-emptyMemory = Memory emptyStore emptyHeap
+emptyMemory = Memory {
+  memLocals = emptyStore,
+  memGlobals = emptyStore,
+  memOld = emptyStore,
+  memConstants = emptyStore,
+  memHeap = emptyHeap
+}
 
--- | 'memoryDoc' @debug isRelevant mem@ : representation of @mem@, which is either on the abstraction level of the Boogie semantics,
--- restricted to variables that satisfy @isRelevant@,
--- or implementation-specific    
-memoryDoc :: Bool -> (Id -> Bool) -> Memory -> Doc
-memoryDoc debug isRelevant (Memory store heap) = if debug
-  then storeDoc filtered $+$ heapDoc heap
-  else storeDoc $ flatten filtered
+-- | Visible values of all identifiers in a memory (locals shadow globals) 
+visibleVariables :: Memory -> Store
+visibleVariables mem = memLocals mem `M.union` memGlobals mem `M.union` memConstants mem
+
+-- | Memory state of an environment
+memory env = Memory (envLocals env) (envGlobals env) (envOld env) (envConstants env) (envHeap env)
+
+-- | 'memoryDoc' @debug mem@ : either user or debug representation of @mem@, depending on @debug@
+memoryDoc :: Bool -> Memory -> Doc
+memoryDoc debug mem = vsep $ [text "Locals:" <+> storeDoc (storeRepr $ memLocals mem),
+  text "Globals:" <+> storeDoc (storeRepr $ memGlobals mem `M.union` memConstants mem),
+  text "Old values:" <+> storeDoc (storeRepr $ memOld mem)]
+  ++ if debug then [text "Heap:" <+> heapDoc (memHeap mem)] else []
   where
-    filter k _ = (debug || not (isAuxName k)) && isRelevant k
-    filtered = M.filterWithKey filter store
-    flatten s = M.map (deepDeref heap) s  
+    storeRepr store = if debug then store else userStore (memHeap mem) store
     
 instance Show Memory where
-  show mem = show $ memoryDoc True (const True) mem
+  show mem = show $ memoryDoc True mem      
             
 {- Executions -}
 
@@ -387,8 +403,7 @@ data FailureSource =
 -- | Information about a procedure or function call  
 data StackFrame = StackFrame {
   callPos :: SourcePos,    -- ^ Source code position of the call
-  callName :: Id,          -- ^ Name of procedure or function
-  callerMemory :: Memory   -- ^ Memory state of the caller at the time of the call
+  callName :: Id           -- ^ Name of procedure or function
 } deriving Eq
 
 type StackTrace = [StackFrame]
@@ -428,9 +443,11 @@ instance Error RuntimeFailure where
   strMsg s = RuntimeFailure (UnsupportedConstruct s) noPos emptyMemory []
   
 -- | Pretty-printed run-time failure
-runtimeFailureDoc debug err = let memDoc = memoryDoc debug isRelevant (rtfMemory err) in
-  failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) <+> 
-  (if isEmpty memDoc then empty else text "with") $+$ nest 2 memDoc $+$
+runtimeFailureDoc debug err = 
+  let store = (if debug then id else userStore (memHeap (rtfMemory err))) (M.filterWithKey (\k _ -> isRelevant k) (visibleVariables (rtfMemory err)))
+      sDoc = storeDoc store 
+  in failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) <+> 
+  (if isEmpty sDoc then empty else text "with") $+$ nest 2 sDoc $+$
   vsep (map stackFrameDoc (reverse (rtfTrace err)))
   where
     failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
@@ -468,28 +485,72 @@ data InternalCode = NotLinear
 
 throwInternalException code = throwRuntimeFailure (InternalException code) noPos
 
-{- Execution outcomes -}
+{- Execution results -}
 
--- | 'isPass' @outcome@: Does @outcome@ belong to a passing execution? (Denotes a valid final state)
-isPass :: Either RuntimeFailure Memory -> Bool
-isPass (Right _) =  True
+instance Eq RuntimeFailure where
+  -- Runtime errors are considered equivalent if the same property failed at the same program location 
+  f == f'   =  rtfSource f == rtfSource f' && rtfPos f == rtfPos f' 
+    
+-- | Description of an execution
+data TestCase = TestCase {
+  tcProcedure :: PSig,              -- ^ Root procedure (entry point) of the execution
+  tcMemory :: Memory,               -- ^ Final memory state (at the exit from the root procedure) 
+  tcFailure :: Maybe RuntimeFailure -- ^ Failure the execution eded with, or Nothing if the execution ended in a valid state
+}
+
+-- | 'isPass' @tc@: Does @tc@ end in a valid state?
+isPass :: TestCase -> Bool
+isPass (TestCase _ _ Nothing) =  True
 isPass _ =          False
 
--- | 'isInvalid' @outcome@: Does @outcome@ belong to an invalid execution? (Denotes an unreachable state)
-isInvalid :: Either RuntimeFailure Memory -> Bool 
-isInvalid (Left err)
+-- | 'isInvalid' @tc@: Does @tc@ and in an unreachable state?
+isInvalid :: TestCase -> Bool 
+isInvalid (TestCase _ _ (Just err))
   | failureKind err == Unreachable = True
 isInvalid _                        = False
 
--- | 'isNonexecutable' @outcome@: Does @outcome@ belong to an execution that cannot be carried out completely by the interpreter? (Denotes a non-executable state)
-isNonexecutable :: Either RuntimeFailure Memory -> Bool 
-isNonexecutable (Left err)
+-- | 'isNonexecutable' @tc@: Does @tc@ end in a non-executable state?
+isNonexecutable :: TestCase -> Bool 
+isNonexecutable (TestCase _ _ (Just err))
   | failureKind err == Nonexecutable  = True
 isNonexecutable _                     = False
 
--- | 'isFail' @outcome@: Does @outcome@ belong to a failing execution? (Denotes an error state)
-isFail :: Either RuntimeFailure Memory -> Bool
-isFail outcome = not (isPass outcome || isInvalid outcome || isNonexecutable outcome)
+-- | 'isFail' @tc@: Does @tc@ end in an error state?
+isFail :: TestCase -> Bool
+isFail tc = not (isPass tc || isInvalid tc || isNonexecutable tc)
+
+-- | 'testCaseSummary' @debug tc@ : Summary of @tc@'s inputs and outcome,
+-- displayed in user or debug format depending on 'debug'
+testCaseSummary :: Bool -> TestCase -> Doc
+testCaseSummary debug tc@(TestCase sig mem mErr) = text (psigName sig) <> 
+  parens (commaSep (map (inDoc . itwId) (psigArgs sig))) <>
+  parens (commaSep (map globDoc (M.toList globalInputsRepr))) <+>
+  outcomeDoc tc
+  where
+    storeRepr store = if debug then store else userStore (memHeap mem) store
+    removeEmptyMaps store = M.filter (\val -> val /= MapValue Nothing M.empty) store
+    localsRepr = storeRepr $ memLocals mem
+    globalInputsRepr = removeEmptyMaps . storeRepr $ memOld mem `M.union` memConstants mem
+    inDoc name = valueDoc $ localsRepr ! name    
+    globDoc (name, val) = text name <+> text "=" <+> valueDoc val
+    outcomeDoc tc 
+      | isPass tc = text "passed"
+      | isInvalid tc = text "invalid"
+      | isNonexecutable tc = text "non-executable"
+      | otherwise = text "failed"
+      
+-- | 'finalStateDoc' @debug tc@ : outputs of @tc@, 
+-- displayed in user or debug format depending on 'debug' 
+finalStateDoc :: Bool -> TestCase -> Doc
+finalStateDoc debug tc@(TestCase sig mem mErr) = vsep $
+    (if M.null outsRepr then [] else [text "Outs:" <+> storeDoc outsRepr]) ++
+    (if M.null globalsRepr then [] else [text "Globals:" <+> storeDoc globalsRepr]) ++ 
+    (if debug then [text "Heap:" <+> heapDoc (memHeap mem)] else [])
+  where
+    storeRepr store = if debug then store else userStore (memHeap mem) store
+    outNames = map itwId (psigRets sig)
+    outsRepr = storeRepr $ M.filterWithKey (\k _ -> k `elem` outNames) (memLocals mem)
+    globalsRepr = storeRepr $ memGlobals mem
 
 {- Basic executions -}      
 
@@ -650,7 +711,7 @@ evalVar id pos = do
         let setters = if inOld then [setGlobal] else [setGlobal, setOld]
         lookupStore envGlobals (init (generateValue t pos) setters checkWhere)
       Nothing -> case M.lookup id (ctxConstants tc) of
-        Just t -> lookupStore envGlobals (initConst t)
+        Just t -> lookupStore envConstants (initConst t)
         Nothing -> (internalError . show) (text "Encountered unknown identifier during execution:" <+> text id) 
   where
     -- | Initialize @id@ with a value geberated by @gen@, and then perform @check@
@@ -669,8 +730,8 @@ evalVar id pos = do
     initConst t = do
       constants <- gets envConstDefs
       case M.lookup id constants of
-        Just e -> init (eval e) [setGlobal] checkConstConstraints
-        Nothing -> init (generateValue t pos) [setGlobal] checkConstConstraints
+        Just e -> init (eval e) [] checkConstConstraints
+        Nothing -> init (generateValue t pos) [setConst] checkConstConstraints
   
 evalApplication name args pos = do
   defs <- gets (lookupFunction name)  
@@ -693,9 +754,7 @@ evalApplication name args pos = do
       sig <- funSig name <$> gets envTypeContext
       executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)
     returnType tc = exprType tc (gen $ Application name args)
-    addFrame err = do
-      mem <- gets memory
-      addStackFrame (StackFrame pos name mem) err
+    addFrame err = addStackFrame (StackFrame pos name) err
 
     
 rejectMapIndex pos idx = case idx of
@@ -851,9 +910,7 @@ execCallBySig sig lhss args pos = do
         pdefBody = ([], (M.fromList . toBasicBlocks . singletonBlock . gen . Havoc . psigModifies) sig),
         pdefPos = noPos
       }
-    addFrame err = do
-      mem <- gets memory
-      addStackFrame (StackFrame pos (psigName sig) mem) err
+    addFrame err = addStackFrame (StackFrame pos (psigName sig)) err
         
 -- | Execute program consisting of blocks starting from the block labeled label.
 -- Return the location of the exit point.
@@ -887,15 +944,14 @@ execProcedure sig def args lhss = let
     then pdefPos def  -- Fall off the procedure body: take the procedure definition location
     else pos          -- A return statement inside the body
   execBody = do
-    checkPreconditions sig def
-    env <- saveOld
+    checkPreconditions sig def    
     pos <- exitPoint <$> execBlock blocks startLabel
-    checkPostonditions sig def pos
-    restoreOld env
+    checkPostonditions sig def pos    
     mapM (eval . attachPos (pdefPos def) . Var) outs
   in do
     argsV <- mapM eval args
-    executeLocally (enterProcedure sig def args lhss) (pdefLocals def) ins argsV execBody
+    env <- saveOld
+    executeLocally (enterProcedure sig def args lhss) (pdefLocals def) ins argsV execBody `finally` restoreOld env
     
 {- Specs -}
 
