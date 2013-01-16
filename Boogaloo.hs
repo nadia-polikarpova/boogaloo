@@ -9,6 +9,7 @@ import qualified Language.Boogie.Parser as Parser (program)
 import Language.Boogie.TypeChecker
 import Language.Boogie.PrettyPrinter
 import Language.Boogie.Heap
+import Language.Boogie.Environment
 import Language.Boogie.Interpreter
 -- import Language.Boogie.Tester
 import Language.Boogie.Generator
@@ -23,6 +24,7 @@ import qualified Data.Map as M
 import Control.Monad.State
 import Control.Monad.Stream
 import Control.Applicative
+import Control.Lens hiding (Context, at)
 import Text.PrettyPrint hiding (mode)
 import Text.ParserCombinators.Parsec (parse, parseFromFile)
 
@@ -213,4 +215,4 @@ harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
       let env = head (toList (execStateT (collectDefinitions p) (initEnv context (exhaustiveGenerator (Just defaultBounds)))))
-      print $ ((memoryDoc True) . memory) env           
+      print $ memoryDoc True (env^.envMemory)

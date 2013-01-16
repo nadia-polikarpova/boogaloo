@@ -11,6 +11,7 @@
 
 - Type checker
   - Data type for type errors (will be easier to evaluate test results)
+  - Use lenses for Context?
   -? Annotate AST with expr types
   
 - Interpreter

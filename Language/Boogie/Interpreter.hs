@@ -6,30 +6,13 @@ module Language.Boogie.Interpreter (
   executeProgramDet,
   executeProgram,
   executeProgramGeneric,
-  -- * State
-  Value (..),
-  Store,
-  emptyStore,
-  Environment (..),
-  initEnv,
-  lookupFunction,
-  lookupProcedure,
-  modifyTypeContext,
-  setAnyVar,
-  Memory,
-  memory,
-  memoryDoc,
-  -- * Executions
-  Execution,
-  SafeExecution,
-  execSafely,
-  execUnsafely,
   -- * Run-time failures
   FailureSource (..),
-  InternalCode,
+  -- InternalCode,
   StackFrame (..),
   StackTrace,
   RuntimeFailure (..),  
+  runtimeFailureDoc,
   FailureKind (..),
   failureKind,
   -- * Execution outcomes
@@ -44,14 +27,10 @@ module Language.Boogie.Interpreter (
   eval,
   exec,
   execProcedure,
-  collectDefinitions,
-  -- * Pretty-printing
-  valueDoc,
-  storeDoc,
-  functionsDoc,
-  runtimeFailureDoc
+  collectDefinitions
   ) where
 
+import Language.Boogie.Environment  
 import Language.Boogie.AST
 import Language.Boogie.Util
 import Language.Boogie.Heap
@@ -71,6 +50,7 @@ import Control.Applicative hiding (empty)
 import Control.Monad.State hiding (join)
 import Control.Monad.Identity hiding (join)
 import Control.Monad.Stream
+import Control.Lens hiding (Context, at)
 import Text.PrettyPrint
 
 {- Interface -}
@@ -103,215 +83,11 @@ executeProgramGeneric p tc generator entryPoint = result <$> runStateT (runError
       let params = psigParams sig
       let defaultBinding = M.fromList $ zip (psigTypeVars sig) (repeat defaultType)
       let paramTypes = map (typeSubst defaultBinding) (map itwType params)
-      modify $ modifyTypeContext (setLocals (M.fromList $ zip (map itwId params) paramTypes))
+      envTypeContext %= setLocals (M.fromList $ zip (map itwId params) paramTypes)
       execCallBySig (assumePreconditions sig) (map itwId (psigRets sig)) (map (gen . Var . itwId) (psigArgs sig)) noPos
     defaultType = BoolType      
-    result (Left err, env) = TestCase sig (memory env) (Just err)
-    result (_, env)      = TestCase sig (memory env) Nothing
-        
-{- Values -}
-
--- | Run-time value
-data Value = IntValue Integer |               -- ^ Integer value
-  BoolValue Bool |                            -- ^ Boolean value
-  CustomValue Integer |                       -- ^ Value of a user-defined type (values with the same code are considered equal)
-  MapValue (Maybe Ref) (Map [Value] Value) |  -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
-  Reference Ref                               -- ^ Reference to a map stored in the heap
-  deriving (Eq, Ord)
-  
-vnot (BoolValue b) = BoolValue (not b)  
-
--- | Pretty-printed value
-valueDoc :: Value -> Doc
-valueDoc (IntValue n) = integer n
-valueDoc (BoolValue False) = text "false"
-valueDoc (BoolValue True) = text "true"
-valueDoc (MapValue mR m) = optionMaybe mR refDoc <> 
-  brackets (commaSep (map itemDoc (M.toList m)))
-  where itemDoc (keys, v) = commaSep (map valueDoc keys) <+> text "->" <+>  valueDoc v
-valueDoc (CustomValue n) = text "custom_" <> integer n
-valueDoc (Reference r) = refDoc r
-
-instance Show Value where
-  show v = show (valueDoc v)
-
-{- Execution state -}  
-
--- | Store: stores variable values at runtime 
-type Store = Map Id Value
-
--- | A store with no variables
-emptyStore :: Store
-emptyStore = M.empty
-
--- | Pretty-printed store
-storeDoc :: Store -> Doc
-storeDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (id, val) = text id <+> text "=" <+> valueDoc val
-  
--- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
-deepDeref :: Heap Value -> Value -> Value
-deepDeref h v = deepDeref' v
-  where
-    deepDeref' (Reference r) = deepDeref' (h `at` r)
-    deepDeref' (MapValue mR m) = let
-      unValue (MapValue Nothing m) = m
-      base = case mR of
-        Nothing -> M.empty
-        Just r -> unValue $ deepDeref' (Reference r)
-      override = (M.map deepDeref' . M.mapKeys (map deepDeref')) m -- Here we do not assume that keys contain no references, as this is used for error reporting
-      in MapValue Nothing $ M.union override base
-    deepDeref' v = v
-
--- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@
-userStore :: Heap Value -> Store -> Store
-userStore heap store = M.map (deepDeref heap) store
-
--- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
-objectEq :: Heap Value -> Value -> Value -> Maybe Bool
-objectEq h (Reference r1) (Reference r2) = if r1 == r2
-  then Just True -- Equal references point to equal maps
-  else let 
-    (br1, over1) = baseOverride r1
-    (br2, over2) = baseOverride r2
-    in if mustDisagree h over1 over2
-      then Just False -- Must disagree on some indexes, cannot be equal  
-      else if br1 == br2 && mustAgree h over1 over2
-        then Just True -- Derived from the same base map and must agree on all overridden indexes, must be equal
-        else Nothing -- Derived from different base maps or may disagree on some overridden indexes, no conclusion        
-  where
-    baseOverride r = let (MapValue mBase m) = h `at` r in
-      case mBase of
-        Nothing -> (r, M.empty)
-        Just base -> (base, m)
-    mustDisagree h m1 m2 = M.foldl (||) False $ (M.intersectionWith (mustNeq h) m1 m2)
-    mustAgree h m1 m2 = let common = M.intersectionWith (mustEq h) m1 m2 in
-      M.size m1 == M.size common && M.size m2 == M.size common && M.foldl (&&) True common
-objectEq _ (MapValue base1 m1) (MapValue base2 m2) = internalError "Attempt to compare two maps"
-objectEq _ v1 v2 = Just $ v1 == v2
-
-mustEq h v1 v2 = case objectEq h v1 v2 of
-  Just True -> True
-  _ -> False  
-mustNeq h v1 v2 = case objectEq h v1 v2 of
-  Just False -> True
-  _ -> False  
-mayEq h v1 v2 = not $ mustNeq h v1 v2
-mayNeq h v1 v2 = not $ mustEq h v1 v2
-
--- | 'functionCacheName' @name@ : name of a constant that stores cached applications of function @name@
--- (must be distinct from all global names)
-functionCacheName name = "function " ++ name
-  
--- | Execution state
-data Environment m = Environment
-  {
-      -- | Dynamic information 
-    envLocals :: Store,                          -- ^ Local variable store
-    envGlobals :: Store,                         -- ^ Global variable store
-    envOld :: Store,                             -- ^ Old global variable store (in two-state contexts)
-    envConstants :: Store,                       -- ^ Constant and function cache
-    envHeap :: Heap Value,                       -- ^ Heap
-    -- | Static information
-    envConstDefs :: Map Id Expression,           -- ^ Constant names to definitions
-    envConstConstraints :: Map Id [Expression],  -- ^ Constant names to constraints
-    envFunctions :: Map Id [FDef],               -- ^ Function names to definitions
-    envProcedures :: Map Id [PDef],              -- ^ Procedure names to definitions
-    envTypeContext :: Context,                   -- ^ Type context
-    envGenerator :: Generator m,                 -- ^ Input generator (used for non-deterministic choices)
-    -- | Scope information
-    envInOld :: Bool                             -- ^ Is an old expression currently being evaluated?
-  }
-   
--- | 'initEnv' @tc gen@: Initial environment in a type context @tc@ with a value generator @gen@  
-initEnv tc gen = Environment
-  {
-    envLocals = emptyStore,
-    envGlobals = emptyStore,
-    envOld = emptyStore,
-    envConstants = emptyStore,
-    envHeap = emptyHeap,
-    envConstDefs = M.empty,
-    envConstConstraints = M.empty,
-    envFunctions = M.empty,
-    envProcedures = M.empty,
-    envTypeContext = tc,
-    envGenerator = gen,
-    envInOld = False
-  }
-
--- | 'lookupConstConstraints' @id env@ : All constraints of constant @id@ in @env@
-lookupConstConstraints id env = case M.lookup id (envConstConstraints env) of
-  Nothing -> []
-  Just cs -> cs
-  
--- | 'lookupFunction' @id env@ : All definitions of function @id@ in @env@
-lookupFunction id env = case M.lookup id (envFunctions env) of
-  Nothing -> []
-  Just defs -> defs    
-  
--- | 'lookupProcedure' @id env@ : All definitions of procedure @id@ in @env@  
-lookupProcedure id env = case M.lookup id (envProcedures env) of
-  Nothing -> []
-  Just defs -> defs 
-
--- Environment modifications  
-setGlobal id val env = env { envGlobals = M.insert id val (envGlobals env) }
-setLocal id val env = env { envLocals = M.insert id val (envLocals env) }
-setOld id val env = env { envOld = M.insert id val (envOld env) }    
-setConst id val env = env { envConstants = M.insert id val (envConstants env) }
-addConstantDef id def env = env { envConstDefs = M.insert id def (envConstDefs env) }
-addConstantConstraint id expr env = env { envConstConstraints = M.insert id (lookupConstConstraints id env ++ [expr]) (envConstConstraints env) }
-addFunctionDefs id defs env = env { envFunctions = M.insert id (lookupFunction id env ++ defs) (envFunctions env) }
-addProcedureDef id def env = env { envProcedures = M.insert id (lookupProcedure id env ++ [def]) (envProcedures env) } 
-modifyTypeContext f env = env { envTypeContext = f (envTypeContext env) }
-withHeap f env = let (res, h') = f (envHeap env) in (res, env { envHeap = h' })  
-withHeap_ f env = env { envHeap = f (envHeap env) }
-
--- | Pretty-printed set of function definitions
-functionsDoc :: Map Id [FDef] -> Doc  
-functionsDoc funcs = vsep $ map funcDoc (M.toList funcs)
-  where 
-    funcDoc (id, defs) = vsep $ map (funcsDefDoc id) defs
-    funcsDefDoc id (FDef formals guard body) = exprDoc guard <+> text "->" <+> 
-      text id <> parens (commaSep (map text formals)) <+> text "=" <+> exprDoc body
-      
--- | Dynamic part of the environment
-data Memory = Memory {
-  memLocals :: Store,                          -- ^ Local variable store
-  memGlobals :: Store,                         -- ^ Global variable store
-  memOld :: Store,                             -- ^ Old global variable store (in two-state contexts)
-  memConstants :: Store,                       -- ^ Constant and function cache
-  memHeap :: Heap Value                       -- ^ Heap
-} deriving Eq
-
--- | Empty memory
-emptyMemory = Memory {
-  memLocals = emptyStore,
-  memGlobals = emptyStore,
-  memOld = emptyStore,
-  memConstants = emptyStore,
-  memHeap = emptyHeap
-}
-
--- | Visible values of all identifiers in a memory (locals shadow globals) 
-visibleVariables :: Memory -> Store
-visibleVariables mem = memLocals mem `M.union` memGlobals mem `M.union` memConstants mem
-
--- | Memory state of an environment
-memory env = Memory (envLocals env) (envGlobals env) (envOld env) (envConstants env) (envHeap env)
-
--- | 'memoryDoc' @debug mem@ : either user or debug representation of @mem@, depending on @debug@
-memoryDoc :: Bool -> Memory -> Doc
-memoryDoc debug mem = vsep $ [text "Locals:" <+> storeDoc (storeRepr $ memLocals mem),
-  text "Globals:" <+> storeDoc (storeRepr $ memGlobals mem `M.union` memConstants mem),
-  text "Old values:" <+> storeDoc (storeRepr $ memOld mem)]
-  ++ if debug then [text "Heap:" <+> heapDoc (memHeap mem)] else []
-  where
-    storeRepr store = if debug then store else userStore (memHeap mem) store
-    
-instance Show Memory where
-  show mem = show $ memoryDoc True mem      
+    result (Left err, env) = TestCase sig (env^.envMemory) (Just err)
+    result (_, env)      = TestCase sig (env^.envMemory) Nothing    
             
 {- Executions -}
 
@@ -350,27 +126,31 @@ instance (Error e, Monad m) => Finalizer (ErrorT e m) where
 -- | Run execution in the old environment
 old :: (Monad m, Functor m) => Execution m a -> Execution m a
 old execution = do
-  env <- get
-  put env { envGlobals = envOld env, envInOld = True }
+  oldEnv <- get
+  envMemory.memGlobals .= oldEnv^.envMemory.memOld
+  envInOld .= True            
   res <- execution
-  modify $ \env' -> env' { envOld = envGlobals env', envGlobals = envGlobals env `M.union` envGlobals env', envInOld = envInOld env } -- Include freshly initialized globals into both old and new states
+  env <- get
+  envMemory.memOld .= env^.envMemory.memGlobals
+  envMemory.memGlobals .= (oldEnv^.envMemory.memGlobals) `M.union` (env^.envMemory.memGlobals)   -- Include freshly initialized globals into both old and new states
+  envInOld .= oldEnv^.envInOld                      
   return res
 
 -- | Save current values of global variables in the "old" environment, return the previous "old" environment
 saveOld :: (Monad m, Functor m) => Execution m (Environment m)  
 saveOld = do
   env <- get
-  let globals = envGlobals env  
-  put env { envOld = globals }
+  let globals = env^.envMemory.memGlobals
+  envMemory.memOld .= globals
   mapM_ incRefCountValue (M.elems globals) -- Each value stored in globals is now pointed by an additional (old) variable
   return $ env
 
 -- | Set the "old" environment to olds  
 restoreOld :: (Monad m, Functor m) => Environment m -> Execution m ()  
-restoreOld env = do
-  env' <- get
-  let (oldOlds, newOlds) = M.partitionWithKey (\var _ -> M.member var (envGlobals env)) (envOld env')  
-  put env' { envOld = envOld env `M.union` newOlds } -- Add old values for freshly initialized globals (they are valid up until the program entry point, so could be accessed until the end of the program)
+restoreOld oldEnv = do
+  env <- get
+  let (oldOlds, newOlds) = M.partitionWithKey (\var _ -> M.member var (oldEnv^.envMemory.memGlobals)) (env^.envMemory.memOld)
+  envMemory.memOld .= (oldEnv^.envMemory.memOld) `M.union` newOlds -- Add old values for freshly initialized globals (they are valid up until the program entry point, so could be accessed until the end of the program)
   mapM_ decRefCountValue (M.elems oldOlds) -- Old values for previously initialized varibles go out of scope
   
 -- | Enter local scope (apply localTC to the type context and assign actuals to formals),
@@ -379,15 +159,17 @@ restoreOld env = do
 executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Id] -> [Value] -> s a -> s a
 executeLocally localTC locals formals actuals computation = do
   oldEnv <- get
-  modify $ modifyTypeContext localTC
-  modify $ \env -> env { envLocals = deleteAll locals (envLocals env) }
-  zipWithM_ (setVar (const emptyStore) setLocal) formals actuals -- All formals are fresh, can use emptyStore for current values
+  envTypeContext %= localTC
+  envMemory.memLocals %= deleteAll locals
+  zipWithM_ (setVar (to $ const emptyStore) setLocal) formals actuals -- All formals are fresh, can use emptyStore for current values
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
     unwind oldEnv = do
-      mapM_ (unsetVar envLocals) locals
-      modify $ \env -> env { envTypeContext = envTypeContext oldEnv, envLocals = deleteAll locals (envLocals env) `M.union` envLocals oldEnv }
+      mapM_ (unsetVar (envMemory.memLocals)) locals
+      env <- get
+      envTypeContext .= oldEnv^.envTypeContext
+      envMemory.memLocals .= deleteAll locals (env^.envMemory.memLocals) `M.union` (oldEnv^.envMemory.memLocals)
                               
 {- Runtime failures -}
 
@@ -418,7 +200,7 @@ data RuntimeFailure = RuntimeFailure {
 
 -- | Throw a run-time failure
 throwRuntimeFailure source pos = do
-  mem <- gets memory
+  mem <- use envMemory
   throwError (RuntimeFailure source pos mem [])
 
 -- | Push frame on the stack trace of a runtime failure
@@ -444,7 +226,7 @@ instance Error RuntimeFailure where
   
 -- | Pretty-printed run-time failure
 runtimeFailureDoc debug err = 
-  let store = (if debug then id else userStore (memHeap (rtfMemory err))) (M.filterWithKey (\k _ -> isRelevant k) (visibleVariables (rtfMemory err)))
+  let store = (if debug then id else userStore ((rtfMemory err)^.memHeap)) (M.filterWithKey (\k _ -> isRelevant k) (visibleVariables (rtfMemory err)))
       sDoc = storeDoc store 
   in failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) <+> 
   (if isEmpty sDoc then empty else text "with") $+$ nest 2 sDoc $+$
@@ -524,13 +306,13 @@ isFail tc = not (isPass tc || isInvalid tc || isNonexecutable tc)
 testCaseSummary :: Bool -> TestCase -> Doc
 testCaseSummary debug tc@(TestCase sig mem mErr) = text (psigName sig) <> 
   parens (commaSep (map (inDoc . itwId) (psigArgs sig))) <>
-  parens (commaSep (map globDoc (M.toList globalInputsRepr))) <+>
+  (if M.null globalInputsRepr then empty else parens (commaSep (map globDoc (M.toList globalInputsRepr)))) <+>
   outcomeDoc tc
   where
-    storeRepr store = if debug then store else userStore (memHeap mem) store
+    storeRepr store = if debug then store else userStore (mem^.memHeap) store
     removeEmptyMaps store = M.filter (\val -> val /= MapValue Nothing M.empty) store
-    localsRepr = storeRepr $ memLocals mem
-    globalInputsRepr = removeEmptyMaps . storeRepr $ memOld mem `M.union` memConstants mem
+    localsRepr = storeRepr $ mem^.memLocals
+    globalInputsRepr = removeEmptyMaps . storeRepr $ (mem^.memOld) `M.union` (mem^.memConstants)
     inDoc name = valueDoc $ localsRepr ! name    
     globDoc (name, val) = text name <+> text "=" <+> valueDoc val
     outcomeDoc tc 
@@ -545,19 +327,19 @@ finalStateDoc :: Bool -> TestCase -> Doc
 finalStateDoc debug tc@(TestCase sig mem mErr) = vsep $
     (if M.null outsRepr then [] else [text "Outs:" <+> storeDoc outsRepr]) ++
     (if M.null globalsRepr then [] else [text "Globals:" <+> storeDoc globalsRepr]) ++ 
-    (if debug then [text "Heap:" <+> heapDoc (memHeap mem)] else [])
+    (if debug then [text "Heap:" <+> heapDoc (mem^.memHeap)] else [])
   where
-    storeRepr store = if debug then store else userStore (memHeap mem) store
+    storeRepr store = if debug then store else userStore (mem^.memHeap) store
     outNames = map itwId (psigRets sig)
-    outsRepr = storeRepr $ M.filterWithKey (\k _ -> k `elem` outNames) (memLocals mem)
-    globalsRepr = storeRepr $ memGlobals mem
+    outsRepr = storeRepr $ M.filterWithKey (\k _ -> k `elem` outNames) (mem^.memLocals)
+    globalsRepr = storeRepr $ mem^.memGlobals
 
 {- Basic executions -}      
 
 -- | 'generate' @f@ : computation that extracts @f@ from the generator
 generate :: (Monad m, Functor m) => (Generator m -> m a) -> Execution m a
 generate f = do    
-  gen <- gets envGenerator
+  gen <- use envGenerator
   lift (lift (f gen))
       
 -- | 'generateValue' @t pos@ : choose a value of type @t@ at source position @pos@;
@@ -573,20 +355,20 @@ generateValue t pos = case t of
         
 -- | 'incRefCountValue' @val@ : if @val@ is a reference, increase its count
 incRefCountValue val = case val of
-  Reference r -> modify . withHeap_ $ incRefCount r
+  Reference r -> envMemory.memHeap %= incRefCount r
   _ -> return ()    
 
 -- | 'decRefCountValue' @val@ : if @val@ is a reference, decrease its count  
 decRefCountValue val = case val of
-  Reference r -> modify . withHeap_ $ decRefCount r
+  Reference r -> envMemory.memHeap %= decRefCount r
   _ -> return ()     
     
 -- | 'unsetVar' @getStore id@ : if @id@ was associated with a reference in @getStore@, decrease its reference count
 unsetVar getStore id = do
-  store <- gets $ getStore
+  store <- use getStore
   case M.lookup id store of    
     Just (Reference r) -> do          
-      modify . withHeap_ $ decRefCount r
+      envMemory.memHeap %= decRefCount r
     _ -> return ()
 
 -- | 'setVar' @getStore setter id val@ : set value of variable @id@ to @val@ using @setter@;
@@ -595,19 +377,19 @@ setVar getStore setter id val = do
   case val of
     Reference r -> do
       unsetVar getStore id
-      modify . withHeap_ $ incRefCount r
+      envMemory.memHeap %= incRefCount r
     _ -> return ()
   modify $ setter id val    
           
 -- | 'setAnyVar' @id val@ : set value of global or local variable @id@ to @val@
 setAnyVar id val = do
-  tc <- gets envTypeContext
+  tc <- use envTypeContext
   if M.member id (localScope tc)
-    then setVar envLocals setLocal id val
-    else setVar envGlobals setGlobal id val
+    then setVar (envMemory.memLocals) setLocal id val
+    else setVar (envMemory.memGlobals) setGlobal id val
 
 -- | 'readHeap' @r@: current value of reference @r@ in the heap
-readHeap r = flip at r <$> gets envHeap
+readHeap r = flip at r <$> use (envMemory.memHeap)
     
 -- | 'allocate' @v@: store @v@ at a fresh location in the heap and return that location
 allocate :: (Monad m, Functor m) => Value -> Execution m Value
@@ -616,17 +398,17 @@ allocate v = Reference <$> (state . withHeap . alloc) v
 -- | Remove all unused references from the heap  
 collectGarbage :: (Monad m, Functor m) => Execution m ()  
 collectGarbage = do
-  h <- gets envHeap
+  h <- use (envMemory.memHeap)
   when (hasGarbage h) (do
-    MapValue mBase over <- state $ withHeap dealloc
+    MapValue mBase override <- state $ withHeap dealloc
     case mBase of
       Nothing -> return ()
-      Just base -> modify . withHeap_ $ decRefCount base
-    mapM_ decElem (M.elems over)
+      Just base -> envMemory.memHeap %= decRefCount base
+    mapM_ decElem (M.elems override)
     collectGarbage)
   where
     decElem v = case v of
-      Reference r -> modify . withHeap_ $ decRefCount r
+      Reference r -> envMemory.memHeap %= decRefCount r
       _ -> return ()    
 
 {- Expressions -}
@@ -666,7 +448,7 @@ binOp pos Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
 binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 >= b2)
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
 binOp pos Eq      v1 v2                         = do
-                                                    h <- gets envHeap
+                                                    h <- use (envMemory.memHeap)
                                                     case objectEq h v1 v2 of
                                                       Just b -> return $ BoolValue b
                                                       Nothing -> throwRuntimeFailure (MapEquality (deepDeref h v1) (deepDeref h v2)) pos 
@@ -702,47 +484,47 @@ eval expr = case node expr of
   Quantified Exists tv vars e -> evalExists tv vars e (position expr)
   
 evalVar id pos = do
-  tc <- gets envTypeContext
+  tc <- use envTypeContext
   case M.lookup id (localScope tc) of
-    Just t -> lookupStore envLocals (init (generateValue t pos) [setLocal] checkWhere)
+    Just t -> lookupStore (envMemory.memLocals) (init (generateValue t pos) [setLocal] checkWhere)
     Nothing -> case M.lookup id (ctxGlobals tc) of
       Just t -> do
-        inOld <- gets envInOld
+        inOld <- use envInOld
         let setters = if inOld then [setGlobal] else [setGlobal, setOld]
-        lookupStore envGlobals (init (generateValue t pos) setters checkWhere)
+        lookupStore (envMemory.memGlobals) (init (generateValue t pos) setters checkWhere)
       Nothing -> case M.lookup id (ctxConstants tc) of
-        Just t -> lookupStore envConstants (initConst t)
+        Just t -> lookupStore (envMemory.memConstants) (initConst t)
         Nothing -> (internalError . show) (text "Encountered unknown identifier during execution:" <+> text id) 
   where
     -- | Initialize @id@ with a value geberated by @gen@, and then perform @check@
     init gen sets check = do
       val <- gen
-      mapM_ (\set -> setVar (const emptyStore) set id val) sets
+      mapM_ (\set -> setVar (to $ const emptyStore) set id val) sets
       check id pos
       return val
     -- | Lookup @id@ in @store@; if occurs return its stored value, otherwise @calculate@
     lookupStore store calculate = do
-      s <- gets store
+      s <- use store
       case M.lookup id s of
         Just val -> return val
         Nothing -> calculate
     -- | Initialize constant @id@ of type @t@ using its defininition, if present, and otherwise non-deterministically
     initConst t = do
-      constants <- gets envConstDefs
+      constants <- use envConstDefs
       case M.lookup id constants of
         Just e -> init (eval e) [] checkConstConstraints
         Nothing -> init (generateValue t pos) [setConst] checkConstConstraints
   
 evalApplication name args pos = do
-  defs <- gets (lookupFunction name)  
+  defs <- gets $ lookupFunction name
   evalDefs defs
   where
     -- | If the guard of one of function definitions evaluates to true, apply that definition; otherwise treat an an undefined constant map
     evalDefs :: (Monad m, Functor m) => [FDef] -> Execution m Value
     evalDefs [] = do
-      sig <- funSig name <$> gets envTypeContext
+      sig <- funSig name <$> use envTypeContext
       let mapName = functionCacheName name
-      modify $ modifyTypeContext (\tc -> tc { ctxConstants = M.insert mapName (fsigType sig) (ctxConstants tc) })
+      envTypeContext %= \tc -> tc { ctxConstants = M.insert mapName (fsigType sig) (ctxConstants tc) }
       evalMapSelection ((gen . Var) mapName) args pos
     evalDefs (FDef formals guard body : defs) = do
       argsV <- mapM eval args
@@ -751,7 +533,7 @@ evalApplication name args pos = do
         BoolValue True -> evalLocally formals argsV body `catchError` addFrame
         BoolValue False -> evalDefs defs
     evalLocally formals actuals expr = do
-      sig <- funSig name <$> gets envTypeContext
+      sig <- funSig name <$> use envTypeContext
       executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)
     returnType tc = exprType tc (gen $ Application name args)
     addFrame err = addStackFrame (StackFrame pos name) err
@@ -765,11 +547,11 @@ evalMapSelection m args pos = do
   Reference r <- eval m  
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
-  h <- gets envHeap  
+  h <- use (envMemory.memHeap)
   case lookupHeap h argsV r of
     Left v -> return v
     Right baseRef -> do
-      tc <- gets envTypeContext
+      tc <- use envTypeContext
       let rangeType = exprType tc (gen $ MapSelection m args)
       val <- generateValue rangeType pos
       -- ToDo: where and axiom checks
@@ -778,7 +560,7 @@ evalMapSelection m args pos = do
         -- Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
       incRefCountValue val
       MapValue Nothing baseMap <- readHeap baseRef
-      modify . withHeap_ $ update baseRef (MapValue Nothing (M.insert argsV val baseMap))
+      envMemory.memHeap %= update baseRef (MapValue Nothing (M.insert argsV val baseMap))
       return val    
   where
     lookupHeap :: Heap Value -> [Value] -> Ref -> Either Value Ref
@@ -801,9 +583,9 @@ evalMapUpdate m args new pos = do
   mapM_ (rejectMapIndex pos) argsV
   newV <- eval new
   incRefCountValue newV
-  let (base, over) = case mBase of Nothing -> (r, M.singleton argsV newV); Just b -> (b, M.insert argsV newV o)
-  modify . withHeap_ $ incRefCount base
-  allocate $ MapValue (Just base) over
+  let (base, override) = case mBase of Nothing -> (r, M.singleton argsV newV); Just b -> (b, M.insert argsV newV o)
+  envMemory.memHeap %= incRefCount base
+  allocate $ MapValue (Just base) override
   
 evalIf cond e1 e2 = do
   v <- eval cond
@@ -824,7 +606,7 @@ type Domain = [Value]
 
 evalExists :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> SourcePos -> Execution m Value      
 evalExists tv vars e pos = do
-  tc <- gets envTypeContext
+  tc <- use envTypeContext
   case node $ normalize tc (attachPos pos $ Quantified Exists tv vars e) of
     Quantified Exists tv' vars' e' -> evalExists' tv' vars' e'
 
@@ -843,7 +625,7 @@ evalExists' tv vars e = do
     -- | Fix the value of var to val, then evaluate e for each combination of values for the rest of vars
     fixOne :: (Monad m, Functor m) => [Id] -> [Domain] -> Id -> Value -> Execution m [Value]
     fixOne vars doms var val = do
-      setVar envLocals setLocal var val
+      setVar (envMemory.memLocals) setLocal var val
       evalForEach vars doms
     isTrue (BoolValue b) = b
     varNames = map fst vars
@@ -868,7 +650,7 @@ execPredicate specClause pos = do
     BoolValue False -> throwRuntimeFailure (SpecViolation specClause) pos
     
 execHavoc ids pos = do
-  tc <- gets envTypeContext
+  tc <- use envTypeContext
   mapM_ (havoc tc) ids 
   where
     havoc tc id = do
@@ -888,13 +670,13 @@ execAssign lhss rhss = do
     mapUpdate e (args1 : argss) rhs = gen $ MapUpdate e args1 (mapUpdate (gen $ MapSelection e args1) argss rhs)
     
 execCall name lhss args pos = do
-  sig <- procSig name <$> gets envTypeContext
+  sig <- procSig name <$> use envTypeContext
   execCallBySig sig lhss args pos
     
 execCallBySig sig lhss args pos = do
   defs <- gets $ lookupProcedure (psigName sig)
   (sig', def) <- selectDef sig defs
-  lhssExpr <- (\tc -> map (attachPos (ctxPos tc) . Var) lhss) <$> gets envTypeContext
+  lhssExpr <- (\tc -> map (attachPos (ctxPos tc) . Var) lhss) <$> use envTypeContext
   retsV <- execProcedure sig' def args lhssExpr `catchError` addFrame
   zipWithM_ setAnyVar lhss retsV
   where
@@ -974,7 +756,7 @@ checkConstConstraints id pos = do
 -- | 'checkWhere' @id pos@: Assume where clause of variable @id@ at a program location pos
 -- (pos will be reported as the location of the failure instead of the location of the variable definition).
 checkWhere id pos = do
-  whereClauses <- ctxWhere <$> gets envTypeContext
+  whereClauses <- ctxWhere <$> use envTypeContext
   case M.lookup id whereClauses of
     Nothing -> return ()
     Just w -> (exec . attachPos pos . Predicate . SpecClause Where True) w
@@ -1001,7 +783,7 @@ processFunctionBody name args body = let
     formalName (Just n) = n    
     
 processProcedureBody name pos args rets body = do
-  sig <- procSig name <$> gets envTypeContext
+  sig <- procSig name <$> use envTypeContext
   modify $ addProcedureDef name (PDef argNames retNames (paramsRenamed sig) (flatten body) pos) 
   where
     argNames = map fst args
@@ -1029,7 +811,7 @@ extractFunctionDefs :: (Monad m, Functor m) => Expression -> [Expression] -> Saf
 extractFunctionDefs bExpr guards = extractFunctionDefs' (node bExpr) guards
 
 extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) outerGuards = do
-  c <- gets envTypeContext
+  c <- use envTypeContext
   -- Only possible if each argument is either a variables or does not involve variables and there are no extra variables in rhs:
   if all (simple c) args && closedRhs c
     then do    
@@ -1076,13 +858,13 @@ domains boolExpr vars = do
   forM vars (domain finalC)
   where
     initConstraints c var = do
-      tc <- gets envTypeContext
+      tc <- use envTypeContext
       case M.lookup var (allVars tc) of
         Just BoolType -> return c
         Just IntType -> return $ M.insert var top c
         _ -> throwRuntimeFailure (UnsupportedConstruct "quantification over a map or user-defined type") (position boolExpr)
     domain c var = do
-      tc <- gets envTypeContext
+      tc <- use envTypeContext
       case M.lookup var (allVars tc) of
         Just BoolType -> return $ map BoolValue [True, False]
         Just IntType -> do
@@ -1179,5 +961,5 @@ toLinearForm aExpr constraints x = case node aExpr of
     combineBinOp Minus  (a1, b1) (a2, b2) = return (a1 - a2, b1 - b2)
     combineBinOp Times  (a, b)   (0, k)   = return (k * a, k * b)
     combineBinOp Times  (0, k)   (a, b)   = return (k * a, k * b)
-    combineBinOp _ _ _ = throwInternalException NotLinear                      
+    combineBinOp _ _ _ = throwInternalException NotLinear
   

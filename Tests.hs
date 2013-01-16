@@ -3,7 +3,8 @@ module Main where
 import Language.Boogie.Parser
 import Language.Boogie.PrettyPrinter
 import Language.Boogie.TypeChecker
-import Language.Boogie.Interpreter
+import Language.Boogie.Interpreter hiding (TestCase)
+import qualified Language.Boogie.Interpreter as I
 import Language.Boogie.Generator
 import Data.Map (Map, (!))
 import qualified Data.Map as M
@@ -95,7 +96,7 @@ interpreterSuccess file = do
     Left parseErr -> assertFailure (show parseErr)
     Right p -> case typeCheckProgram p of
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
-      Right context -> case (head . filter (not . isInvalid)) (executeProgram p context (exhaustiveGenerator (Just defaultBounds)) entryPoint) of
-        Left err -> assertFailure (show err)
-        Right env -> return ()
+      Right context -> case (head . filter (not . isInvalid)) (executeProgram p context (exhaustiveGenerator Nothing) entryPoint) of
+        I.TestCase _ _ (Just err) -> assertFailure (show err)
+        otherwise -> return ()
 
