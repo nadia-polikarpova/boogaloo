@@ -26,13 +26,13 @@ flag tests
   Default:     False
 
 library
-  exposed-modules:     Language.Boogie.Util, Language.Boogie.TypeChecker, Language.Boogie.Tokens, Language.Boogie.Tester, Language.Boogie.PrettyPrinter, Language.Boogie.Position, Language.Boogie.Parser, Language.Boogie.Interpreter, Language.Boogie.BasicBlocks, Language.Boogie.AST, Language.Boogie.ErrorAccum, Language.Boogie.DataFlow, Language.Boogie.NormalForm, Language.Boogie.Intervals
+  exposed-modules:     Language.Boogie.Util, Language.Boogie.TypeChecker, Language.Boogie.Tokens, Language.Boogie.PrettyPrinter, Language.Boogie.Position, Language.Boogie.Parser, Language.Boogie.Interpreter, Language.Boogie.Generator, Language.Boogie.Heap, Language.Boogie.Environment, Language.Boogie.BasicBlocks, Language.Boogie.AST, Language.Boogie.ErrorAccum, Language.Boogie.NormalForm, Language.Boogie.Intervals
   -- other-modules:       
-  build-depends:       base ==4.*, cmdargs ==0.10.*, random ==1.0.*, time ==1.4.*, containers >=0.4 && <0.6, mtl ==2.1.*, pretty ==1.1.*, parsec ==3.1.*, transformers ==0.3.*, stream-monad ==0.4.*, random ==1.0.*
-  
+  build-depends:       base ==4.*, random ==1.0.*, containers >=0.4 && <0.6, mtl ==2.1.*, pretty ==1.1.*, parsec ==3.1.*, transformers ==0.3.*, stream-monad ==0.4.*, random ==1.0.*, lens ==3.7.*
+    
 executable boogaloo
   main-is:             Boogaloo.hs             
-  build-depends:       base ==4.*, language-boogie ==0.1.*, containers >=0.4 && <0.6, parsec ==3.1.*, cmdargs ==0.10.*, random ==1.0.*, time ==1.4.*, mtl ==2.1.*, pretty ==1.1.*, transformers ==0.3.*, stream-monad ==0.4.*, ansi-terminal ==0.5.*, random ==1.0.*
+  build-depends:       base ==4.*, language-boogie ==0.1.*, containers >=0.4 && <0.6, parsec ==3.1.*, cmdargs ==0.10.*, random ==1.0.*, time ==1.4.*, mtl ==2.1.*, pretty ==1.1.*, transformers ==0.3.*, stream-monad ==0.4.*, ansi-terminal ==0.5.*, random ==1.0.*, lens ==3.7.*
   If !flag(boogaloo)
     buildable: False  
   

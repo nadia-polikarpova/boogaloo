@@ -392,7 +392,7 @@ generate f = do
 generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
 generateValue t pos = case t of
     IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
-    -- | Maps are initializaed lazily, allocate an empty map on the heap:
+    -- Maps are initializaed lazily, allocate an empty map on the heap:
     MapType _ _ _ -> allocate $ MapValue Nothing M.empty
     BoolType -> BoolValue <$> generate genBool
     IntType -> IntValue <$> generate genInteger
