@@ -282,6 +282,9 @@ data FSig = FSig {
   
 -- | Function signature as a map type  
 fsigType sig = MapType (fsigTypeVars sig) (fsigArgTypes sig) (fsigRetType sig)  
+
+instance Eq FSig where
+  s1 == s2 = fsigName s1 == fsigName s2
   
 -- | Function definition
 data FDef = FDef {
@@ -298,6 +301,9 @@ data PSig = PSig {
     psigRets :: [IdTypeWhere],    -- ^ Out-parameters
     psigContracts :: [Contract]   -- ^ Contracts
   }
+  
+instance Eq PSig where
+  s1 == s2 = psigName s1 == psigName s2  
   
 -- | All parameters of a procedure signature 
 psigParams sig = psigArgs sig ++ psigRets sig

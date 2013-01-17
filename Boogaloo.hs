@@ -11,7 +11,6 @@ import Language.Boogie.PrettyPrinter
 import Language.Boogie.Heap
 import Language.Boogie.Environment
 import Language.Boogie.Interpreter
--- import Language.Boogie.Tester
 import Language.Boogie.Generator
 import System.Environment
 import System.Console.CmdArgs
@@ -36,18 +35,27 @@ releaseDate = fromGregorian 2012 10 25
 main = do
   res <- cmdArgsRun $ mode
   case res of
-    Exec file entry bounds unbounded random seed btmax invalid nexec pass fail outMax debug -> 
-      executeFromFile file entry (if unbounded then Nothing else Just bounds) random seed btmax invalid nexec pass fail outMax debug
-    -- args -> testFromFile (file args) (proc_ args) (testMethod args) (verbose args)
+    Exec file proc_ bounds random seed btmax invalid nexec pass fail outMax sum debug -> 
+      executeFromFile file proc_ (rangeToMaybe bounds) random seed btmax invalid nexec pass fail (natToMaybe outMax) sum debug
+    Test file proc_ bounds outMax debug ->
+      executeFromFile file proc_ (rangeToMaybe bounds) False Nothing Nothing True True True True (natToMaybe outMax) True debug
+    RTest file proc_ bounds seed outMax debug ->
+      executeFromFile file proc_ (rangeToMaybe bounds) True seed Nothing True True True True (natToMaybe outMax) True debug      
+  where
+    rangeToMaybe (min, max)
+      | min <= max  = Just (min, max)
+      | otherwise   = Nothing
+    natToMaybe n
+      | n >= 0      = Just n
+      | otherwise   = Nothing
 
 {- Command line arguments -}
 
 data CommandLineArgs
     = Exec { 
         file :: String, 
-        entry :: String,
+        proc_ :: String,
         bounds :: (Integer, Integer),
-        unbounded :: Bool,
         random_ :: Bool,
         seed :: Maybe Int,
         btmax :: Maybe Int, 
@@ -56,103 +64,104 @@ data CommandLineArgs
         pass :: Bool,
         fail_ :: Bool,
         outmax :: Int, 
+        summary_ :: Bool,
         debug :: Bool
       }
-    -- | Test { file :: String, proc_ :: [String], limits :: (Integer, Integer), dlimits :: (Integer, Integer), verbose :: Bool  }
-    -- | RTest { file :: String, proc_ :: [String], limits :: (Integer, Integer), dlimits :: (Integer, Integer), tc_count :: Int, seed :: Maybe Int, verbose :: Bool }
+    | Test { 
+        file :: String, 
+        proc_ :: String,
+        bounds :: (Integer, Integer),
+        outmax :: Int, 
+        debug :: Bool
+      }
+    | RTest { 
+        file :: String, 
+        proc_ :: String,
+        bounds :: (Integer, Integer),
+        seed :: Maybe Int,
+        outmax :: Int, 
+        debug :: Bool
+      }
       deriving (Data, Typeable, Show, Eq)
-      
-defaultBounds = (-64, 64)      
+
+-- | Default for the @bounds@ parameter      
+defaultBounds = (-64, 64)
+
+-- | Default for the @bounds@ parameter  in exhaustive testing
+defaultExBounds = (-4, 4)
+
+-- | Default number of test cases in random testing
+defaultRTC = 100
 
 execute = Exec {
-  entry     = "Main"          &= help "Program entry point (default: Main)" &= typ "PROCEDURE",
+  proc_     = "Main"          &= help "Program entry point (default: Main)" &= typ "PROCEDURE",
   file      = ""              &= typFile &= argPos 0,
-  bounds    = defaultBounds   &= help ("Minimum and maximum integer value to be chosen non-deterministically (default: " ++ show defaultBounds ++ ")") &= typ "NUM, NUM",
-  unbounded = False           &= help "Ignore bounds; any integer value can be chosen (default: false)",
+  bounds    = defaultBounds   &= help ("Minimum and maximum integer value to be chosen non-deterministically; " ++
+                                       "unbounded if min > max (default: " ++ show defaultBounds ++ ")") &= typ "NUM, NUM",
   random_   = False           &= help "Make non-deterministic choices randomly (default: false)",
   seed      = Nothing         &= help "Seed for the random number generator" &= typ "NUM",
-  btmax     = Nothing         &= help "Maximum number of times execution is allowed to backtrack (default: unlimited)",
-  invalid   = False           &= help "Keep unreachable states in the list of outcomes (default: false)",
-  nexec     = True            &= help "Keep non-executable states in the list of outcomes (default: true)",
-  pass      = True            &= help "Keep passing states in the list of outcomes (default: true)",
-  fail_     = True            &= help "Keep failing states in the list of outcomes (default: true)",
-  outmax    = 1               &= help "Maximum number of outcomes to display (default: 1)",
+  btmax     = Nothing         &= help "Maximum number of times execution is allowed to backtrack (default: unlimited)" &= name "B",
+  invalid   = False           &= help "Keep unreachable states in the list of outcomes (default: false)" &= name "I",
+  nexec     = True            &= help "Keep non-executable states in the list of outcomes (default: true)" &= name "N",
+  pass      = True            &= help "Keep passing states in the list of outcomes (default: true)" &= name "P",
+  fail_     = True            &= help "Keep failing states in the list of outcomes (default: true)" &= name "F",
+  outmax    = 1               &= help "Maximum number of outcomes to display; unbounded if negative (default: 1)",
+  summary_  = False           &= help "Only print a summary of all executions and a list of unique failures (default: false)" &= name "S",
   debug     = False           &= help "Debug output (default: false)"
   } &= auto &= help "Execute program"
+  
+test = Test {
+  proc_     = "Main"          &= help "Program entry point (default: Main)" &= typ "PROCEDURE",
+  file      = ""              &= typFile &= argPos 0,
+  bounds    = defaultExBounds &= help ("Minimum and maximum integer value to be chosen non-deterministically; " ++
+                                       "unbounded if min > max (default: " ++ show defaultExBounds ++ ")") &= typ "NUM, NUM",
+  outmax    = -1               &= help "Maximum number of test cases; unbounded if negative (default: -1)",
+  debug     = False           &= help "Debug output (default: false)"
+  } &= help "Test program exhaustively"
+  
+rtest = RTest {
+  proc_     = "Main"          &= help "Program entry point (default: Main)" &= typ "PROCEDURE",
+  file      = ""              &= typFile &= argPos 0,
+  bounds    = defaultBounds   &= help ("Minimum and maximum integer value to be chosen non-deterministically; " ++
+                                       "unbounded if min > max (default: " ++ show defaultBounds ++ ")") &= typ "NUM, NUM",
+  seed      = Nothing         &= help "Seed for the random number generator" &= typ "NUM",
+  outmax    = defaultRTC      &= help ("Number of test cases; unbounded if negative (default: " ++ show defaultRTC ++")"),
+  debug     = False           &= help "Debug output (default: false)"
+  } &= help "Test program on random inputs"
       
--- test_ = Test {
-  -- proc_   = []      &= help "Procedures to test" &= typ "PROCEDURE",
-  -- limits  = (-3, 3) &= help "Interval of input values to try for an integer variable" &= typ "NUM, NUM",
-  -- dlimits = (0, 2)  &= help dlimitsMsg &= typ "NUM, NUM" ,
-  -- file    = ""      &= typFile &= argPos 0,
-  -- verbose = False   &= help verboseMsg
-  -- } &= help "Test program exhaustively"
-  
--- rtest = RTest {
-  -- proc_     = []        &= help "Procedures to test" &= typ "PROCEDURE",
-  -- limits    = (-32, 32) &= help "Interval of input values to draw from for an integer variable" &= typ "NUM, NUM",
-  -- dlimits   = (0, 2)    &= help dlimitsMsg &= typ "NUM, NUM",
-  -- tc_count  = 10        &= help "Number of test cases to generate per procedure implementation" &= name "n" &= typ "NUM",
-  -- seed      = Nothing   &= help "Seed for the random number generator" &= typ "NUM",
-  -- file      = ""        &= typFile &= argPos 0,
-  -- verbose = False       &= help verboseMsg
-  -- } &= help "Test program on random inputs"
-  
--- dlimitsMsg = "Given a map with an integer domain, different range values will be tried for domain values in this interval"
--- verboseMsg = "Output all executed test cases"
-    
-mode = cmdArgsMode $ modes [execute{-, test_, rtest-}] &= 
+mode = cmdArgsMode $ modes [execute, test, rtest] &= 
   help "Boogie interpreter" &= 
   program programName &= 
   summary (programName ++ " v" ++ versionName ++ ", " ++ showGregorian releaseDate)
-  
--- -- | Set up a test method depending on command-line arguments  
--- testMethod :: CommandLineArgs -> Program -> Context -> [Id] -> IO [TestCase]
--- testMethod (Test _ _ limits dlimits _ ) program context procNames = 
-  -- let settings = ExhaustiveSettings {
-      -- esIntRange = interval limits,
-      -- esIntMapDomainRange = interval dlimits,
-      -- esGenericTypeRange = defaultGenericTypeRange context,
-      -- esMapTypeRange = defaultMapTypeRange context
-    -- }
-  -- in return $ testProgram settings program context procNames
--- testMethod (RTest _ _ limits dlimits tc_count seed _) program context procNames = do
-  -- randomGen <- case seed of
-    -- Nothing -> getStdGen
-    -- Just s -> return $ mkStdGen s
-  -- let settings = RandomSettings {
-      -- rsRandomGen = randomGen,
-      -- rsCount = tc_count,
-      -- rsIntLimits = limits,
-      -- rsIntMapDomainRange = interval dlimits,
-      -- rsGenericTypeRange = defaultGenericTypeRange context,
-      -- rsMapTypeRange = defaultMapTypeRange context     
-    -- }  
-  -- return $ testProgram settings program context procNames
     
 {- Interfacing internal modules -}
 
--- | Execute procedure entryPoint from file
+-- | Execute procedure proc_ from file
 -- | and output either errors or the final values of global variables
-executeFromFile :: String -> String -> Maybe (Integer, Integer) -> Bool -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Int -> Bool -> IO ()
-executeFromFile file entryPoint bounds random seed btMax invalid nexec pass fail outMax debug = runOnFile printFinalState file
+executeFromFile :: String -> String -> Maybe (Integer, Integer) -> Bool -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Maybe Int -> Bool -> Bool -> IO ()
+executeFromFile file proc_ bounds random seed btMax invalid nexec pass fail outMax summary debug = runOnFile printFinalState file
   where
-    printFinalState p context = case M.lookup entryPoint (ctxProcedures context) of
-      Nothing -> printError (text "Cannot find procedure" <+> text entryPoint)
+    printFinalState p context = case M.lookup proc_ (ctxProcedures context) of
+      Nothing -> printError (text "Cannot find procedure" <+> text proc_)
       Just _ -> do
         rGen <- case seed of
           Nothing -> getStdGen
           Just s -> return $ mkStdGen s      
         let generator = if random then randomGenerator rGen bounds else exhaustiveGenerator bounds
-        let outs = (take outMax . filter keep . limitBT) (outcomes p context generator)
-        if null outs
-          then printAux $ text "No executions to display"
-          else zipWithM_ printOne [0..] outs
-    outcomes p context generator = if btMax == Just 1 || (keepAll && outMax == 1)
-      then [executeProgramDet p context entryPoint]
-      else executeProgram p context generator entryPoint
+        let outs = (maybeTake outMax . filter keep . maybeTake btMax) (outcomes p context generator)
+        if summary
+          then do
+            let sum = testSessionSummary outs 
+            print $ summaryDoc sum
+            zipWithM_ (printOne "Failure") [0..] (sUniqueFailures sum)
+          else if null outs
+            then printAux $ text "No executions to display"
+            else zipWithM_ (printOne "Execution") [0..] outs
+    outcomes p context generator = if btMax == Just 1 || (keepAll && outMax == Just 1)
+      then [executeProgramDet p context proc_]
+      else executeProgram p context generator proc_
     keepAll = invalid && nexec && pass && fail
-    limitBT = case btMax of
+    maybeTake mLimit = case mLimit of
       Nothing -> id
       Just n -> take n
     keep tc = 
@@ -167,22 +176,10 @@ executeFromFile file entryPoint bounds random seed btMax invalid nexec pass fail
           printError $ runtimeFailureDoc debug err
           when debug (print $ newline <> finalStateDoc True tc)
         Nothing -> print $ finalStateDoc debug tc
-    printOne n tc = do
+    printOne title n tc = do
       when (n > 0) $ print newline
-      printAux $ text "Execution" <+> integer n
+      printAux $ text title <+> integer n
       printTestCase tc
-
--- -- | Test procedures procNames from file with a testMethod
--- -- | and output the test outcomes
--- testFromFile :: String -> [String] -> (Program -> Context -> [String] -> IO [TestCase]) -> Bool -> IO ()
--- testFromFile file procNames testMethod printAll = runOnFile printTestOutcomes file
-  -- where
-    -- printTestOutcomes p context = do
-      -- let (present, missing) = partition (`M.member` ctxProcedures context) procNames
-      -- when (not (null missing)) $ printError (text "Cannot find procedures under test:" <+> commaSep (map text missing))
-      -- testResults <- testMethod p context present
-      -- print $ testSessionSummary testResults
-      -- when printAll $ putStr "\n" >> mapM_ print testResults
 
 -- | Parse file, type-check the resulting program, then execute command on the resulting program and type context
 runOnFile :: (Program -> Context -> IO ()) -> String -> IO ()      

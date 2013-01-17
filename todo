@@ -16,9 +16,7 @@
   
 - Interpreter
   -> Backtracking
-    - Test mode: summaries, different defaults
     - Outcome equality: for precondition violations take the innermost stack frame into account
-    - Remove tester and live var analysis
   - Printable class?
   -> Bounded checking of quantification
   -? Check function and map constraints lazily

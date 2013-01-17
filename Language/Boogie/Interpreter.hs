@@ -23,6 +23,9 @@ module Language.Boogie.Interpreter (
   isFail,
   testCaseSummary,  
   finalStateDoc,
+  Summary (..),
+  testSessionSummary,
+  summaryDoc,
   -- * Executing parts of programs
   eval,
   exec,
@@ -333,6 +336,48 @@ finalStateDoc debug tc@(TestCase sig mem mErr) = vsep $
     outNames = map itwId (psigRets sig)
     outsRepr = storeRepr $ M.filterWithKey (\k _ -> k `elem` outNames) (mem^.memLocals)
     globalsRepr = storeRepr $ mem^.memGlobals
+    
+-- | Test cases are considered equivalent from a user perspective
+-- | if they are testing the same procedure and result in the same outcome
+equivalent tc1 tc2 = tcProcedure tc1 == tcProcedure tc2 && tcFailure tc1 == tcFailure tc2      
+
+-- | Test session summary
+data Summary = Summary {
+  sPassCount :: Int,            -- ^ Number of passing test cases
+  sFailCount :: Int,            -- ^ Number of failing test cases
+  sInvalidCount :: Int,         -- ^ Number of invalid test cases
+  sNonExecutableCount :: Int,   -- ^ Number of nonexecutable test cases
+  sUniqueFailures :: [TestCase] -- ^ Unique failing test cases
+}
+
+totalCount s = sPassCount s + sFailCount s + sInvalidCount s + sNonExecutableCount s
+
+-- | Pretty-printed test session summary
+summaryDoc :: Summary -> Doc
+summaryDoc summary = 
+  text "Test cases:" <+> int (totalCount summary) $+$
+  text "Passed:" <+> int (sPassCount summary) $+$
+  text "Invalid:" <+> int (sInvalidCount summary) $+$
+  text "Non executable:" <+> int (sNonExecutableCount summary) $+$
+  text "Failed:" <+> int (sFailCount summary) <+> parens (int (length (sUniqueFailures summary)) <+> text "unique") <>
+  (if null (sUniqueFailures summary) then empty else newline)
+  
+instance Show Summary where show s = show (summaryDoc s)
+
+-- | Summary of a set of test cases   
+testSessionSummary :: [TestCase] -> Summary
+testSessionSummary tcs = let 
+  passing = filter isPass tcs
+  failing = filter isFail tcs
+  invalid = filter isInvalid tcs
+  nexec = filter isNonexecutable tcs
+  in Summary {
+    sPassCount = length passing,
+    sFailCount = length failing,
+    sInvalidCount = length invalid,  
+    sNonExecutableCount = length nexec,
+    sUniqueFailures = nubBy equivalent failing
+  }    
 
 {- Basic executions -}      
 
