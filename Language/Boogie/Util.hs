@@ -45,9 +45,6 @@ module Language.Boogie.Util (
   interval,
   fromRight,
   deleteAll,
-  mapFst,
-  mapSnd,
-  mapBoth,
   changeState,
   withLocalState,
   internalError
@@ -63,6 +60,7 @@ import qualified Data.Map as M
 import Control.Applicative
 import Control.Monad.State
 import Control.Monad.Stream
+import Control.Lens
 
 {- Types -}
 
@@ -178,14 +176,14 @@ freeVarsTwoState' FF = ([], [])
 freeVarsTwoState' TT = ([], [])
 freeVarsTwoState' (Numeral _) = ([], [])
 freeVarsTwoState' (Var x) = ([x], [])
-freeVarsTwoState' (Application name args) = mapBoth (nub . concat) (unzip (map freeVarsTwoState args))
-freeVarsTwoState' (MapSelection m args) =  mapBoth (nub . concat) (unzip (map freeVarsTwoState (m : args)))
-freeVarsTwoState' (MapUpdate m args val) =  mapBoth (nub . concat) (unzip (map freeVarsTwoState (val : m : args)))
+freeVarsTwoState' (Application name args) = over both (nub . concat) (unzip (map freeVarsTwoState args))
+freeVarsTwoState' (MapSelection m args) =  over both (nub . concat) (unzip (map freeVarsTwoState (m : args)))
+freeVarsTwoState' (MapUpdate m args val) =  over both (nub . concat) (unzip (map freeVarsTwoState (val : m : args)))
 freeVarsTwoState' (Old e) = let (state, old) = freeVarsTwoState e in ([], state ++ old)
-freeVarsTwoState' (IfExpr cond e1 e2) = mapBoth (nub . concat) (unzip [freeVarsTwoState cond, freeVarsTwoState e1, freeVarsTwoState e2])
+freeVarsTwoState' (IfExpr cond e1 e2) = over both (nub . concat) (unzip [freeVarsTwoState cond, freeVarsTwoState e1, freeVarsTwoState e2])
 freeVarsTwoState' (Coercion e _) = freeVarsTwoState e
 freeVarsTwoState' (UnaryExpression _ e) = freeVarsTwoState e
-freeVarsTwoState' (BinaryExpression _ e1 e2) = mapBoth (nub . concat) (unzip [freeVarsTwoState e1, freeVarsTwoState e2])
+freeVarsTwoState' (BinaryExpression _ e1 e2) = over both (nub . concat) (unzip [freeVarsTwoState e1, freeVarsTwoState e2])
 freeVarsTwoState' (Quantified _ _ boundVars e) = let (state, old) = freeVarsTwoState e in (state \\ map fst boundVars, old)
 
 -- | Free variables in an expression, in current state
@@ -367,12 +365,6 @@ fromRight (Right x) = x
 -- | 'deleteAll' @keys m@ : map @m@ with @keys@ removed from its domain
 deleteAll :: Ord k => [k] -> Map k a -> Map k a
 deleteAll keys m = foldr M.delete m keys
-
-mapFst f (x, y) = (f x, y)
-mapSnd f (x, y) = (x, f y)
-mapBoth f (x, y) = (f x, f y)
-
-mapItwType f (IdTypeWhere i t w) = IdTypeWhere i (f t) w
 
 -- | Execute a computation with state of type @t@ inside a computation with state of type @s@
 changeState :: Monad m => (s -> t) -> (t -> s -> s) -> StateT t m a -> StateT s m a
