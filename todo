@@ -15,23 +15,18 @@
   -? Annotate AST with expr types
   
 - Interpreter
-  -> Backtracking
-    - Outcome equality: for precondition violations take the innermost stack frame into account
-  - Printable class?
   -> Bounded checking of quantification
   -? Check function and map constraints lazily
   -> User-defined types
+  - Refactor executeLocally, execCall and execProcedure  
+  - Printable class?  
   - Lazy initialization of arguments (in execLocally only copy those args that are already initialize, at the end propage the initizlization back with assume)
-  - Refactor executeLocally, execCall and execProcedure
   - Lambda expressions
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - Extends ordering
   - Constraint solving
   - Call forall
-  
-- Tester
-  - Which failing test cases should be considered unique in summaries? If a postcondition or inline assertion is violated it's enough to comare the error, if a precondition is violated we need the caller. Preconditions should be checked at the call site?
-  
+    
 - User interface
   - pass more information with failures other than spec violations, so that relevant variables can be determined
   - settings for disabling checking of different specs

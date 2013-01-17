@@ -264,6 +264,17 @@ runtimeFailureDoc debug err =
 instance Show RuntimeFailure where
   show err = show (runtimeFailureDoc True err)
   
+-- | Do two runtime failures represent the same fault?
+-- Yes if the same property failed at the same program location
+-- or, for preconditions, for the same caller   
+sameFault f f' = rtfSource f == rtfSource f' && 
+  case rtfSource f of
+    SpecViolation (SpecClause Precondition False _) -> last (rtfTrace f) == last (rtfTrace f')
+    _ -> rtfPos f == rtfPos f'    
+  
+instance Eq RuntimeFailure where
+  f == f' = sameFault f f'
+    
 -- | Internal error codes 
 data InternalCode = NotLinear
   deriving Eq
@@ -271,10 +282,6 @@ data InternalCode = NotLinear
 throwInternalException code = throwRuntimeFailure (InternalException code) noPos
 
 {- Execution results -}
-
-instance Eq RuntimeFailure where
-  -- Runtime errors are considered equivalent if the same property failed at the same program location 
-  f == f'   =  rtfSource f == rtfSource f' && rtfPos f == rtfPos f' 
     
 -- | Description of an execution
 data TestCase = TestCase {
