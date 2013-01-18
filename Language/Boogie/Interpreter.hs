@@ -835,12 +835,12 @@ processFunctionBody name args body = let
     formalName (Just n) = n    
     
 processProcedureBody name pos args rets body = do
-  sig <- procSig name <$> use envTypeContext
-  modify $ addProcedureDef name (PDef argNames retNames (paramsRenamed sig) (flatten body) pos) 
+  tc <- use envTypeContext
+  modify $ addProcedureDef name (PDef argNames retNames (paramsRenamed (procSig name tc)) (flatten tc body) pos) 
   where
     argNames = map fst args
     retNames = map fst rets
-    flatten (locals, statements) = (concat locals, M.fromList (toBasicBlocks statements))
+    flatten tc (locals, statements) = (map (mapItwType (resolve tc)) (concat locals), M.fromList (toBasicBlocks statements))
     paramsRenamed sig = map itwId (psigParams sig) /= (argNames ++ retNames)     
 
 processAxiom expr = do

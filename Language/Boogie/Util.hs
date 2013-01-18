@@ -45,6 +45,7 @@ module Language.Boogie.Util (
   interval,
   fromRight,
   deleteAll,
+  mapItwType,
   changeState,
   withLocalState,
   internalError
@@ -365,6 +366,8 @@ fromRight (Right x) = x
 -- | 'deleteAll' @keys m@ : map @m@ with @keys@ removed from its domain
 deleteAll :: Ord k => [k] -> Map k a -> Map k a
 deleteAll keys m = foldr M.delete m keys
+
+mapItwType f (IdTypeWhere i t w) = IdTypeWhere i (f t) w
 
 -- | Execute a computation with state of type @t@ inside a computation with state of type @s@
 changeState :: Monad m => (s -> t) -> (t -> s -> s) -> StateT t m a -> StateT s m a

@@ -15,6 +15,7 @@
   -? Annotate AST with expr types
   
 - Interpreter
+  - Non-deterministic map equality and indexing by maps
   -> Bounded checking of quantification
   -? Check function and map constraints lazily
   -> User-defined types

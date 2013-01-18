@@ -729,8 +729,8 @@ checkProcSignature name tv args rets specs = do
       if not (null missingTV) 
         then throwTypeError(text "Type variable(s) must occur in procedure in- our out-parameters:" <+> commaSep (map text missingTV))
         else do
-          argTypes <- gets $ \c -> map (resolveType c) args
-          retTypes <- gets $ \c -> map (resolveType c) rets               
+          argTypes <- gets $ \c -> map (mapItwType (resolve c)) args
+          retTypes <- gets $ \c -> map (mapItwType (resolve c)) rets               
           modify $ addPSig name (PSig name tv argTypes retTypes specs)
   where
     params = args ++ rets
@@ -739,7 +739,6 @@ checkProcSignature name tv args rets specs = do
       mapAccum_ checkPArg params    
     checkPArg arg = checkIdType ctxIns ctxIns setIns (noWhere arg)    
     addPSig name sig c = c { ctxProcedures = M.insert name sig (ctxProcedures c) }
-    resolveType c (IdTypeWhere id t w) = IdTypeWhere id (resolve c t) w
 
 -- | Check axioms, function and procedure bodies      
 checkBodies :: Decl -> Typing ()
