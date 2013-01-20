@@ -7,8 +7,9 @@ module Language.Boogie.Environment (
   stored,
   Value (..),
   vnot,
-  srcVals,
-  src,
+  mapSourceValues,
+  mapSource,
+  mapValues,
   deepDeref,
   objectEq,
   valueDoc,
@@ -117,20 +118,23 @@ instance Show Value where
 {- Map operations -}
 
 -- | Source reference and key-value pairs of a reference in a heap
-srcVals :: Heap Value -> Ref -> (Ref, (Map [Value] Value))
-srcVals h r = case unMapValue $ h `at` r of
+mapSourceValues :: Heap Value -> Ref -> (Ref, (Map [Value] Value))
+mapSourceValues h r = case unMapValue $ h `at` r of
   Source vals -> (r, vals)
-  Derived base override undef -> let (s, v) = srcVals h base
+  Derived base override undef -> let (s, v) = mapSourceValues h base
     in (s, override `M.union` (removeDomain undef v))
     
--- | First component of 'srcVals'
-src h r = fst $ srcVals h r
+-- | First component of 'mapSourceValues'
+mapSource h r = fst $ mapSourceValues h r
+
+-- | Second component of 'mapSourceValues'
+mapValues h r = snd $ mapSourceValues h r
 
 -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
 deepDeref :: Heap Value -> Value -> Value
 deepDeref h v = deepDeref' v
   where
-    deepDeref' (Reference r) = let (s_, vals) = srcVals h r
+    deepDeref' (Reference r) = let (s_, vals) = mapSourceValues h r
       in MapValue . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref')) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
     deepDeref' (MapValue _) = internalError "Attempt to dereference a map directly"
     deepDeref' v = v
@@ -140,8 +144,8 @@ objectEq :: Heap Value -> Value -> Value -> Maybe Bool
 objectEq h (Reference r1) (Reference r2) = if r1 == r2
   then Just True -- Equal references point to equal maps
   else let 
-    (s1, vals1) = srcVals h r1
-    (s2, vals2) = srcVals h r2
+    (s1, vals1) = mapSourceValues h r1
+    (s2, vals2) = mapSourceValues h r2
     in if mustDisagree vals1 vals2
       then Just False
       else if s1 == s2 && mustAgree vals1 vals2

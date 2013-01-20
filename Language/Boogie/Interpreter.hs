@@ -458,12 +458,8 @@ collectGarbage = do
     case repr of
       Source _ -> return ()
       Derived base _ _ -> envMemory.memHeap %= decRefCount base
-    mapM_ decElem (M.elems (stored repr))
+    mapM_ decRefCountValue (M.elems (stored repr))
     collectGarbage)
-  where
-    decElem v = case v of
-      Reference r -> envMemory.memHeap %= decRefCount r
-      _ -> return ()    
 
 {- Expressions -}
 
@@ -501,13 +497,8 @@ binOp pos Or      (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 || b2)
 binOp pos Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
 binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 >= b2)
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
-binOp pos Eq      v1 v2                         = do
-                                                    h <- use $ envMemory.memHeap
-                                                    case objectEq h v1 v2 of
-                                                      Just b -> return $ BoolValue b
-                                                      Nothing -> -- chooseEquality v1 v2 -- No evidence yet if two maps are equal or not, make a non-deterministic choice
-                                                        throwRuntimeFailure (MapEquality (deepDeref h v1) (deepDeref h v2)) pos 
-binOp pos Neq     v1 v2                         = vnot <$> binOp pos Eq v1 v2
+binOp pos Eq      v1 v2                         = evalEquality v1 v2
+binOp pos Neq     v1 v2                         = vnot <$> evalEquality v1 v2
 binOp pos Lc      v1 v2                         = throwRuntimeFailure (UnsupportedConstruct "orders") pos
 
 -- | Euclidean division used by Boogie for integer division and modulo
@@ -517,21 +508,51 @@ a `euclidean` b =
     (q, r) | r >= 0    -> (q, r)
            | b >  0    -> (q - 1, r + b)
            | otherwise -> (q + 1, r - b)
+         
+-- | 'evalEquality' @v1 v2@ : Evaluate @v1 == v2@
+evalEquality :: (Monad m, Functor m) => Value -> Value -> Execution m Value
+evalEquality v1 v2 = do
+  h <- use $ envMemory.memHeap
+  case objectEq h v1 v2 of
+    Just b -> return $ BoolValue b
+    Nothing -> do -- No evidence yet if two maps are equal or not, make a non-deterministic choice
+      answer <- generate genBool
+      if answer
+        then makeEq v1 v2
+        else return ()-- makeNeq
+      return $ BoolValue answer
 
-chooseEquality :: (Monad m, Functor m) => Value -> Value -> Execution m Value
-chooseEquality (Reference r1) (Reference r2) = do
-  answer <- generate genBool
-  -- if answer
-    -- then makeEq
-    -- else makeNeq
-  return $ BoolValue answer
-  -- where
-    -- makeEqu = do
-      -- h <- use $ envMemory.memHeap
-      -- case h `at` r1 of
-        -- MapValue Nothing override -> envMemory.memHeap %= update baseRef (MapValue Nothing (M.insert argsV val baseMap)) --here
-        -- MapValue (Just base) override ->
-    -- makeNonequal = 
+-- | Ensure that two compatible values are equal
+makeEq :: (Monad m, Functor m) => Value -> Value -> Execution m ()
+makeEq (Reference r1) (Reference r2) = do
+  h <- use $ envMemory.memHeap
+  let (s1, vals1) = mapSourceValues h r1
+  let (s2, vals2) = mapSourceValues h r2
+  Reference newSource <- allocate . MapValue . Source $ vals1 `M.union` vals2
+  zipWithM_ makeEq (M.elems $ vals1 `M.intersection` vals2) (M.elems $ vals2 `M.intersection` vals1) -- Enforce that the values at shared indexes are equal
+  mapM_ decRefCountValue (M.elems (restrictDomain (M.keysSet vals1) vals2)) -- Take care of references from vals2 that are no longer used
+  derive r1 newSource
+  derive r2 newSource
+  where
+    derive r newSource = do
+      deriveBase r newSource
+      envMemory.memHeap %= update r (MapValue (Derived newSource M.empty S.empty))      
+      envMemory.memHeap %= incRefCount newSource      
+    deriveBase r newSource = do
+      MapValue repr <- readHeap r
+      case repr of
+        Source _ -> return ()
+        Derived base override undef -> do
+          h <- use $ envMemory.memHeap
+          let vals = mapValues h base
+          let diffDomain = M.keysSet override `S.union` undef
+          let absent = diffDomain S.\\ (M.keysSet vals)
+          deriveBase base newSource
+          envMemory.memHeap %= update base (MapValue (Derived newSource (restrictDomain diffDomain vals) absent))
+          envMemory.memHeap %= incRefCount newSource
+          envMemory.memHeap %= decRefCount base
+makeEq (MapValue _) (MapValue _) = internalError "Attempt to call makeEq on maps directly" 
+makeEq _ _ = return ()
 
 -- | Evaluate an expression;
 -- can have a side-effect of initializing variables that were not previously defined
@@ -618,7 +639,7 @@ evalMapSelection m args pos = do
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
   h <- use (envMemory.memHeap)
-  let (source, vals) = srcVals h r
+  let vals = mapValues h r
   case M.lookup argsV vals of
     Just v -> return v
     Nothing -> do
@@ -630,10 +651,16 @@ evalMapSelection m args pos = do
         -- Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
         -- Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
       incRefCountValue val
-      MapValue (Source baseVals) <- readHeap source
-      envMemory.memHeap %= update source (MapValue (Source (M.insert argsV val baseVals)))
+      define r argsV val
       return val    
   where
+    define r argsV val = do
+      MapValue repr <- readHeap r
+      case repr of
+        Source baseVals -> envMemory.memHeap %= update r (MapValue (Source (M.insert argsV val baseVals)))
+        Derived base override undef -> if argsV `S.member` undef
+          then envMemory.memHeap %= update r (MapValue (Derived base (M.insert argsV val override) (S.delete argsV undef)))
+          else define base argsV val
     mapVariable tc (Var v) = if M.member v (allVars tc)
       then Just v
       else Nothing

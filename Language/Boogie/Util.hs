@@ -45,6 +45,7 @@ module Language.Boogie.Util (
   interval,
   fromRight,
   deleteAll,
+  restrictDomain,
   removeDomain,
   mapItwType,
   changeState,
@@ -370,9 +371,13 @@ fromRight (Right x) = x
 deleteAll :: Ord k => [k] -> Map k a -> Map k a
 deleteAll keys m = foldr M.delete m keys
 
+-- | 'restrictDomain' @keys m@ : map @m@ restricted on the set of keys @keys@
+restrictDomain :: Ord k => Set k -> Map k a -> Map k a
+restrictDomain keys m = M.filterWithKey (\k _ -> k `S.member` keys) m
+
 -- | 'removeDomain' @keys m@ : map @m@ with the set of keys @keys@ removed from its domain
 removeDomain :: Ord k => Set k -> Map k a -> Map k a
-removeDomain keys m = M.filterWithKey (\k _ -> not (k `S.member` keys)) m
+removeDomain keys m = M.filterWithKey (\k _ -> k `S.notMember` keys) m
 
 mapItwType f (IdTypeWhere i t w) = IdTypeWhere i (f t) w
 
