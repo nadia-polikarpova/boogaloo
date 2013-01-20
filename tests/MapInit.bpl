@@ -4,6 +4,11 @@ var m1, m2: [int] ([int] int);
 procedure Test() returns ()
   modifies a, b, c, m1, m2;
 {
+  havoc a, b;
+  assume a[2] == 2;
+  assume b[2] == 3;
+  assert a != b; // must be non-equal
+
   havoc a;
   b := a;
   assume a[0] >= 1;

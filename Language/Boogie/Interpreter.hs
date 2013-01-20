@@ -48,6 +48,8 @@ import Language.Boogie.BasicBlocks
 import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
+import Data.Set (Set)
+import qualified Data.Set as S
 import Control.Monad.Error hiding (join)
 import Control.Applicative hiding (empty)
 import Control.Monad.State hiding (join)
@@ -320,7 +322,7 @@ testCaseSummary debug tc@(TestCase sig mem mErr) = text (psigName sig) <>
   outcomeDoc tc
   where
     storeRepr store = if debug then store else userStore (mem^.memHeap) store
-    removeEmptyMaps store = M.filter (\val -> val /= MapValue Nothing M.empty) store
+    removeEmptyMaps store = M.filter (\val -> val /= MapValue emptyMap) store
     localsRepr = storeRepr $ mem^.memLocals
     globalInputsRepr = removeEmptyMaps . storeRepr $ (mem^.memOld) `M.union` (mem^.memConstants)
     inDoc name = valueDoc $ localsRepr ! name    
@@ -400,7 +402,7 @@ generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
 generateValue t pos = case t of
     IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
     -- Maps are initializaed lazily, allocate an empty map on the heap:
-    MapType _ _ _ -> allocate $ MapValue Nothing M.empty
+    MapType _ _ _ -> allocate $ MapValue emptyMap
     BoolType -> BoolValue <$> generate genBool
     IntType -> IntValue <$> generate genInteger
     IdType _ _ -> CustomValue <$> generate genInteger
@@ -452,11 +454,11 @@ collectGarbage :: (Monad m, Functor m) => Execution m ()
 collectGarbage = do
   h <- use (envMemory.memHeap)
   when (hasGarbage h) (do
-    MapValue mBase override <- state $ withHeap dealloc
-    case mBase of
-      Nothing -> return ()
-      Just base -> envMemory.memHeap %= decRefCount base
-    mapM_ decElem (M.elems override)
+    MapValue repr <- state $ withHeap dealloc
+    case repr of
+      Source _ -> return ()
+      Derived base _ _ -> envMemory.memHeap %= decRefCount base
+    mapM_ decElem (M.elems (stored repr))
     collectGarbage)
   where
     decElem v = case v of
@@ -500,10 +502,11 @@ binOp pos Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
 binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 >= b2)
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
 binOp pos Eq      v1 v2                         = do
-                                                    h <- use (envMemory.memHeap)
+                                                    h <- use $ envMemory.memHeap
                                                     case objectEq h v1 v2 of
                                                       Just b -> return $ BoolValue b
-                                                      Nothing -> throwRuntimeFailure (MapEquality (deepDeref h v1) (deepDeref h v2)) pos 
+                                                      Nothing -> -- chooseEquality v1 v2 -- No evidence yet if two maps are equal or not, make a non-deterministic choice
+                                                        throwRuntimeFailure (MapEquality (deepDeref h v1) (deepDeref h v2)) pos 
 binOp pos Neq     v1 v2                         = vnot <$> binOp pos Eq v1 v2
 binOp pos Lc      v1 v2                         = throwRuntimeFailure (UnsupportedConstruct "orders") pos
 
@@ -514,6 +517,21 @@ a `euclidean` b =
     (q, r) | r >= 0    -> (q, r)
            | b >  0    -> (q - 1, r + b)
            | otherwise -> (q + 1, r - b)
+
+chooseEquality :: (Monad m, Functor m) => Value -> Value -> Execution m Value
+chooseEquality (Reference r1) (Reference r2) = do
+  answer <- generate genBool
+  -- if answer
+    -- then makeEq
+    -- else makeNeq
+  return $ BoolValue answer
+  -- where
+    -- makeEqu = do
+      -- h <- use $ envMemory.memHeap
+      -- case h `at` r1 of
+        -- MapValue Nothing override -> envMemory.memHeap %= update baseRef (MapValue Nothing (M.insert argsV val baseMap)) --here
+        -- MapValue (Just base) override ->
+    -- makeNonequal = 
 
 -- | Evaluate an expression;
 -- can have a side-effect of initializing variables that were not previously defined
@@ -600,9 +618,10 @@ evalMapSelection m args pos = do
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
   h <- use (envMemory.memHeap)
-  case lookupHeap h argsV r of
-    Left v -> return v
-    Right baseRef -> do
+  let (source, vals) = srcVals h r
+  case M.lookup argsV vals of
+    Just v -> return v
+    Nothing -> do
       tc <- use envTypeContext
       let rangeType = exprType tc (gen $ MapSelection m args)
       val <- generateValue rangeType pos
@@ -611,17 +630,10 @@ evalMapSelection m args pos = do
         -- Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
         -- Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
       incRefCountValue val
-      MapValue Nothing baseMap <- readHeap baseRef
-      envMemory.memHeap %= update baseRef (MapValue Nothing (M.insert argsV val baseMap))
+      MapValue (Source baseVals) <- readHeap source
+      envMemory.memHeap %= update source (MapValue (Source (M.insert argsV val baseVals)))
       return val    
   where
-    lookupHeap :: Heap Value -> [Value] -> Ref -> Either Value Ref
-    lookupHeap h argsV r = let MapValue mBase map = h `at` r in
-      case M.lookup argsV map of
-        Just v -> Left v
-        Nothing -> case mBase of
-          Nothing -> Right r
-          Just baseRef -> lookupHeap h argsV baseRef
     mapVariable tc (Var v) = if M.member v (allVars tc)
       then Just v
       else Nothing
@@ -630,14 +642,17 @@ evalMapSelection m args pos = do
         
 evalMapUpdate m args new pos = do
   Reference r <- eval m
-  MapValue mBase o <- readHeap r
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
   newV <- eval new
   incRefCountValue newV
-  let (base, override) = case mBase of Nothing -> (r, M.singleton argsV newV); Just b -> (b, M.insert argsV newV o)
-  envMemory.memHeap %= incRefCount base
-  allocate $ MapValue (Just base) override
+  MapValue repr <- readHeap r
+  let 
+    (newSource, newRepr) = case repr of 
+      Source _ -> (r, Derived r (M.singleton argsV newV) S.empty)
+      Derived base override undef -> (base, Derived base (M.insert argsV newV override) (S.delete argsV undef))
+  envMemory.memHeap %= incRefCount newSource
+  allocate $ MapValue newRepr
   
 evalIf cond e1 e2 = do
   v <- eval cond

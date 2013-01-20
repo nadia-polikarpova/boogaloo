@@ -45,6 +45,7 @@ module Language.Boogie.Util (
   interval,
   fromRight,
   deleteAll,
+  removeDomain,
   mapItwType,
   changeState,
   withLocalState,
@@ -58,6 +59,8 @@ import Data.Maybe
 import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
+import Data.Set (Set)
+import qualified Data.Set as S
 import Control.Applicative
 import Control.Monad.State
 import Control.Monad.Stream
@@ -366,6 +369,10 @@ fromRight (Right x) = x
 -- | 'deleteAll' @keys m@ : map @m@ with @keys@ removed from its domain
 deleteAll :: Ord k => [k] -> Map k a -> Map k a
 deleteAll keys m = foldr M.delete m keys
+
+-- | 'removeDomain' @keys m@ : map @m@ with the set of keys @keys@ removed from its domain
+removeDomain :: Ord k => Set k -> Map k a -> Map k a
+removeDomain keys m = M.filterWithKey (\k _ -> not (k `S.member` keys)) m
 
 mapItwType f (IdTypeWhere i t w) = IdTypeWhere i (f t) w
 

@@ -2,10 +2,15 @@
 
 -- | Execution state for the interpreter
 module Language.Boogie.Environment ( 
+  MapRepr (..),
+  emptyMap,
+  stored,
   Value (..),
   vnot,
-  objectEq,
+  srcVals,
+  src,
   deepDeref,
+  objectEq,
   valueDoc,
   Store,
   emptyStore,
@@ -54,35 +59,110 @@ import Language.Boogie.TypeChecker (Context)
 import Language.Boogie.PrettyPrinter
 import Data.Map (Map, (!))
 import qualified Data.Map as M
+import Data.Set (Set)
+import qualified Data.Set as S
 import Control.Lens hiding (Context, at)
 import Text.PrettyPrint
 
 {- Values -}
 
--- | Run-time value
-data Value = IntValue Integer |               -- ^ Integer value
-  BoolValue Bool |                            -- ^ Boolean value
-  CustomValue Integer |                       -- ^ Value of a user-defined type (values with the same code are considered equal)
-  MapValue (Maybe Ref) (Map [Value] Value) |  -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
-  Reference Ref                               -- ^ Reference to a map stored in the heap
+-- | Representation of a map value
+data MapRepr = 
+  Source (Map [Value] Value) |                  -- ^ Map that comes directly from a non-deterministic choice, possibly with some key-value pair defined
+  Derived Ref (Map [Value] Value) (Set [Value]) -- ^ Map that is derived from another map by redefining and undefining values at some keys
   deriving (Eq, Ord)
   
-vnot (BoolValue b) = BoolValue (not b)  
+-- | Representation of an empty map  
+emptyMap = Source M.empty
+
+-- | Key-value pairs stored explicitly in a map representation
+stored :: MapRepr -> Map [Value] Value
+stored (Source vals) = vals
+stored (Derived _ override _) = override
+  
+-- | Pretty-printed map representation  
+mapReprDoc :: MapRepr -> Doc
+mapReprDoc repr = case repr of
+  Source vals -> brackets (commaSep (map itemDoc (M.toList vals)))
+  Derived base override undef -> refDoc base <> 
+    brackets (commaSep (map itemDoc (M.toList override) ++ map undefDoc (S.toList undef))) 
+  where 
+    itemDoc (keys, v) = commaSep (map valueDoc keys) <+> text "->" <+> valueDoc v
+    undefDoc keys = commaSep (map valueDoc keys) <+> text "-> ?"
+
+-- | Run-time value
+data Value = IntValue Integer |  -- ^ Integer value
+  BoolValue Bool |               -- ^ Boolean value
+  CustomValue Integer |          -- ^ Value of a user-defined type (values with the same code are considered equal)
+  MapValue MapRepr |             -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
+  Reference Ref                  -- ^ Reference to a map stored in the heap
+  deriving (Eq, Ord)
+  
+vnot (BoolValue b) = BoolValue (not b)
+
+unMapValue (MapValue repr) = repr
 
 -- | Pretty-printed value
 valueDoc :: Value -> Doc
 valueDoc (IntValue n) = integer n
 valueDoc (BoolValue False) = text "false"
 valueDoc (BoolValue True) = text "true"
-valueDoc (MapValue mR m) = optionMaybe mR refDoc <> 
-  brackets (commaSep (map itemDoc (M.toList m)))
-  where itemDoc (keys, v) = commaSep (map valueDoc keys) <+> text "->" <+>  valueDoc v
+valueDoc (MapValue repr) = mapReprDoc repr
 valueDoc (CustomValue n) = text "custom_" <> integer n
 valueDoc (Reference r) = refDoc r
 
 instance Show Value where
   show v = show (valueDoc v)
+  
+{- Map operations -}
 
+-- | Source reference and key-value pairs of a reference in a heap
+srcVals :: Heap Value -> Ref -> (Ref, (Map [Value] Value))
+srcVals h r = case unMapValue $ h `at` r of
+  Source vals -> (r, vals)
+  Derived base override undef -> let (s, v) = srcVals h base
+    in (s, override `M.union` (removeDomain undef v))
+    
+-- | First component of 'srcVals'
+src h r = fst $ srcVals h r
+
+-- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
+deepDeref :: Heap Value -> Value -> Value
+deepDeref h v = deepDeref' v
+  where
+    deepDeref' (Reference r) = let (s_, vals) = srcVals h r
+      in MapValue . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref')) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
+    deepDeref' (MapValue _) = internalError "Attempt to dereference a map directly"
+    deepDeref' v = v
+
+-- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
+objectEq :: Heap Value -> Value -> Value -> Maybe Bool
+objectEq h (Reference r1) (Reference r2) = if r1 == r2
+  then Just True -- Equal references point to equal maps
+  else let 
+    (s1, vals1) = srcVals h r1
+    (s2, vals2) = srcVals h r2
+    in if mustDisagree vals1 vals2
+      then Just False
+      else if s1 == s2 && mustAgree vals1 vals2
+        then Just True
+        else Nothing
+  where
+    mustDisagree m1 m2 = M.foldl (||) False $ (M.intersectionWith (mustNeq h) m1 m2)
+    mustAgree m1 m2 = let common = M.intersectionWith (mustEq h) m1 m2 in
+      M.size m1 == M.size common && M.size m2 == M.size common && M.foldl (&&) True common
+objectEq _ (MapValue _) (MapValue _) = internalError "Attempt to compare two maps"
+objectEq _ v1 v2 = Just $ v1 == v2
+
+mustEq h v1 v2 = case objectEq h v1 v2 of
+  Just True -> True
+  _ -> False  
+mustNeq h v1 v2 = case objectEq h v1 v2 of
+  Just False -> True
+  _ -> False  
+mayEq h v1 v2 = not $ mustNeq h v1 v2
+mayNeq h v1 v2 = not $ mustEq h v1 v2
+  
 {- Store -}  
 
 -- | Store: stores variable values at runtime 
@@ -97,55 +177,9 @@ storeDoc :: Store -> Doc
 storeDoc vars = vsep $ map varDoc (M.toList vars)
   where varDoc (id, val) = text id <+> text "=" <+> valueDoc val
   
--- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
-deepDeref :: Heap Value -> Value -> Value
-deepDeref h v = deepDeref' v
-  where
-    deepDeref' (Reference r) = deepDeref' (h `at` r)
-    deepDeref' (MapValue mR m) = let
-      unValue (MapValue Nothing m) = m
-      base = case mR of
-        Nothing -> M.empty
-        Just r -> unValue $ deepDeref' (Reference r)
-      override = (M.map deepDeref' . M.mapKeys (map deepDeref')) m -- Here we do not assume that keys contain no references, as this is used for error reporting
-      in MapValue Nothing $ M.union override base
-    deepDeref' v = v
-
 -- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@
 userStore :: Heap Value -> Store -> Store
 userStore heap store = M.map (deepDeref heap) store
-
--- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
-objectEq :: Heap Value -> Value -> Value -> Maybe Bool
-objectEq h (Reference r1) (Reference r2) = if r1 == r2
-  then Just True -- Equal references point to equal maps
-  else let 
-    (br1, over1) = baseOverride r1
-    (br2, over2) = baseOverride r2
-    in if mustDisagree h over1 over2
-      then Just False -- Must disagree on some indexes, cannot be equal  
-      else if br1 == br2 && mustAgree h over1 over2
-        then Just True -- Derived from the same base map and must agree on all overridden indexes, must be equal
-        else Nothing -- Derived from different base maps or may disagree on some overridden indexes, no conclusion        
-  where
-    baseOverride r = let (MapValue mBase m) = h `at` r in
-      case mBase of
-        Nothing -> (r, M.empty)
-        Just base -> (base, m)
-    mustDisagree h m1 m2 = M.foldl (||) False $ (M.intersectionWith (mustNeq h) m1 m2)
-    mustAgree h m1 m2 = let common = M.intersectionWith (mustEq h) m1 m2 in
-      M.size m1 == M.size common && M.size m2 == M.size common && M.foldl (&&) True common
-objectEq _ (MapValue base1 m1) (MapValue base2 m2) = internalError "Attempt to compare two maps"
-objectEq _ v1 v2 = Just $ v1 == v2
-
-mustEq h v1 v2 = case objectEq h v1 v2 of
-  Just True -> True
-  _ -> False  
-mustNeq h v1 v2 = case objectEq h v1 v2 of
-  Just False -> True
-  _ -> False  
-mayEq h v1 v2 = not $ mustNeq h v1 v2
-mayNeq h v1 v2 = not $ mustEq h v1 v2
 
 -- | 'functionCacheName' @name@ : name of a constant that stores cached applications of function @name@
 -- (must be distinct from all global names)
