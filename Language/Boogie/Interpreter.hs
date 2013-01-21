@@ -528,12 +528,21 @@ makeEq (Reference r1) (Reference r2) = do
   h <- use $ envMemory.memHeap
   let (s1, vals1) = mapSourceValues h r1
   let (s2, vals2) = mapSourceValues h r2
-  Reference newSource <- allocate . MapValue . Source $ vals1 `M.union` vals2
-  zipWithM_ makeEq (M.elems $ vals1 `M.intersection` vals2) (M.elems $ vals2 `M.intersection` vals1) -- Enforce that the values at shared indexes are equal
-  mapM_ decRefCountValue (M.elems (restrictDomain (M.keysSet vals1) vals2)) -- Take care of references from vals2 that are no longer used
-  derive r1 newSource
-  derive r2 newSource
+  if s1 == s2
+    then do -- Same source; compatible, but nonequal overrides
+      storeMissing r1 (vals2 `M.difference` vals1)
+      storeMissing r2 (vals1 `M.difference` vals2)
+    else do -- Different sources
+      Reference newSource <- allocate . MapValue . Source $ vals1 `M.union` vals2
+      zipWithM_ makeEq (M.elems $ vals1 `M.intersection` vals2) (M.elems $ vals2 `M.intersection` vals1) -- Enforce that the values at shared indexes are equal
+      mapM_ decRefCountValue (M.elems (restrictDomain (M.keysSet vals1) vals2)) -- Take care of references from vals2 that are no longer used
+      derive r1 newSource
+      derive r2 newSource
   where
+    storeMissing r missing = do
+      MapValue (Derived base override undef) <- readHeap r
+      envMemory.memHeap %= update r (MapValue (Derived base (override `M.union` missing) (undef S.\\ M.keysSet missing)))    
+      mapM_ incRefCountValue (M.elems missing)
     derive r newSource = do
       deriveBase r newSource
       envMemory.memHeap %= update r (MapValue (Derived newSource M.empty S.empty))      
