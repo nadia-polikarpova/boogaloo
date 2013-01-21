@@ -74,7 +74,7 @@ executeProgram p tc gen entryPoint = toList $ executeProgramGeneric p tc gen ent
 executeProgramDet :: Program -> Context -> Id -> TestCase
 executeProgramDet p tc entryPoint = runIdentity $ executeProgramGeneric p tc defaultGenerator entryPoint
       
--- | 'executeProgramGeneric' @p tc genValue genIndex entryPoint@ :
+-- | 'executeProgramGeneric' @p tc generator genIndex entryPoint@ :
 -- Execute program @p@ in type context @tc@ with input generator @generator@, starting from procedure @entryPoint@,
 -- and return the outcome(s) embedded into the generator's monad.
 executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> Generator m -> Id -> m (TestCase)
@@ -400,12 +400,20 @@ generate f = do
 -- fail if @t@ is a type variable
 generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
 generateValue t pos = case t of
-    IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
-    -- Maps are initializaed lazily, allocate an empty map on the heap:
-    MapType _ _ _ -> allocate $ MapValue emptyMap
-    BoolType -> BoolValue <$> generate genBool
-    IntType -> IntValue <$> generate genInteger
-    IdType _ _ -> CustomValue <$> generate genInteger
+  IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
+  -- Maps are initializaed lazily, allocate an empty map on the heap:
+  MapType _ _ _ -> allocate $ MapValue emptyMap
+  BoolType -> BoolValue <$> generate genBool
+  IntType -> IntValue <$> generate genInteger
+  IdType _ _ -> CustomValue <$> generate genInteger
+  
+-- | 'generateValueLike' @v@ : choose a value of the same type as @v@
+generateValueLike :: (Monad m, Functor m) => Value -> Execution m Value
+generateValueLike (BoolValue _) = BoolValue <$> generate genBool
+generateValueLike (IntValue _) = IntValue <$> generate genInteger
+generateValueLike (CustomValue _) = CustomValue <$> generate genInteger
+generateValueLike (Reference _) = allocate $ MapValue emptyMap
+generateValueLike (MapValue _) = internalError "Attempt to generateValueLike a map value directly"
         
 -- | 'incRefCountValue' @val@ : if @val@ is a reference, increase its count
 incRefCountValue val = case val of
@@ -509,60 +517,6 @@ a `euclidean` b =
            | b >  0    -> (q - 1, r + b)
            | otherwise -> (q + 1, r - b)
          
--- | 'evalEquality' @v1 v2@ : Evaluate @v1 == v2@
-evalEquality :: (Monad m, Functor m) => Value -> Value -> Execution m Value
-evalEquality v1 v2 = do
-  h <- use $ envMemory.memHeap
-  case objectEq h v1 v2 of
-    Just b -> return $ BoolValue b
-    Nothing -> do -- No evidence yet if two maps are equal or not, make a non-deterministic choice
-      answer <- generate genBool
-      if answer
-        then makeEq v1 v2
-        else return ()-- makeNeq
-      return $ BoolValue answer
-
--- | Ensure that two compatible values are equal
-makeEq :: (Monad m, Functor m) => Value -> Value -> Execution m ()
-makeEq (Reference r1) (Reference r2) = do
-  h <- use $ envMemory.memHeap
-  let (s1, vals1) = mapSourceValues h r1
-  let (s2, vals2) = mapSourceValues h r2
-  if s1 == s2
-    then do -- Same source; compatible, but nonequal overrides
-      storeMissing r1 (vals2 `M.difference` vals1)
-      storeMissing r2 (vals1 `M.difference` vals2)
-    else do -- Different sources
-      Reference newSource <- allocate . MapValue . Source $ vals1 `M.union` vals2
-      zipWithM_ makeEq (M.elems $ vals1 `M.intersection` vals2) (M.elems $ vals2 `M.intersection` vals1) -- Enforce that the values at shared indexes are equal
-      mapM_ decRefCountValue (M.elems (restrictDomain (M.keysSet vals1) vals2)) -- Take care of references from vals2 that are no longer used
-      derive r1 newSource
-      derive r2 newSource
-  where
-    storeMissing r missing = do
-      MapValue (Derived base override undef) <- readHeap r
-      envMemory.memHeap %= update r (MapValue (Derived base (override `M.union` missing) (undef S.\\ M.keysSet missing)))    
-      mapM_ incRefCountValue (M.elems missing)
-    derive r newSource = do
-      deriveBase r newSource
-      envMemory.memHeap %= update r (MapValue (Derived newSource M.empty S.empty))      
-      envMemory.memHeap %= incRefCount newSource      
-    deriveBase r newSource = do
-      MapValue repr <- readHeap r
-      case repr of
-        Source _ -> return ()
-        Derived base override undef -> do
-          h <- use $ envMemory.memHeap
-          let vals = mapValues h base
-          let diffDomain = M.keysSet override `S.union` undef
-          let absent = diffDomain S.\\ (M.keysSet vals)
-          deriveBase base newSource
-          envMemory.memHeap %= update base (MapValue (Derived newSource (restrictDomain diffDomain vals) absent))
-          envMemory.memHeap %= incRefCount newSource
-          envMemory.memHeap %= decRefCount base
-makeEq (MapValue _) (MapValue _) = internalError "Attempt to call makeEq on maps directly" 
-makeEq _ _ = return ()
-
 -- | Evaluate an expression;
 -- can have a side-effect of initializing variables that were not previously defined
 eval :: (Monad m, Functor m) => Expression -> Execution m Value
@@ -1065,4 +1019,86 @@ toLinearForm aExpr constraints x = case node aExpr of
     combineBinOp Times  (a, b)   (0, k)   = return (k * a, k * b)
     combineBinOp Times  (0, k)   (a, b)   = return (k * a, k * b)
     combineBinOp _ _ _ = throwInternalException NotLinear
-  
+    
+{- Map equality -}
+
+-- | 'updateStoredAt' @r newVals@ : add @newVals@ to the values stored at reference @r@, adjust their reference count
+updateStoredAt r newVals = do
+  MapValue repr <- readHeap r
+  envMemory.memHeap %= update r (MapValue (updateStored newVals repr))    
+  mapM_ incRefCountValue (M.elems newVals)    
+
+-- | 'evalEquality' @v1 v2@ : Evaluate @v1 == v2@
+evalEquality :: (Monad m, Functor m) => Value -> Value -> Execution m Value
+evalEquality v1 v2 = do
+  h <- use $ envMemory.memHeap
+  case objectEq h v1 v2 of
+    Just b -> return $ BoolValue b
+    Nothing -> decideEquality v1 v2  -- No evidence yet if two maps are equal or not, make a non-deterministic choice
+  where
+    decideEquality (Reference r1) (Reference r2) = do
+      h <- use $ envMemory.memHeap
+      let (s1, vals1) = mapSourceValues h r1
+      let (s2, vals2) = mapSourceValues h r2
+      mustEqual <- generate genBool                     -- Decide if maps should be considered equal right away
+      compareOverrides <- generate genBool              -- Decide if the comparison will be based on overrides
+      if mustEqual
+        then do makeEq v1 v2; return $ BoolValue True   -- Make the maps equal and return True
+        else if compareOverrides || s1 == s2            -- If decided to compare overrides, or else the sources are the same
+          then decideOverrideEquality r1 vals1 r2 vals2           -- decide equality based on overrides
+          else do makeSourceNeq s1 s2; return $ BoolValue False   -- otherwise make the sources non-equal and return False
+    decideOverrideEquality r1 vals1 r2 vals2 = do
+      let unique = (vals2 `M.difference` vals1) `M.union` (vals1 `M.difference` vals2)
+      if M.null unique
+        then do makeEq v1 v2; return $ BoolValue True
+        else do
+          (i, val) <- (`M.elemAt` unique) <$> generate (`genIndex` M.size unique) -- Choose an index at which one of the maps is not yet defined
+          newVal <- generateValueLike val
+          BoolValue answer <- evalEquality val newVal 
+          if answer
+            then makeEq v1 v2
+            else if i `M.member` vals1
+              then updateStoredAt r2 (M.singleton i newVal)
+              else updateStoredAt r1 (M.singleton i newVal)
+          return $ BoolValue answer    
+    makeSourceNeq s1 s2 = do
+      updateStoredAt s1 (M.singleton [special s1, special s2] (special s1))
+      updateStoredAt s2 (M.singleton [special s1, special s2] (special s2))
+    special r = CustomValue $ toInteger r
+          
+-- | Ensure that two compatible values are equal
+makeEq :: (Monad m, Functor m) => Value -> Value -> Execution m ()
+makeEq (Reference r1) (Reference r2) = do
+  h <- use $ envMemory.memHeap
+  let (s1, vals1) = mapSourceValues h r1
+  let (s2, vals2) = mapSourceValues h r2
+  if s1 == s2
+    then do -- Same source; compatible, but nonequal overrides
+      updateStoredAt r1 (vals2 `M.difference` vals1)
+      updateStoredAt r2 (vals1 `M.difference` vals2)
+    else do -- Different sources
+      Reference newSource <- allocate . MapValue . Source $ vals1 `M.union` vals2
+      zipWithM_ makeEq (M.elems $ vals1 `M.intersection` vals2) (M.elems $ vals2 `M.intersection` vals1) -- Enforce that the values at shared indexes are equal
+      mapM_ decRefCountValue (M.elems (restrictDomain (M.keysSet vals1) vals2)) -- Take care of references from vals2 that are no longer used
+      derive r1 newSource
+      derive r2 newSource
+  where
+    derive r newSource = do
+      deriveBase r newSource
+      envMemory.memHeap %= update r (MapValue (Derived newSource M.empty S.empty))      
+      envMemory.memHeap %= incRefCount newSource      
+    deriveBase r newSource = do
+      MapValue repr <- readHeap r
+      case repr of
+        Source _ -> return ()
+        Derived base override undef -> do
+          h <- use $ envMemory.memHeap
+          let vals = mapValues h base
+          let diffDomain = M.keysSet override `S.union` undef
+          let absent = diffDomain S.\\ (M.keysSet vals)
+          deriveBase base newSource
+          envMemory.memHeap %= update base (MapValue (Derived newSource (restrictDomain diffDomain vals) absent))
+          envMemory.memHeap %= incRefCount newSource
+          envMemory.memHeap %= decRefCount base
+makeEq (MapValue _) (MapValue _) = internalError "Attempt to call makeEq on maps directly" 
+makeEq _ _ = return ()  

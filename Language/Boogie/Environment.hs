@@ -5,6 +5,7 @@ module Language.Boogie.Environment (
   MapRepr (..),
   emptyMap,
   stored,
+  updateStored,
   Value (..),
   vnot,
   mapSourceValues,
@@ -80,6 +81,11 @@ emptyMap = Source M.empty
 stored :: MapRepr -> Map [Value] Value
 stored (Source vals) = vals
 stored (Derived _ override _) = override
+
+-- | 'updateStored' @newVals repr@ : add @newVals@ to the key-value pairs stored in @repr@
+updateStored :: Map [Value] Value -> MapRepr -> MapRepr
+updateStored newVals (Source vals) = Source (newVals `M.union` vals)
+updateStored newVals (Derived base override undef) = Derived base (newVals `M.union` override) (undef S.\\ M.keysSet newVals)
   
 -- | Pretty-printed map representation  
 mapReprDoc :: MapRepr -> Doc
