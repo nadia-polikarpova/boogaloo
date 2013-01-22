@@ -11,6 +11,7 @@ module Language.Boogie.Environment (
   mapSourceValues,
   mapSource,
   mapValues,
+  refIdTypeName,
   deepDeref,
   objectEq,
   valueDoc,
@@ -54,6 +55,7 @@ module Language.Boogie.Environment (
 ) where
 
 import Language.Boogie.Util
+import Language.Boogie.Tokens (nonIdChar)
 import Language.Boogie.AST
 import Language.Boogie.Heap
 import Language.Boogie.Generator
@@ -93,14 +95,15 @@ mapReprDoc repr = case repr of
   Source vals -> brackets (commaSep (map itemDoc (M.toList vals)))
   Derived base override undef -> refDoc base <> 
     brackets (commaSep (map itemDoc (M.toList override) ++ map undefDoc (S.toList undef))) 
-  where 
-    itemDoc (keys, v) = commaSep (map valueDoc keys) <+> text "->" <+> valueDoc v
-    undefDoc keys = commaSep (map valueDoc keys) <+> text "-> ?"
+  where
+    keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map valueDoc) keys
+    itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> valueDoc v
+    undefDoc keys = keysDoc keys <+> text "-> ?"
 
 -- | Run-time value
 data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
-  CustomValue Integer |          -- ^ Value of a user-defined type (values with the same code are considered equal)
+  CustomValue Id Integer |       -- ^ Value of a user-defined type
   MapValue MapRepr |             -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
   Reference Ref                  -- ^ Reference to a map stored in the heap
   deriving (Eq, Ord)
@@ -115,7 +118,7 @@ valueDoc (IntValue n) = integer n
 valueDoc (BoolValue False) = text "false"
 valueDoc (BoolValue True) = text "true"
 valueDoc (MapValue repr) = mapReprDoc repr
-valueDoc (CustomValue n) = text "custom_" <> integer n
+valueDoc (CustomValue t n) = text t <+> integer n
 valueDoc (Reference r) = refDoc r
 
 instance Show Value where
@@ -136,14 +139,19 @@ mapSource h r = fst $ mapSourceValues h r
 -- | Second component of 'mapSourceValues'
 mapValues h r = snd $ mapSourceValues h r
 
+-- | Dummy user-defined type used to differentiate map values
+refIdTypeName = nonIdChar : "RefId"
+
 -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
 deepDeref :: Heap Value -> Value -> Value
 deepDeref h v = deepDeref' v
   where
-    deepDeref' (Reference r) = let (s_, vals) = mapSourceValues h r
-      in MapValue . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref')) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
+    deepDeref' (Reference r) = let vals = mapValues h r
+      in MapValue . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref') . M.filter (not . isRefId)) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
     deepDeref' (MapValue _) = internalError "Attempt to dereference a map directly"
     deepDeref' v = v
+    isRefId (CustomValue refIdTypeName _) = True
+    isRefId _ = False
 
 -- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
 objectEq :: Heap Value -> Value -> Value -> Maybe Bool

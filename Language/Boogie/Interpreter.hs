@@ -405,13 +405,13 @@ generateValue t pos = case t of
   MapType _ _ _ -> allocate $ MapValue emptyMap
   BoolType -> BoolValue <$> generate genBool
   IntType -> IntValue <$> generate genInteger
-  IdType _ _ -> CustomValue <$> generate genInteger
+  IdType id _ -> CustomValue id <$> generate genInteger
   
 -- | 'generateValueLike' @v@ : choose a value of the same type as @v@
 generateValueLike :: (Monad m, Functor m) => Value -> Execution m Value
 generateValueLike (BoolValue _) = BoolValue <$> generate genBool
 generateValueLike (IntValue _) = IntValue <$> generate genInteger
-generateValueLike (CustomValue _) = CustomValue <$> generate genInteger
+generateValueLike (CustomValue t _) = CustomValue t <$> generate genInteger
 generateValueLike (Reference _) = allocate $ MapValue emptyMap
 generateValueLike (MapValue _) = internalError "Attempt to generateValueLike a map value directly"
         
@@ -1026,7 +1026,7 @@ toLinearForm aExpr constraints x = case node aExpr of
 updateStoredAt r newVals = do
   MapValue repr <- readHeap r
   envMemory.memHeap %= update r (MapValue (updateStored newVals repr))    
-  mapM_ incRefCountValue (M.elems newVals)    
+  mapM_ incRefCountValue (M.elems newVals)
 
 -- | 'evalEquality' @v1 v2@ : Evaluate @v1 == v2@
 evalEquality :: (Monad m, Functor m) => Value -> Value -> Execution m Value
@@ -1064,7 +1064,7 @@ evalEquality v1 v2 = do
     makeSourceNeq s1 s2 = do
       updateStoredAt s1 (M.singleton [special s1, special s2] (special s1))
       updateStoredAt s2 (M.singleton [special s1, special s2] (special s2))
-    special r = CustomValue $ toInteger r
+    special r = CustomValue refIdTypeName $ toInteger r
           
 -- | Ensure that two compatible values are equal
 makeEq :: (Monad m, Functor m) => Value -> Value -> Execution m ()
