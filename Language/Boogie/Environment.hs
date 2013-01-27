@@ -8,7 +8,7 @@ module Language.Boogie.Environment (
   updateStored,
   Value (..),
   vnot,
-  mapSourceValues,
+  flattenMap,
   mapSource,
   mapValues,
   refIdTypeName,
@@ -72,8 +72,8 @@ import Text.PrettyPrint
 
 -- | Representation of a map value
 data MapRepr = 
-  Source (Map [Value] Value) |                  -- ^ Map that comes directly from a non-deterministic choice, possibly with some key-value pair defined
-  Derived Ref (Map [Value] Value) (Set [Value]) -- ^ Map that is derived from another map by redefining and undefining values at some keys
+  Source (Map [Value] Value) |    -- ^ Map that comes directly from a non-deterministic choice, possibly with some key-value pair defined
+  Derived Ref (Map [Value] Value) -- ^ Map that is derived from another map by redefining values at some keys
   deriving (Eq, Ord)
   
 -- | Representation of an empty map  
@@ -82,23 +82,23 @@ emptyMap = Source M.empty
 -- | Key-value pairs stored explicitly in a map representation
 stored :: MapRepr -> Map [Value] Value
 stored (Source vals) = vals
-stored (Derived _ override _) = override
+stored (Derived _ override) = override
 
+-- ToDo: remove?
 -- | 'updateStored' @newVals repr@ : add @newVals@ to the key-value pairs stored in @repr@
 updateStored :: Map [Value] Value -> MapRepr -> MapRepr
 updateStored newVals (Source vals) = Source (newVals `M.union` vals)
-updateStored newVals (Derived base override undef) = Derived base (newVals `M.union` override) (undef S.\\ M.keysSet newVals)
+updateStored newVals (Derived base override) = Derived base (newVals `M.union` override)
   
 -- | Pretty-printed map representation  
 mapReprDoc :: MapRepr -> Doc
 mapReprDoc repr = case repr of
   Source vals -> brackets (commaSep (map itemDoc (M.toList vals)))
-  Derived base override undef -> refDoc base <> 
-    brackets (commaSep (map itemDoc (M.toList override) ++ map undefDoc (S.toList undef))) 
+  Derived base override -> refDoc base <> 
+    brackets (commaSep (map itemDoc (M.toList override))) 
   where
     keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map valueDoc) keys
     itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> valueDoc v
-    undefDoc keys = keysDoc keys <+> text "-> ?"
 
 -- | Run-time value
 data Value = IntValue Integer |  -- ^ Integer value
@@ -127,17 +127,17 @@ instance Show Value where
 {- Map operations -}
 
 -- | Source reference and key-value pairs of a reference in a heap
-mapSourceValues :: Heap Value -> Ref -> (Ref, (Map [Value] Value))
-mapSourceValues h r = case unMapValue $ h `at` r of
+flattenMap :: Heap Value -> Ref -> (Ref, (Map [Value] Value))
+flattenMap h r = case unMapValue $ h `at` r of
   Source vals -> (r, vals)
-  Derived base override undef -> let (s, v) = mapSourceValues h base
-    in (s, override `M.union` (removeDomain undef v))
+  Derived base override -> let (s, v) = flattenMap h base
+    in (s, override `M.union` v)
     
--- | First component of 'mapSourceValues'
-mapSource h r = fst $ mapSourceValues h r
+-- | First component of 'flattenMap'
+mapSource h r = flattenMap h r ^. _1
 
--- | Second component of 'mapSourceValues'
-mapValues h r = snd $ mapSourceValues h r
+-- | Second component of 'flattenMap'
+mapValues h r = flattenMap h r ^. _2
 
 -- | Dummy user-defined type used to differentiate map values
 refIdTypeName = nonIdChar : "RefId"
@@ -158,8 +158,8 @@ objectEq :: Heap Value -> Value -> Value -> Maybe Bool
 objectEq h (Reference r1) (Reference r2) = if r1 == r2
   then Just True -- Equal references point to equal maps
   else let 
-    (s1, vals1) = mapSourceValues h r1
-    (s2, vals2) = mapSourceValues h r2
+    (s1, vals1) = flattenMap h r1
+    (s2, vals2) = flattenMap h r2
     in if mustDisagree vals1 vals2
       then Just False
       else if s1 == s2 && mustAgree vals1 vals2

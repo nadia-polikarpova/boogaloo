@@ -465,8 +465,8 @@ collectGarbage = do
     MapValue repr <- state $ withHeap dealloc
     case repr of
       Source _ -> return ()
-      Derived base _ _ -> envMemory.memHeap %= decRefCount base
-    mapM_ decRefCountValue (M.elems (stored repr))
+      Derived base _ -> envMemory.memHeap %= decRefCount base
+    mapM_ decRefCountValue (M.elems $ stored repr)
     collectGarbage)
 
 {- Expressions -}
@@ -591,17 +591,24 @@ evalApplication name args pos = do
       executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)
     returnType tc = exprType tc (gen $ Application name args)
     addFrame err = addStackFrame (StackFrame pos name) err
-
     
 rejectMapIndex pos idx = case idx of
   Reference r -> throwRuntimeFailure (UnsupportedConstruct "map as an index") pos
-  _ -> return ()    
+  _ -> return ()
+  
+-- | 'defineMapValue' @r index val@ : Map @index@ to @val@ in the map referenced by @r@,
+-- without changing the set of indexes where @r@ is allowed to differ from its base
+defineMapValue r index val = do
+  MapValue repr <- readHeap r
+  case repr of
+    Source baseVals -> envMemory.memHeap %= update r (MapValue (Source (M.insert index val baseVals)))
+    Derived base override -> defineMapValue base index val  
     
 evalMapSelection m args pos = do   
-  Reference r <- eval m  
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
-  h <- use (envMemory.memHeap)
+  Reference r <- eval m  
+  h <- use $ envMemory.memHeap
   let vals = mapValues h r
   case M.lookup argsV vals of
     Just v -> return v
@@ -614,33 +621,26 @@ evalMapSelection m args pos = do
         -- Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
         -- Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
       incRefCountValue val
-      define r argsV val
+      defineMapValue r argsV val
       return val    
-  where
-    define r argsV val = do
-      MapValue repr <- readHeap r
-      case repr of
-        Source baseVals -> envMemory.memHeap %= update r (MapValue (Source (M.insert argsV val baseVals)))
-        Derived base override undef -> if argsV `S.member` undef
-          then envMemory.memHeap %= update r (MapValue (Derived base (M.insert argsV val override) (S.delete argsV undef)))
-          else define base argsV val
-    mapVariable tc (Var v) = if M.member v (allVars tc)
-      then Just v
-      else Nothing
-    mapVariable tc (MapUpdate m _ _) = mapVariable tc (node m)
-    mapVariable tc _ = Nothing
+  -- where
+    -- mapVariable tc (Var v) = if M.member v (allVars tc)
+      -- then Just v
+      -- else Nothing
+    -- mapVariable tc (MapUpdate m _ _) = mapVariable tc (node m)
+    -- mapVariable tc _ = Nothing
         
 evalMapUpdate m args new pos = do
   Reference r <- eval m
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
   newV <- eval new
-  incRefCountValue newV
   MapValue repr <- readHeap r
   let 
     (newSource, newRepr) = case repr of 
-      Source _ -> (r, Derived r (M.singleton argsV newV) S.empty)
-      Derived base override undef -> (base, Derived base (M.insert argsV newV override) (S.delete argsV undef))
+      Source _ -> (r, Derived r (M.singleton argsV newV))
+      Derived base override -> (base, Derived base (M.insert argsV newV override))
+  mapM_ incRefCountValue (M.elems $ stored newRepr)
   envMemory.memHeap %= incRefCount newSource
   allocate $ MapValue newRepr
   
@@ -1038,67 +1038,98 @@ evalEquality v1 v2 = do
   where
     decideEquality (Reference r1) (Reference r2) = do
       h <- use $ envMemory.memHeap
-      let (s1, vals1) = mapSourceValues h r1
-      let (s2, vals2) = mapSourceValues h r2
+      let (s1, vals1) = flattenMap h r1
+      let (s2, vals2) = flattenMap h r2
       mustEqual <- generate genBool                     -- Decide if maps should be considered equal right away
-      compareOverrides <- generate genBool              -- Decide if the comparison will be based on overrides
+      -- compareOverrides <- generate genBool              -- Decide if the comparison will be based on overrides
       if mustEqual
         then do makeEq v1 v2; return $ BoolValue True   -- Make the maps equal and return True
-        else if compareOverrides || s1 == s2            -- If decided to compare overrides, or else the sources are the same
-          then decideOverrideEquality r1 vals1 r2 vals2           -- decide equality based on overrides
-          else do makeSourceNeq s1 s2; return $ BoolValue False   -- otherwise make the sources non-equal and return False
-    decideOverrideEquality r1 vals1 r2 vals2 = do
-      let unique = (vals2 `M.difference` vals1) `M.union` (vals1 `M.difference` vals2)
-      if M.null unique
-        then do makeEq v1 v2; return $ BoolValue True
-        else do
-          (i, val) <- (`M.elemAt` unique) <$> generate (`genIndex` M.size unique) -- Choose an index at which one of the maps is not yet defined
-          newVal <- generateValueLike val
-          BoolValue answer <- evalEquality val newVal 
-          if answer
-            then makeEq v1 v2
-            else if i `M.member` vals1
-              then updateStoredAt r2 (M.singleton i newVal)
-              else updateStoredAt r1 (M.singleton i newVal)
-          return $ BoolValue answer    
-    makeSourceNeq s1 s2 = do
-      updateStoredAt s1 (M.singleton [special s1, special s2] (special s1))
-      updateStoredAt s2 (M.singleton [special s1, special s2] (special s2))
-    special r = CustomValue refIdTypeName $ toInteger r
+        else return $ BoolValue False
+        -- if compareOverrides || s1 == s2            -- If decided to compare overrides, or else the sources are the same
+          -- then decideOverrideEquality r1 vals1 r2 vals2           -- decide equality based on overrides
+          -- else do makeSourceNeq s1 s2; return $ BoolValue False   -- otherwise make the sources non-equal and return False
+        -- do
+    -- decideOverrideEquality r1 vals1 r2 vals2 = do
+      -- let diff = if hasMapValues vals1
+          -- then vals1 `M.union` vals2 -- If values are maps, then even a value at a common index might still be different
+          -- else (vals2 `M.difference` vals1) `M.union` (vals1 `M.difference` vals2) -- Otherwise only values at non-shared indexes might be different
+      -- (i, val) <- (`M.elemAt` diff) <$> generate (`genIndex` M.size diff) -- Choose an index at which the values might be different
+      -- val1 <- lookupStored r1 i val
+      -- val2 <- lookupStored r2 i val
+      -- BoolValue answer <- evalEquality val1 val2
+      -- when answer $ makeEq v1 v2
+      -- return $ BoolValue answer        
+    
+          -- let unique = (vals2 `M.difference` vals1) `M.union` (vals1 `M.difference` vals2)
+          -- if M.null unique
+            -- then do makeEq v1 v2; return $ BoolValue True
+            -- else do
+              -- (i, val) <- (`M.elemAt` unique) <$> generate (`genIndex` M.size unique) -- Choose an index at which one of the maps is not yet defined
+              -- newVal <- generateValueLike val
+              -- BoolValue answer <- evalEquality val newVal 
+              -- if answer
+                -- then makeEq v1 v2
+                -- else if i `M.member` vals1
+                  -- then updateStoredAt r2 (M.singleton i newVal)
+                  -- else updateStoredAt r1 (M.singleton i newVal)
+              -- return $ BoolValue answer    
+          
+          
+    -- makeSourceNeq s1 s2 = do
+      -- updateStoredAt s1 (M.singleton [special s1, special s2] (special s1))
+      -- updateStoredAt s2 (M.singleton [special s1, special s2] (special s2))
+    -- special r = CustomValue refIdTypeName $ toInteger r
+    -- hasMapValues m
+      -- | M.null m  = False
+      -- | otherwise = case M.findMin m of
+        -- (_, Reference _) -> True
+        -- _ -> False
+    -- lookupStored r i template = do
+      -- h <- use $ envMemory.memHeap
+      -- let vals = mapValues h r    
+      -- case M.lookup i vals of
+        -- Just v -> return v
+        -- Nothing -> do
+          -- v <- generateValueLike template
+          -- defineMapValue r i v
+          -- return v
           
 -- | Ensure that two compatible values are equal
 makeEq :: (Monad m, Functor m) => Value -> Value -> Execution m ()
 makeEq (Reference r1) (Reference r2) = do
   h <- use $ envMemory.memHeap
-  let (s1, vals1) = mapSourceValues h r1
-  let (s2, vals2) = mapSourceValues h r2
+  let (s1, vals1) = flattenMap h r1
+  let (s2, vals2) = flattenMap h r2
+  zipWithM_ makeEq (M.elems $ vals1 `M.intersection` vals2) (M.elems $ vals2 `M.intersection` vals1) -- Enforce that the values at shared indexes are equal
   if s1 == s2
-    then do -- Same source; compatible, but nonequal overrides
-      updateStoredAt r1 (vals2 `M.difference` vals1)
-      updateStoredAt r2 (vals1 `M.difference` vals2)
+    then -- Same source; compatible, but nonequal overrides
+      updateStoredAt s1 $ (vals2 `M.difference` vals1) `M.union` (vals1 `M.difference` vals2)
     else do -- Different sources
       Reference newSource <- allocate . MapValue . Source $ vals1 `M.union` vals2
-      zipWithM_ makeEq (M.elems $ vals1 `M.intersection` vals2) (M.elems $ vals2 `M.intersection` vals1) -- Enforce that the values at shared indexes are equal
-      mapM_ decRefCountValue (M.elems (restrictDomain (M.keysSet vals1) vals2)) -- Take care of references from vals2 that are no longer used
+      mapM_ decRefCountValue (M.elems (vals2 `M.intersection` vals1)) -- Take care of references from vals2 that are no longer used
       derive r1 newSource
       derive r2 newSource
   where
     derive r newSource = do
-      deriveBase r newSource
-      envMemory.memHeap %= update r (MapValue (Derived newSource M.empty S.empty))      
+      deriveBaseOf r newSource M.empty
+      envMemory.memHeap %= update r (MapValue (Derived newSource M.empty))      
       envMemory.memHeap %= incRefCount newSource      
-    deriveBase r newSource = do
+    deriveBaseOf r newSource diffR = do
       MapValue repr <- readHeap r
       case repr of
         Source _ -> return ()
-        Derived base override undef -> do
+        Derived base override -> do
+          let diffBase = override `M.union` diffR -- The difference between base and newSource
           h <- use $ envMemory.memHeap
           let vals = mapValues h base
-          let diffDomain = M.keysSet override `S.union` undef
-          let absent = diffDomain S.\\ (M.keysSet vals)
-          deriveBase base newSource
-          envMemory.memHeap %= update base (MapValue (Derived newSource (restrictDomain diffDomain vals) absent))
+          deriveBaseOf base newSource diffBase
+          newVals <- foldM addMissing (vals `M.intersection` diffBase) (M.toList $ diffBase `M.difference` vals) -- Choose arbitrary values for all keys in diffBase that are not defined for base
+          envMemory.memHeap %= update base (MapValue (Derived newSource newVals))
           envMemory.memHeap %= incRefCount newSource
           envMemory.memHeap %= decRefCount base
+    addMissing vals (key, oldVal) = do
+      newVal <- generateValueLike oldVal
+      incRefCountValue newVal
+      return $ M.insert key newVal vals 
 makeEq (MapValue _) (MapValue _) = internalError "Attempt to call makeEq on maps directly" 
 makeEq _ _ = return ()  
