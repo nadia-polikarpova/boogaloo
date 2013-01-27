@@ -5,7 +5,6 @@ module Language.Boogie.Environment (
   MapRepr (..),
   emptyMap,
   stored,
-  updateStored,
   Value (..),
   vnot,
   flattenMap,
@@ -14,6 +13,8 @@ module Language.Boogie.Environment (
   refIdTypeName,
   deepDeref,
   objectEq,
+  mustAgree,
+  mustDisagree,
   valueDoc,
   Store,
   emptyStore,
@@ -83,12 +84,6 @@ emptyMap = Source M.empty
 stored :: MapRepr -> Map [Value] Value
 stored (Source vals) = vals
 stored (Derived _ override) = override
-
--- ToDo: remove?
--- | 'updateStored' @newVals repr@ : add @newVals@ to the key-value pairs stored in @repr@
-updateStored :: Map [Value] Value -> MapRepr -> MapRepr
-updateStored newVals (Source vals) = Source (newVals `M.union` vals)
-updateStored newVals (Derived base override) = Derived base (newVals `M.union` override)
   
 -- | Pretty-printed map representation  
 mapReprDoc :: MapRepr -> Doc
@@ -160,15 +155,11 @@ objectEq h (Reference r1) (Reference r2) = if r1 == r2
   else let 
     (s1, vals1) = flattenMap h r1
     (s2, vals2) = flattenMap h r2
-    in if mustDisagree vals1 vals2
+    in if mustDisagree h vals1 vals2
       then Just False
-      else if s1 == s2 && mustAgree vals1 vals2
+      else if s1 == s2 && mustAgree h vals1 vals2
         then Just True
         else Nothing
-  where
-    mustDisagree m1 m2 = M.foldl (||) False $ (M.intersectionWith (mustNeq h) m1 m2)
-    mustAgree m1 m2 = let common = M.intersectionWith (mustEq h) m1 m2 in
-      M.size m1 == M.size common && M.size m2 == M.size common && M.foldl (&&) True common
 objectEq _ (MapValue _) (MapValue _) = internalError "Attempt to compare two maps"
 objectEq _ v1 v2 = Just $ v1 == v2
 
@@ -180,6 +171,11 @@ mustNeq h v1 v2 = case objectEq h v1 v2 of
   _ -> False  
 mayEq h v1 v2 = not $ mustNeq h v1 v2
 mayNeq h v1 v2 = not $ mustEq h v1 v2
+
+mustDisagree h vals1 vals2 = M.foldl (||) False $ (M.intersectionWith (mustNeq h) vals1 vals2)
+
+mustAgree h vals1 vals2 = let common = M.intersectionWith (mustEq h) vals1 vals2 in
+      M.size vals1 == M.size common && M.size vals2 == M.size common && M.foldl (&&) True common
   
 {- Store -}  
 
