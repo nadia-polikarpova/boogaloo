@@ -64,21 +64,21 @@ import Text.PrettyPrint
 -- Execute program @p@ /non-deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return an infinite list of possible outcomes (each either runtime failure or the final variable store).
 -- Whenever a value is unspecified, all values of the required type are tried exhaustively.
-executeProgram :: Program -> Context -> Generator Stream -> Maybe (Integer, Integer) -> Id -> [TestCase]
-executeProgram p tc gen qbounds entryPoint = toList $ executeProgramGeneric p tc gen qbounds entryPoint
+executeProgram :: Program -> Context -> Generator Stream -> Maybe Integer -> Id -> [TestCase]
+executeProgram p tc gen qbound entryPoint = toList $ executeProgramGeneric p tc gen qbound entryPoint
 
 -- | 'executeProgramDet' @p tc entryPoint@ :
 -- Execute program @p@ /deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return a single outcome.
 -- Whenever a value is unspecified, a default value of the required type is used.
-executeProgramDet :: Program -> Context -> Maybe (Integer, Integer) -> Id -> TestCase
-executeProgramDet p tc qbounds entryPoint = runIdentity $ executeProgramGeneric p tc defaultGenerator qbounds entryPoint
+executeProgramDet :: Program -> Context -> Maybe Integer -> Id -> TestCase
+executeProgramDet p tc qbound entryPoint = runIdentity $ executeProgramGeneric p tc defaultGenerator qbound entryPoint
       
 -- | 'executeProgramGeneric' @p tc generator genIndex entryPoint@ :
 -- Execute program @p@ in type context @tc@ with input generator @generator@, starting from procedure @entryPoint@,
 -- and return the outcome(s) embedded into the generator's monad.
-executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> Generator m -> Maybe (Integer, Integer) -> Id -> m (TestCase)
-executeProgramGeneric p tc generator qbounds entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc generator qbounds)
+executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> Generator m -> Maybe Integer -> Id -> m (TestCase)
+executeProgramGeneric p tc generator qbound entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc generator qbound)
   where
     programExecution = do
       execUnsafely $ collectDefinitions p
@@ -405,7 +405,7 @@ generateValue t pos = case t of
   MapType _ _ _ -> allocate $ MapValue emptyMap
   BoolType -> BoolValue <$> generate genBool
   IntType -> IntValue <$> generate genInteger
-  IdType id _ -> CustomValue id <$> generate genInteger
+  IdType id _ -> CustomValue id <$> generate genNatural
   
 -- | 'generateValueLike' @v@ : choose a value of the same type as @v@
 generateValueLike :: (Monad m, Functor m) => Value -> Execution m Value
@@ -674,14 +674,13 @@ evalExists' tv vars e = BoolValue <$> executeLocally (enterQuantified tv vars) (
       evalForEach varNames doms
     -- | evalForEach vars domains: evaluate e for each combination of possible values of vars, drown from respective domains
     evalForEach :: (Monad m, Functor m) => [Id] -> [Domain] -> Execution m Bool
-    evalForEach [] [] = isTrue <$> eval e
+    evalForEach [] [] = unValueBool <$> eval e
     evalForEach (var : vars) (dom : doms) = anyM (fixOne vars doms var) dom
     -- | Fix the value of var to val, then evaluate e for each combination of values for the rest of vars
     fixOne :: (Monad m, Functor m) => [Id] -> [Domain] -> Id -> Value -> Execution m Bool
     fixOne vars doms var val = do
       setVar (envMemory.memLocals) setLocal var val
       evalForEach vars doms
-    isTrue (BoolValue b) = b
     varNames = map fst vars
       
 {- Statements -}
@@ -913,23 +912,26 @@ domains boolExpr vars = do
   where
     initConstraints c var = do
       tc <- use envTypeContext
-      qbounds <- use envQBounds
-      let 
-        defaultDomain = case qbounds of
-          Nothing -> top
-          Just (lower, upper) -> Interval (Finite lower) (Finite upper)
+      qbound <- use envQBound
       case M.lookup var (allVars tc) of
-        Just BoolType -> return c
-        Just IntType -> return $ M.insert var defaultDomain c
-        _ -> throwRuntimeFailure (UnsupportedConstruct "quantification over a map or user-defined type") (position boolExpr)
+        Just BoolType         -> return c
+        Just (MapType _ _ _)  -> throwRuntimeFailure (UnsupportedConstruct "quantification over a map") (position boolExpr)
+        Just t                -> return $ M.insert var (defaultDomain qbound t) c        
+    defaultDomain qbound t = case qbound of
+      Nothing -> top
+      Just n -> let 
+        (lower, upper) = case t of
+          IntType -> intInterval n
+          IdType _ _ -> natInterval n
+        in Interval (Finite lower) (Finite upper)
     domain c var = do
       tc <- use envTypeContext
       case M.lookup var (allVars tc) of
         Just BoolType -> return $ map BoolValue [True, False]
-        Just IntType -> do
+        Just t -> do
           case c ! var of
             int | isBottom int -> return []
-            Interval (Finite l) (Finite u) -> return $ map IntValue [l..u]
+            Interval (Finite l) (Finite u) -> return $ map (valueFromInteger t) [l..u]
             int -> throwRuntimeFailure (InfiniteDomain var int) (position boolExpr)
 
 -- | Starting from initial constraints, refine them with the information from boolExpr,

@@ -6,7 +6,10 @@ module Language.Boogie.Environment (
   emptyMap,
   stored,
   Value (..),
+  valueFromInteger,
   vnot,
+  unValueBool,
+  unValueMap,
   flattenMap,
   mapSource,
   mapValues,
@@ -38,7 +41,7 @@ module Language.Boogie.Environment (
   envProcedures,
   envTypeContext,
   envGenerator,
-  envQBounds,
+  envQBound,
   envInOld,
   initEnv,
   lookupConstConstraints,
@@ -104,9 +107,14 @@ data Value = IntValue Integer |  -- ^ Integer value
   Reference Ref                  -- ^ Reference to a map stored in the heap
   deriving (Eq, Ord)
   
+valueFromInteger IntType n        = IntValue n
+valueFromInteger (IdType id _) n  = CustomValue id n
+valueFromInteger _ _              = error "cannot create a boolean or map value from integer" 
+  
+unValueBool (BoolValue b) = b  
 vnot (BoolValue b) = BoolValue (not b)
 
-unMapValue (MapValue repr) = repr
+unValueMap (MapValue repr) = repr
 
 -- | Pretty-printed value
 valueDoc :: Value -> Doc
@@ -124,7 +132,7 @@ instance Show Value where
 
 -- | Source reference and key-value pairs of a reference in a heap
 flattenMap :: Heap Value -> Ref -> (Ref, (Map [Value] Value))
-flattenMap h r = case unMapValue $ h `at` r of
+flattenMap h r = case unValueMap $ h `at` r of
   Source vals -> (r, vals)
   Derived base override -> let (s, v) = flattenMap h base
     in (s, override `M.union` v)
@@ -250,14 +258,14 @@ data Environment m = Environment
     _envProcedures :: Map Id [PDef],              -- ^ Procedure definitions
     _envTypeContext :: Context,                   -- ^ Type context
     _envGenerator :: Generator m,                 -- ^ Input generator (used for non-deterministic choices)
-    _envQBounds :: Maybe (Integer, Integer),      -- ^ Bounds for a quantified integer or user-defined variable (unbounded if Nothing)
+    _envQBound :: Maybe Integer,                  -- ^ Maximum number of values to try for a quantified variable (unbounded if Nothing)
     _envInOld :: Bool                             -- ^ Is an old expression currently being evaluated?
   }
   
 makeLenses ''Environment
    
 -- | 'initEnv' @tc gen@: Initial environment in a type context @tc@ with a value generator @gen@  
-initEnv tc gen qbounds = Environment
+initEnv tc gen qbound = Environment
   {
     _envMemory = emptyMemory,
     _envConstDefs = M.empty,
@@ -266,7 +274,7 @@ initEnv tc gen qbounds = Environment
     _envProcedures = M.empty,
     _envTypeContext = tc,
     _envGenerator = gen,
-    _envQBounds = qbounds,
+    _envQBound = qbound,
     _envInOld = False
   }
 
