@@ -48,6 +48,7 @@ module Language.Boogie.Util (
   restrictDomain,
   removeDomain,
   mapItwType,
+  anyM,
   changeState,
   withLocalState,
   internalError
@@ -380,6 +381,13 @@ removeDomain :: Ord k => Set k -> Map k a -> Map k a
 removeDomain keys m = M.filterWithKey (\k _ -> k `S.notMember` keys) m
 
 mapItwType f (IdTypeWhere i t w) = IdTypeWhere i (f t) w
+
+-- | Monadic version of 'any' (executes boolean-valued computation for all arguments in a list until the first True is found) 
+anyM :: Monad m => (a -> m Bool) -> [a] -> m Bool
+anyM _ [] = return False
+anyM pred (x : xs) = do
+  res <- pred x
+  if res then return True else anyM pred xs
 
 -- | Execute a computation with state of type @t@ inside a computation with state of type @s@
 changeState :: Monad m => (s -> t) -> (t -> s -> s) -> StateT t m a -> StateT s m a

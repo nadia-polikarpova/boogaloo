@@ -64,21 +64,21 @@ import Text.PrettyPrint
 -- Execute program @p@ /non-deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return an infinite list of possible outcomes (each either runtime failure or the final variable store).
 -- Whenever a value is unspecified, all values of the required type are tried exhaustively.
-executeProgram :: Program -> Context -> Generator Stream -> Id -> [TestCase]
-executeProgram p tc gen entryPoint = toList $ executeProgramGeneric p tc gen entryPoint
+executeProgram :: Program -> Context -> Generator Stream -> Maybe (Integer, Integer) -> Id -> [TestCase]
+executeProgram p tc gen qbounds entryPoint = toList $ executeProgramGeneric p tc gen qbounds entryPoint
 
 -- | 'executeProgramDet' @p tc entryPoint@ :
 -- Execute program @p@ /deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
 -- and return a single outcome.
 -- Whenever a value is unspecified, a default value of the required type is used.
-executeProgramDet :: Program -> Context -> Id -> TestCase
-executeProgramDet p tc entryPoint = runIdentity $ executeProgramGeneric p tc defaultGenerator entryPoint
+executeProgramDet :: Program -> Context -> Maybe (Integer, Integer) -> Id -> TestCase
+executeProgramDet p tc qbounds entryPoint = runIdentity $ executeProgramGeneric p tc defaultGenerator qbounds entryPoint
       
 -- | 'executeProgramGeneric' @p tc generator genIndex entryPoint@ :
 -- Execute program @p@ in type context @tc@ with input generator @generator@, starting from procedure @entryPoint@,
 -- and return the outcome(s) embedded into the generator's monad.
-executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> Generator m -> Id -> m (TestCase)
-executeProgramGeneric p tc generator entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc generator)
+executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> Generator m -> Maybe (Integer, Integer) -> Id -> m (TestCase)
+executeProgramGeneric p tc generator qbounds entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc generator qbounds)
   where
     programExecution = do
       execUnsafely $ collectDefinitions p
@@ -663,23 +663,21 @@ type Domain = [Value]
 evalExists :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> SourcePos -> Execution m Value      
 evalExists tv vars e pos = do
   tc <- use envTypeContext
-  case node $ normalize tc (attachPos pos $ Quantified Exists tv vars e) of
-    Quantified Exists tv' vars' e' -> evalExists' tv' vars' e'
+  let Quantified Exists tv' vars' e' = node $ normalize tc (attachPos pos $ Quantified Exists tv vars e)
+  evalExists' tv' vars' e'
 
 evalExists' :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> Execution m Value    
-evalExists' tv vars e = do
-  results <- executeLocally (enterQuantified tv vars) (map fst vars) [] [] evalWithDomains
-  return $ BoolValue (any isTrue results)
+evalExists' tv vars e = BoolValue <$> executeLocally (enterQuantified tv vars) (map fst vars) [] [] evalWithDomains
   where
     evalWithDomains = do
       doms <- domains e varNames
       evalForEach varNames doms
     -- | evalForEach vars domains: evaluate e for each combination of possible values of vars, drown from respective domains
-    evalForEach :: (Monad m, Functor m) => [Id] -> [Domain] -> Execution m [Value]
-    evalForEach [] [] = replicate 1 <$> eval e
-    evalForEach (var : vars) (dom : doms) = concat <$> forM dom (fixOne vars doms var)
+    evalForEach :: (Monad m, Functor m) => [Id] -> [Domain] -> Execution m Bool
+    evalForEach [] [] = isTrue <$> eval e
+    evalForEach (var : vars) (dom : doms) = anyM (fixOne vars doms var) dom
     -- | Fix the value of var to val, then evaluate e for each combination of values for the rest of vars
-    fixOne :: (Monad m, Functor m) => [Id] -> [Domain] -> Id -> Value -> Execution m [Value]
+    fixOne :: (Monad m, Functor m) => [Id] -> [Domain] -> Id -> Value -> Execution m Bool
     fixOne vars doms var val = do
       setVar (envMemory.memLocals) setLocal var val
       evalForEach vars doms
@@ -915,9 +913,14 @@ domains boolExpr vars = do
   where
     initConstraints c var = do
       tc <- use envTypeContext
+      qbounds <- use envQBounds
+      let 
+        defaultDomain = case qbounds of
+          Nothing -> top
+          Just (lower, upper) -> Interval (Finite lower) (Finite upper)
       case M.lookup var (allVars tc) of
         Just BoolType -> return c
-        Just IntType -> return $ M.insert var top c
+        Just IntType -> return $ M.insert var defaultDomain c
         _ -> throwRuntimeFailure (UnsupportedConstruct "quantification over a map or user-defined type") (position boolExpr)
     domain c var = do
       tc <- use envTypeContext

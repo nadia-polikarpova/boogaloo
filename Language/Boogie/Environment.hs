@@ -38,6 +38,7 @@ module Language.Boogie.Environment (
   envProcedures,
   envTypeContext,
   envGenerator,
+  envQBounds,
   envInOld,
   initEnv,
   lookupConstConstraints,
@@ -249,13 +250,14 @@ data Environment m = Environment
     _envProcedures :: Map Id [PDef],              -- ^ Procedure definitions
     _envTypeContext :: Context,                   -- ^ Type context
     _envGenerator :: Generator m,                 -- ^ Input generator (used for non-deterministic choices)
+    _envQBounds :: Maybe (Integer, Integer),      -- ^ Bounds for a quantified integer or user-defined variable (unbounded if Nothing)
     _envInOld :: Bool                             -- ^ Is an old expression currently being evaluated?
   }
   
 makeLenses ''Environment
    
 -- | 'initEnv' @tc gen@: Initial environment in a type context @tc@ with a value generator @gen@  
-initEnv tc gen = Environment
+initEnv tc gen qbounds = Environment
   {
     _envMemory = emptyMemory,
     _envConstDefs = M.empty,
@@ -264,6 +266,7 @@ initEnv tc gen = Environment
     _envProcedures = M.empty,
     _envTypeContext = tc,
     _envGenerator = gen,
+    _envQBounds = qbounds,
     _envInOld = False
   }
 

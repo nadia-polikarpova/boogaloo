@@ -158,8 +158,8 @@ executeFromFile file proc_ bounds random seed btMax invalid nexec pass fail outM
             then printAux $ text "No executions to display"
             else zipWithM_ (printOne "Execution") [0..] outs
     outcomes p context generator = if btMax == Just 1 || (keepAll && outMax == Just 1)
-      then [executeProgramDet p context proc_]
-      else executeProgram p context generator proc_
+      then [executeProgramDet p context bounds proc_]
+      else executeProgram p context generator bounds proc_
     keepAll = invalid && nexec && pass && fail
     maybeTake mLimit = case mLimit of
       Nothing -> id
@@ -211,5 +211,5 @@ printAux msg = do
 harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
-      let env = head (toList (execStateT (collectDefinitions p) (initEnv context (exhaustiveGenerator (Just defaultBounds)))))
+      let env = head (toList (execStateT (collectDefinitions p) (initEnv context (exhaustiveGenerator (Just defaultBounds)) (Just defaultBounds))))
       print $ memoryDoc True (env^.envMemory)
