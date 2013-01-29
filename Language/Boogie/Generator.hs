@@ -9,7 +9,6 @@ import System.Random
 data Generator m = Generator {
   genBool :: m Bool,        -- Generate a boolean
   genInteger :: m Integer,  -- Generate an arbitrary precision integer
-  genNatural :: m Integer,  -- Generate an arbitrary precision, non-negative integer
   genIndex :: Int -> m Int  -- Generate a natural smaller than a given bound
   }
   
@@ -18,7 +17,6 @@ defaultGenerator :: Generator Identity
 defaultGenerator = Generator {
   genBool = Identity False,
   genInteger = Identity 0,
-  genNatural = Identity 0,
   genIndex = Identity . const 0
 }
 
@@ -28,11 +26,10 @@ exhaustiveGenerator mBound = Generator {
   genBool = return False `mplus` return True,
   genInteger = case mBound of
     Nothing -> allIntegers
-    Just n -> fromInterval $ intInterval n,
-  genNatural = case mBound of
-    Nothing -> fromList [0..]
-    Just n -> fromInterval $ natInterval n,
-  genIndex = \n -> fromList [0 .. n - 1]
+    Just b -> fromInterval $ intInterval b,
+  genIndex = \n -> fromInterval $ case mBound of
+    Nothing -> natInterval n
+    Just b -> natInterval $ fromInteger (b `min` toInteger n)
 }
   where
     allIntegers = fromList [0, -1..] `mplus` fromList [1..]
@@ -47,11 +44,10 @@ randomGenerator rGen mBound = Generator {
   genBool = fromList $ randoms rGen,
   genInteger = fromList $ case mBound of
     Nothing -> randoms rGen
-    Just n -> randomRs (intInterval n) rGen,
-  genNatural = fromList $ case mBound of
-    Nothing -> map abs $ randoms rGen
-    Just n -> randomRs (natInterval n) rGen,
-  genIndex = \n -> fromList $ randomRs (0, n - 1) rGen
+    Just b -> randomRs (intInterval b) rGen,
+  genIndex = \n -> fromList $ case mBound of
+    Nothing -> randomRs (natInterval n) rGen
+    Just b -> randomRs (natInterval $ fromInteger (b `min` toInteger n)) rGen
 }
 
 -- | 'intInterval' @n@: interval centered around 0 of size n

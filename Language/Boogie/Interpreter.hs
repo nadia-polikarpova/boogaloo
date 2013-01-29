@@ -74,7 +74,7 @@ executeProgram p tc gen qbound entryPoint = toList $ executeProgramGeneric p tc 
 executeProgramDet :: Program -> Context -> Maybe Integer -> Id -> TestCase
 executeProgramDet p tc qbound entryPoint = runIdentity $ executeProgramGeneric p tc defaultGenerator qbound entryPoint
       
--- | 'executeProgramGeneric' @p tc generator genIndex entryPoint@ :
+-- | 'executeProgramGeneric' @p tc generator qbound entryPoint@ :
 -- Execute program @p@ in type context @tc@ with input generator @generator@, starting from procedure @entryPoint@,
 -- and return the outcome(s) embedded into the generator's monad.
 executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> Generator m -> Maybe Integer -> Id -> m (TestCase)
@@ -405,13 +405,17 @@ generateValue t pos = case t of
   MapType _ _ _ -> allocate $ MapValue emptyMap
   BoolType -> BoolValue <$> generate genBool
   IntType -> IntValue <$> generate genInteger
-  IdType id _ -> CustomValue id <$> generate genNatural
+  IdType id _ -> do
+    n <- gets $ lookupCustomCount id
+    i <- generate (`genIndex` (n + 1))
+    when (i == n) $ modify (setCustomCount id (n + 1))
+    return $ CustomValue id i
   
 -- | 'generateValueLike' @v@ : choose a value of the same type as @v@
 generateValueLike :: (Monad m, Functor m) => Value -> Execution m Value
-generateValueLike (BoolValue _) = BoolValue <$> generate genBool
-generateValueLike (IntValue _) = IntValue <$> generate genInteger
-generateValueLike (CustomValue t _) = CustomValue t <$> generate genInteger
+generateValueLike (BoolValue _) = generateValue BoolType noPos
+generateValueLike (IntValue _) = generateValue IntType noPos
+generateValueLike (CustomValue t _) = generateValue (IdType t []) noPos
 generateValueLike (Reference _) = allocate $ MapValue emptyMap
 generateValueLike (MapValue _) = internalError "Attempt to generateValueLike a map value directly"
         
@@ -1077,7 +1081,7 @@ evalEquality v1 v2 = do
     makeSourceNeq s1 s2 = do
       defineMapValue s1 [special s1, special s2] (special s1)
       defineMapValue s2 [special s1, special s2] (special s2)
-    special r = CustomValue refIdTypeName $ toInteger r
+    special r = CustomValue refIdTypeName $ fromIntegral r
           
 -- | Ensure that two compatible values are equal
 makeEq :: (Monad m, Functor m) => Value -> Value -> Execution m ()

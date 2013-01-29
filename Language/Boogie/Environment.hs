@@ -41,12 +41,14 @@ module Language.Boogie.Environment (
   envProcedures,
   envTypeContext,
   envGenerator,
+  envCustomCount,
   envQBound,
   envInOld,
   initEnv,
   lookupConstConstraints,
   lookupFunction,
   lookupProcedure,
+  lookupCustomCount,
   setGlobal,
   setLocal,
   setOld,
@@ -55,6 +57,7 @@ module Language.Boogie.Environment (
   addConstantConstraint,
   addFunctionDefs,
   addProcedureDef,
+  setCustomCount,
   withHeap,
   functionsDoc
 ) where
@@ -102,13 +105,13 @@ mapReprDoc repr = case repr of
 -- | Run-time value
 data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
-  CustomValue Id Integer |       -- ^ Value of a user-defined type
+  CustomValue Id Int |       -- ^ Value of a user-defined type
   MapValue MapRepr |             -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
   Reference Ref                  -- ^ Reference to a map stored in the heap
   deriving (Eq, Ord)
   
 valueFromInteger IntType n        = IntValue n
-valueFromInteger (IdType id _) n  = CustomValue id n
+valueFromInteger (IdType id _) n  = CustomValue id (fromInteger n)
 valueFromInteger _ _              = error "cannot create a boolean or map value from integer" 
   
 unValueBool (BoolValue b) = b  
@@ -122,7 +125,7 @@ valueDoc (IntValue n) = integer n
 valueDoc (BoolValue False) = text "false"
 valueDoc (BoolValue True) = text "true"
 valueDoc (MapValue repr) = mapReprDoc repr
-valueDoc (CustomValue t n) = text t <+> integer n
+valueDoc (CustomValue t n) = text t <+> int n
 valueDoc (Reference r) = refDoc r
 
 instance Show Value where
@@ -154,7 +157,7 @@ deepDeref h v = deepDeref' v
       in MapValue . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref') . M.filter (not . isRefId)) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
     deepDeref' (MapValue _) = internalError "Attempt to dereference a map directly"
     deepDeref' v = v
-    isRefId (CustomValue refIdTypeName _) = True
+    isRefId (CustomValue id _) | id == refIdTypeName = True
     isRefId _ = False
 
 -- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
@@ -258,6 +261,7 @@ data Environment m = Environment
     _envProcedures :: Map Id [PDef],              -- ^ Procedure definitions
     _envTypeContext :: Context,                   -- ^ Type context
     _envGenerator :: Generator m,                 -- ^ Input generator (used for non-deterministic choices)
+    _envCustomCount :: Map Id Int,                -- ^ For each user-defined type, number of distinct values of this type already generated
     _envQBound :: Maybe Integer,                  -- ^ Maximum number of values to try for a quantified variable (unbounded if Nothing)
     _envInOld :: Bool                             -- ^ Is an old expression currently being evaluated?
   }
@@ -274,35 +278,43 @@ initEnv tc gen qbound = Environment
     _envProcedures = M.empty,
     _envTypeContext = tc,
     _envGenerator = gen,
+    _envCustomCount = M.empty,
     _envQBound = qbound,
     _envInOld = False
   }
 
--- | 'lookupConstConstraints' @id env@ : All constraints of constant @id@ in @env@
-lookupConstConstraints id env = case M.lookup id (env^.envConstConstraints) of
+-- | 'lookupConstConstraints' @name env@ : All constraints of constant @name@ in @env@
+lookupConstConstraints name env = case M.lookup name (env^.envConstConstraints) of
   Nothing -> []
   Just cs -> cs
   
--- | 'lookupFunction' @id env@ : All definitions of function @id@ in @env@
-lookupFunction id env = case M.lookup id (env^.envFunctions) of
+-- | 'lookupFunction' @name env@ : All definitions of function @name@ in @env@
+lookupFunction name env = case M.lookup name (env^.envFunctions) of
   Nothing -> []
   Just defs -> defs    
   
--- | 'lookupProcedure' @id env@ : All definitions of procedure @id@ in @env@  
-lookupProcedure id env = case M.lookup id (env^.envProcedures) of
+-- | 'lookupProcedure' @name env@ : All definitions of procedure @name@ in @env@  
+lookupProcedure name env = case M.lookup name (env^.envProcedures) of
   Nothing -> []
   Just defs -> defs 
+  
+-- | 'lookupCustomCount' @t env@ : Number of distinct values generated for type @t@ in @env@    
+lookupCustomCount t env = case M.lookup t (env^.envCustomCount) of
+  Nothing -> 0
+  Just n -> n
 
 -- Environment modifications  
-setGlobal id val = over (envMemory.memGlobals) (M.insert id val)
-setLocal id val = over (envMemory.memLocals) (M.insert id val)
-setOld id val = over (envMemory.memOld) (M.insert id val)
-setConst id val = over (envMemory.memConstants) (M.insert id val)
-addConstantDef id def = over envConstDefs (M.insert id def)
-addConstantConstraint id expr env = env { _envConstConstraints = M.insert id (lookupConstConstraints id env ++ [expr]) (_envConstConstraints env) }
-addFunctionDefs id defs env = env { _envFunctions = M.insert id (lookupFunction id env ++ defs) (_envFunctions env) }
-addProcedureDef id def env = env { _envProcedures = M.insert id (lookupProcedure id env ++ [def]) (_envProcedures env) } 
-withHeap f env = let (res, h') = f (env^.envMemory.memHeap) in (res, set (envMemory.memHeap) h' env )  
+setGlobal name val = over (envMemory.memGlobals) (M.insert name val)
+setLocal name val = over (envMemory.memLocals) (M.insert name val)
+setOld name val = over (envMemory.memOld) (M.insert name val)
+setConst name val = over (envMemory.memConstants) (M.insert name val)
+addConstantDef name def = over envConstDefs (M.insert name def)
+addConstantConstraint name expr env = over envConstConstraints (M.insert name (lookupConstConstraints name env ++ [expr])) env
+addFunctionDefs name defs env = over envFunctions (M.insert name (lookupFunction name env ++ defs)) env
+addProcedureDef name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
+setCustomCount t n = over envCustomCount (M.insert t n)
+withHeap f env = let (res, h') = f (env^.envMemory.memHeap) 
+  in (res, set (envMemory.memHeap) h' env )  
 
 -- | Pretty-printed set of function definitions
 functionsDoc :: Map Id [FDef] -> Doc  

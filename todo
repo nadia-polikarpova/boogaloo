@@ -12,12 +12,11 @@
 - Type checker
   - Data type for type errors (will be easier to evaluate test results)
   - Use lenses for Context?
-  -? Annotate AST with expr types
+  - Annotate AST with expr types
   
 - Interpreter
+  -> Check function and map constraints lazily
   -> Indexing by maps (so far only for functions)
-  -? Check function and map constraints lazily
-  -> User-defined types
   - Refactor executeLocally, execCall and execProcedure  
   - Printable class?  
   - Lazy initialization of arguments (in execLocally only copy those args that are already initialize, at the end propage the initizlization back with assume)

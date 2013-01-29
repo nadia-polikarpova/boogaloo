@@ -20,7 +20,6 @@ module Language.Boogie.Heap (
 import Language.Boogie.AST
 import Language.Boogie.PrettyPrinter
 import Language.Boogie.Util
-import Data.Word
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Data.Set (Set)
@@ -29,7 +28,7 @@ import Text.PrettyPrint
 import Control.Lens hiding (Context, at)
 
 -- | Reference (index in the heap)
-type Ref = Word
+type Ref = Int
 
 -- | Pretty-printed reference
 refDoc :: Ref -> Doc
