@@ -48,18 +48,19 @@ negationNF c boolExpr = case node boolExpr of
 -- all quantifiers are pushed to the outside and any two quantifiers of the same kind in a row are glued together.
 -- Requires expression to be in the negation normal form.  
 prenexNF :: Expression -> Expression
-prenexNF boolExpr = (glue . rawPrenex) boolExpr
+prenexNF boolExpr = glue $ rawPrenex boolExpr
   where
     -- | Push all quantifiers to the front
     rawPrenex boolExpr = case node boolExpr of
       -- We only have to consider && and || because boolExpr is in negation normal form
       BinaryExpression op e1 e2 | op == And || op == Or -> merge (++ "1") (++ "2") op (rawPrenex e1) (rawPrenex e2)
+      Quantified qop tv vars e -> attachPos (position boolExpr) $ Quantified qop tv vars (rawPrenex e)
       _ -> boolExpr
     merge r1 r2 op e1 e2 = attachPos (position e1) (merge' r1 r2 op e1 e2)
-    merge' r1 r2 op (Pos _ (Quantified qop tv vars e)) e2 = case renameBound r1 (Quantified qop tv vars e) of
-      Quantified qop tv' vars' e' -> Quantified qop tv' vars' (merge r1 r2 op e' e2)
-    merge' r1 r2 op e1 (Pos _ (Quantified qop tv vars e)) = case renameBound r2 (Quantified qop tv vars e) of
-      Quantified qop tv' vars' e' -> Quantified qop tv' vars' (merge r1 r2 op e1 e')
+    merge' r1 r2 op (Pos _ be1@(Quantified _ _ _ _)) e2 = let Quantified qop tv' vars' e' = renameBound r1 be1
+      in Quantified qop tv' vars' (merge r1 r2 op e' e2)
+    merge' r1 r2 op e1 (Pos _ be2@(Quantified _ _ _ _)) = let Quantified qop tv' vars' e' = renameBound r2 be2
+      in Quantified qop tv' vars' (merge r1 r2 op e1 e')
     merge' _ _ op e1 e2 = BinaryExpression op e1 e2
     -- | Rename all bound variables and type variables in a quantified expression with a renaming function r
     renameBound r (Quantified qop tv vars e) = Quantified qop (map r tv) (map (renameVar r tv) vars) (exprSubst (varBinding r (map fst vars)) e)

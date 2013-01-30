@@ -36,27 +36,30 @@ module Language.Boogie.Environment (
   Environment,
   envMemory,
   envConstDefs,
-  envConstConstraints,
   envFunctions,
   envProcedures,
+  envConstConstraints,
+  envMapConstraints,
   envTypeContext,
   envGenerator,
   envCustomCount,
   envQBound,
   envInOld,
   initEnv,
-  lookupConstConstraints,
   lookupFunction,
   lookupProcedure,
+  lookupConstConstraints,
+  lookupMapConstraints,
   lookupCustomCount,
   setGlobal,
   setLocal,
   setOld,
   setConst,
   addConstantDef,
-  addConstantConstraint,
   addFunctionDefs,
   addProcedureDef,
+  addConstantConstraint,
+  addMapConstraint,
   setCustomCount,
   withHeap,
   functionsDoc
@@ -105,7 +108,7 @@ mapReprDoc repr = case repr of
 -- | Run-time value
 data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
-  CustomValue Id Int |       -- ^ Value of a user-defined type
+  CustomValue Id Int |           -- ^ Value of a user-defined type
   MapValue MapRepr |             -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
   Reference Ref                  -- ^ Reference to a map stored in the heap
   deriving (Eq, Ord)
@@ -254,16 +257,17 @@ instance Show Memory where
 -- | Execution state
 data Environment m = Environment
   {
-    _envMemory :: Memory,                         -- ^ Variable values
-    _envConstDefs :: Map Id Expression,           -- ^ Constant definitions
-    _envConstConstraints :: Map Id [Expression],  -- ^ Constant constraints
-    _envFunctions :: Map Id [FDef],               -- ^ Function definitions
-    _envProcedures :: Map Id [PDef],              -- ^ Procedure definitions
-    _envTypeContext :: Context,                   -- ^ Type context
-    _envGenerator :: Generator m,                 -- ^ Input generator (used for non-deterministic choices)
-    _envCustomCount :: Map Id Int,                -- ^ For each user-defined type, number of distinct values of this type already generated
-    _envQBound :: Maybe Integer,                  -- ^ Maximum number of values to try for a quantified variable (unbounded if Nothing)
-    _envInOld :: Bool                             -- ^ Is an old expression currently being evaluated?
+    _envMemory :: Memory,                   -- ^ Variable values
+    _envConstDefs :: Map Id Expression,     -- ^ Constant definitions
+    _envFunctions :: Map Id [FDef],         -- ^ Function definitions
+    _envProcedures :: Map Id [PDef],        -- ^ Procedure definitions
+    _envConstConstraints :: Map Id [FDef],  -- ^ Constant constraints
+    _envMapConstraints :: Map Ref [FDef],   -- ^ Constraints attached to map values (to be checked lazily duricg selection)
+    _envTypeContext :: Context,             -- ^ Type context
+    _envGenerator :: Generator m,           -- ^ Input generator (used for non-deterministic choices)
+    _envCustomCount :: Map Id Int,          -- ^ For each user-defined type, number of distinct values of this type already generated
+    _envQBound :: Maybe Integer,            -- ^ Maximum number of values to try for a quantified variable (unbounded if Nothing)
+    _envInOld :: Bool                       -- ^ Is an old expression currently being evaluated?
   }
   
 makeLenses ''Environment
@@ -273,35 +277,28 @@ initEnv tc gen qbound = Environment
   {
     _envMemory = emptyMemory,
     _envConstDefs = M.empty,
-    _envConstConstraints = M.empty,
     _envFunctions = M.empty,
     _envProcedures = M.empty,
+    _envConstConstraints = M.empty,
+    _envMapConstraints = M.empty,
     _envTypeContext = tc,
     _envGenerator = gen,
     _envCustomCount = M.empty,
     _envQBound = qbound,
     _envInOld = False
   }
-
--- | 'lookupConstConstraints' @name env@ : All constraints of constant @name@ in @env@
-lookupConstConstraints name env = case M.lookup name (env^.envConstConstraints) of
-  Nothing -> []
-  Just cs -> cs
   
--- | 'lookupFunction' @name env@ : All definitions of function @name@ in @env@
-lookupFunction name env = case M.lookup name (env^.envFunctions) of
-  Nothing -> []
-  Just defs -> defs    
+-- | 'lookupGetter' @getter def key env@ : lookup @key@ in a map accessible with @getter@ from @env@; if it does not occur return @def@
+lookupGetter getter def key env = case M.lookup key (env ^. getter) of
+  Nothing -> def
+  Just val -> val
   
--- | 'lookupProcedure' @name env@ : All definitions of procedure @name@ in @env@  
-lookupProcedure name env = case M.lookup name (env^.envProcedures) of
-  Nothing -> []
-  Just defs -> defs 
-  
--- | 'lookupCustomCount' @t env@ : Number of distinct values generated for type @t@ in @env@    
-lookupCustomCount t env = case M.lookup t (env^.envCustomCount) of
-  Nothing -> 0
-  Just n -> n
+-- Environment queries  
+lookupFunction = lookupGetter envFunctions []  
+lookupProcedure = lookupGetter envProcedures []  
+lookupConstConstraints = lookupGetter envConstConstraints []
+lookupMapConstraints = lookupGetter envMapConstraints []
+lookupCustomCount = lookupGetter envCustomCount 0
 
 -- Environment modifications  
 setGlobal name val = over (envMemory.memGlobals) (M.insert name val)
@@ -309,9 +306,10 @@ setLocal name val = over (envMemory.memLocals) (M.insert name val)
 setOld name val = over (envMemory.memOld) (M.insert name val)
 setConst name val = over (envMemory.memConstants) (M.insert name val)
 addConstantDef name def = over envConstDefs (M.insert name def)
-addConstantConstraint name expr env = over envConstConstraints (M.insert name (lookupConstConstraints name env ++ [expr])) env
 addFunctionDefs name defs env = over envFunctions (M.insert name (lookupFunction name env ++ defs)) env
 addProcedureDef name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
+addConstantConstraint name constraint env = over envConstConstraints (M.insert name (lookupConstConstraints name env ++ [constraint])) env
+addMapConstraint r constraint env = over envMapConstraints (M.insert r (lookupMapConstraints r env ++ [constraint])) env
 setCustomCount t n = over envCustomCount (M.insert t n)
 withHeap f env = let (res, h') = f (env^.envMemory.memHeap) 
   in (res, set (envMemory.memHeap) h' env )  

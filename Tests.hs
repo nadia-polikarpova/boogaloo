@@ -44,7 +44,8 @@ interpreterTests = TestLabel "Interpreter" $ TestList [
   testCase interpreterSuccess "MapLocals",
   testCase interpreterSuccess "OldND",
   testCase interpreterSuccess "OldMaps",
-  testCase interpreterSuccess "MapEquality"
+  testCase interpreterSuccess "MapEquality",
+  testCase interpreterSuccess "Constraints"
   ]
   
 -- | Directory with test programs  
@@ -97,7 +98,7 @@ interpreterSuccess file = do
     Left parseErr -> assertFailure (show parseErr)
     Right p -> case typeCheckProgram p of
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
-      Right context -> case (head . filter (not . isInvalid)) (executeProgram p context (exhaustiveGenerator Nothing) entryPoint) of
+      Right context -> case (head . filter (not . isInvalid)) (executeProgram p context (exhaustiveGenerator Nothing) Nothing entryPoint) of
         I.TestCase _ _ (Just err) -> assertFailure (show err)
         otherwise -> return ()
 

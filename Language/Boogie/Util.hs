@@ -17,15 +17,17 @@ module Language.Boogie.Util (
   VarBinding,
   exprSubst,
   paramSubst,
+  freeSelections,
   -- * Specs
   preconditions,
   postconditions,
   modifies,
   assumePreconditions,
   assumePostconditions,
-  -- * Funstions and procedures
+  -- * Functions and procedures
   FSig (..),
   fsigType,
+  fsigFromType,
   FDef (..),
   PSig (..),
   psigParams,
@@ -235,7 +237,28 @@ paramBinding sig def = M.fromList $ zip (sigIns ++ sigOuts) (defIns ++ defOuts)
 paramSubst :: PSig -> PDef -> Expression -> Expression  
 paramSubst sig def = if not (pdefParamsRenamed def) 
   then id 
-  else exprSubst (paramBinding sig def)   
+  else exprSubst (paramBinding sig def)
+  
+-- | 'freeSelections' @expr@ : all map selections that occur in @expr@, where the map is a free variable
+freeSelections :: Expression -> [(Id, [Expression])]
+freeSelections expr = freeSelections' $ node expr
+
+freeSelections' FF = []
+freeSelections' TT = []
+freeSelections' (Numeral _) = []
+freeSelections' (Var x) = []
+freeSelections' (Application name args) = nub . concat $ map freeSelections args
+freeSelections' (MapSelection m args) = case node m of 
+ Var name -> (name, args) : (nub . concat $ map freeSelections args)
+ _ -> nub . concat $ map freeSelections (m : args)
+freeSelections' (MapUpdate m args val) =  nub . concat $ map freeSelections (val : m : args)
+freeSelections' (Old e) = internalError "freeSelections should only be applied in single-state context"
+freeSelections' (IfExpr cond e1 e2) = nub . concat $ [freeSelections cond, freeSelections e1, freeSelections e2]
+freeSelections' (Coercion e _) = freeSelections e
+freeSelections' (UnaryExpression _ e) = freeSelections e
+freeSelections' (BinaryExpression _ e1 e2) = nub . concat $ [freeSelections e1, freeSelections e2]
+freeSelections' (Quantified _ _ boundVars e) = let boundVarNames = map fst boundVars 
+  in [(m, args) | (m, args) <- freeSelections e, m `notElem` boundVarNames]
 
 {- Specs -}
 
@@ -285,7 +308,10 @@ data FSig = FSig {
   }
   
 -- | Function signature as a map type  
-fsigType sig = MapType (fsigTypeVars sig) (fsigArgTypes sig) (fsigRetType sig)  
+fsigType sig = MapType (fsigTypeVars sig) (fsigArgTypes sig) (fsigRetType sig)
+
+-- | Map type as a function signature 
+fsigFromType (MapType tv domainTypes rangeType) = FSig "" tv domainTypes rangeType 
 
 instance Eq FSig where
   s1 == s2 = fsigName s1 == fsigName s2

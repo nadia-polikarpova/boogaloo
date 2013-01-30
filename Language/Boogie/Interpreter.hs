@@ -45,6 +45,7 @@ import Language.Boogie.PrettyPrinter
 import Language.Boogie.TypeChecker
 import Language.Boogie.NormalForm
 import Language.Boogie.BasicBlocks
+import Data.Maybe
 import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
@@ -620,18 +621,24 @@ evalMapSelection m args pos = do
       tc <- use envTypeContext
       let rangeType = exprType tc (gen $ MapSelection m args)
       val <- generateValue rangeType pos
-      -- ToDo: where and axiom checks
-      -- case mapVariable tc (node m) of
-        -- Nothing -> return val -- The underlying map comes from a constant or function, nothing to check
-        -- Just v -> checkWhere v pos >> return val -- The underlying map comes from a variable: check the where clause
       defineMapValue r argsV val
-      return val    
-  -- where
-    -- mapVariable tc (Var v) = if M.member v (allVars tc)
-      -- then Just v
-      -- else Nothing
-    -- mapVariable tc (MapUpdate m _ _) = mapVariable tc (node m)
-    -- mapVariable tc _ = Nothing
+      constraints <- gets $ lookupMapConstraints r
+      mapM_ (checkConstraint argsV) constraints        
+      return val
+  where
+    checkConstraint argsV (FDef formals guard expr) = do
+      applicable <- evalLocally formals argsV guard `catchError` addFrame
+      case applicable of
+        BoolValue True -> do
+          satisfied <- evalLocally formals argsV expr `catchError` addFrame
+          case satisfied of 
+            BoolValue True -> return ()
+            BoolValue False -> throwRuntimeFailure (SpecViolation $ SpecClause Axiom True expr) pos
+        BoolValue False -> return ()
+    evalLocally formals actuals expr = do
+      sig <- fsigFromType . flip exprType m <$> use envTypeContext
+      executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)      
+    addFrame err = addStackFrame (StackFrame pos "axiom") err
         
 evalMapUpdate m args new pos = do
   Reference r <- eval m
@@ -704,7 +711,7 @@ execPredicate specClause pos = do
   b <- eval $ specExpr specClause
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwRuntimeFailure (SpecViolation specClause) pos
+    BoolValue False -> throwRuntimeFailure (SpecViolation specClause) pos      
     
 execHavoc ids pos = do
   tc <- use envTypeContext
@@ -804,11 +811,16 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
   where 
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
 
--- | 'checkConstConstraints' @id pos@: Assume constraining axioms of constant @id@ at a program location @pos@
+-- | 'checkConstConstraints' @c pos@: Assume constraining axioms of constant @c@ at a program location @pos@
 -- (pos will be reported as the location of the failure instead of the location of the variable definition).    
-checkConstConstraints id pos = do
-  constraints <- gets $ lookupConstConstraints id
-  mapM_ (exec . attachPos pos . Predicate . SpecClause Axiom True) constraints
+checkConstConstraints c pos = do
+  constraints <- gets $ lookupConstConstraints c
+  mapM_ checkConstraint constraints
+  where
+    checkConstraint (FDef [] _ expr) = exec . attachPos pos . Predicate . SpecClause Axiom True $ expr -- No quantified variables, just assume the constraint
+    checkConstraint constr = do -- Forall-constraint: @c@ must be a map, so attach the constraint to its value for lazy evaluation
+      Reference r <- evalVar c pos
+      modify $ addMapConstraint r constr 
 
 -- | 'checkWhere' @id pos@: Assume where clause of variable @id@ at a program location pos
 -- (pos will be reported as the location of the failure instead of the location of the variable definition).
@@ -852,13 +864,59 @@ processAxiom expr = do
   extractConstantConstraints expr
   extractFunctionDefs expr []
   
-{- Constant and function definitions -}
+{- Constant and function constraints -}
 
 -- | Extract constant definitions and constraints from a boolean expression bExpr
 extractConstantConstraints :: (Monad m, Functor m) => Expression -> SafeExecution m ()
-extractConstantConstraints bExpr = case node bExpr of  
-  BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstantDef c rhs    -- c == rhs: remember rhs as a definition for c
-  _ -> mapM_ (\c -> modify $ addConstantConstraint c bExpr) (freeVars bExpr)  -- otherwise: remember bExpr as a constraint for all its free variables
+extractConstantConstraints bExpr = do
+  tc <- use $ envTypeContext
+  case node $ normalize tc bExpr of  
+    BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstantDef c rhs                      -- c == rhs: remember rhs as a definition for c
+    Quantified Forall tv vars expr -> extractForallConstraints tv vars expr (position bExpr)      -- universal quantifications: extract forall-constraints
+    Quantified Exists _ _ _ -> return ()
+    _ -> mapM_ (\c -> modify $ addConstantConstraint c (simpleConstraint bExpr)) (freeVars bExpr) -- otherwise: remember bExpr as a simple constraint for all its free variables
+  where
+    simpleConstraint expr = FDef [] (gen TT) expr
+    
+-- | 'extractArgs' @vars args@: extract simple arguments from @args@;
+-- an argument is simple if it is either one of variables in @vars@ or does not contain any of @vars@;
+-- in the latter case the argument is represented as a fresh name and a constraint
+extractArgs :: [Id] -> [Expression] -> [(Id, [Expression])]
+extractArgs vars args = foldl extractArg [] (zip args [0..])
+  where
+    extractArg res ((Pos p e), i) = let 
+      x = freshArgName i 
+      xExpr = attachPos p $ Var x
+      in res ++
+        case e of
+          Var arg -> if arg `elem` vars
+            then if arg `elem` map fst res
+              then [(x, [xExpr |=| Pos p e])]      -- Bound variable that already occurred: use fresh variable as formal, add equality guard
+              else [(arg, [])]                     -- New bound variable: use variable name as formal, no additional guards
+            else [(x, [xExpr |=| Pos p e])]        -- Constant: use fresh variable as formal, add equality guard
+          _ -> if null $ freeVars (Pos p e) `intersect` nonfixedBV
+                  then [(x, [xExpr |=| Pos p e])]  -- Expression where all bound variables are already fixed: use fresh variable as formal, add equality guard
+                  else []                          -- Expression involving non-fixed bound variables: not a simple argument, omit
+    freshArgName i = nonIdChar : show i
+    varArgs = [v | (Pos p (Var v)) <- args]
+    nonfixedBV = vars \\ varArgs    
+    
+-- | Extract forall-constraints from a quantification
+extractForallConstraints :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> SourcePos -> SafeExecution m ()
+extractForallConstraints tv vars expr pos = mapM_ extractConstraintFor (freeSelections expr)
+  where
+    varNames = map fst vars
+    extractConstraintFor (m, args) = let 
+        (formals, guards) = unzip $ extractArgs varNames args
+        allGuards = concat guards
+        guard = if null allGuards then gen TT else foldl1 (|&|) allGuards
+        extraBV = varNames \\ formals
+        constraint = if null extraBV
+          then expr
+          else attachPos pos $ Quantified Forall tv [(v, t) | (v, t) <- vars, v `elem` extraBV] expr
+      in if length formals == length args -- && null (varNames \\ formals) -- ToDo: remove second -- Only possible if all arguments are simple, and there are no extra bound variables
+        then modify $ addConstantConstraint m (FDef formals guard constraint)
+        else return ()
 
 -- | Extract function definitions from a boolean expression bExpr, using guards extracted from the exclosing expression.
 -- bExpr of the form "(forall x :: P(x, c) ==> f(x, c) == rhs(x, c) && B) && A",
@@ -869,31 +927,15 @@ extractFunctionDefs bExpr guards = extractFunctionDefs' (node bExpr) guards
 
 extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) outerGuards = do
   c <- use envTypeContext
-  -- Only possible if each argument is either a variables or does not involve variables and there are no extra variables in rhs:
-  if all (simple c) args && closedRhs c
+  let boundVars = M.keys (ctxIns c)
+  let (formals, guards) = unzip $ extractArgs boundVars args
+  let closedRhs = null $ (freeVars rhs \\ formals) `intersect` boundVars
+  if length formals == length args && closedRhs -- Only possible if all arguments are simple and there are no extra variables in rhs
     then do    
-      let (formals, guards) = unzip (extractArgs c)
       let allGuards = concat guards ++ outerGuards
       let guard = if null allGuards then gen TT else foldl1 (|&|) allGuards
       modify $ addFunctionDefs f [FDef formals guard rhs]
     else return ()
-  where
-    simple _ (Pos p (Var _)) = True
-    simple c e = null $ freeVars e `intersect` M.keys (ctxIns c)
-    closedRhs c = null $ (freeVars rhs \\ concatMap freeVars args) `intersect` M.keys (ctxIns c)
-    extractArgs c = zipWith (extractArg c) args [0..]
-    -- | Formal argument name and guards extracted from an actual argument at position i
-    extractArg :: Context -> Expression -> Integer -> (String, [Expression])
-    extractArg c (Pos p e) i = let 
-      x = freshArgName i 
-      xExpr = attachPos p $ Var x
-      in 
-        case e of
-          Var arg -> if arg `M.member` ctxIns c 
-            then (arg, []) -- Bound variable of the enclosing quantifier: use variable name as formal, no additional guards
-            else (x, [xExpr |=| Pos p e]) -- Constant: use fresh variable as formal (will only appear in the guard), add equality guard
-          _ -> (x, [xExpr |=| Pos p e])
-    freshArgName i = f ++ (nonIdChar : show i)
 extractFunctionDefs' (BinaryExpression Implies cond bExpr) outerGuards = extractFunctionDefs bExpr (cond : outerGuards)
 extractFunctionDefs' (BinaryExpression And bExpr1 bExpr2) outerGuards = do
   extractFunctionDefs bExpr1 outerGuards
@@ -904,7 +946,7 @@ extractFunctionDefs' _ _ = return ()
 {- Quantification -}
 
 -- | Sets of interval constraints on integer variables
-type Constraints = Map Id Interval
+type IntervalConstraints = Map Id Interval
             
 -- | The set of domains for each variable in vars, outside which boolean expression boolExpr is always false.
 -- Fails if any of the domains are infinite or cannot be found.
@@ -941,7 +983,7 @@ domains boolExpr vars = do
 -- | Starting from initial constraints, refine them with the information from boolExpr,
 -- until fixpoint is reached or the domain for one of the variables is empty.
 -- This function terminates because the interval for each variable can only become smaller with each iteration.
-inferConstraints :: (Monad m, Functor m) => Expression -> Constraints -> Execution m Constraints
+inferConstraints :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Execution m IntervalConstraints
 inferConstraints boolExpr constraints = do
   constraints' <- foldM refineVar constraints (M.keys constraints)
   if bot `elem` M.elems constraints'
@@ -950,7 +992,7 @@ inferConstraints boolExpr constraints = do
       then return constraints'                    -- if a fixpoint is reached, return it
       else inferConstraints boolExpr constraints' -- otherwise do another iteration
   where
-    refineVar :: (Monad m, Functor m) => Constraints -> Id -> Execution m Constraints
+    refineVar :: (Monad m, Functor m) => IntervalConstraints -> Id -> Execution m IntervalConstraints
     refineVar c id = do
       int <- inferInterval boolExpr c id
       return $ M.insert id (meet (c ! id) int) c 
@@ -958,7 +1000,7 @@ inferConstraints boolExpr constraints = do
 -- | Infer an interval for variable x, outside which boolean expression booExpr is always false, 
 -- assuming all other quantified variables satisfy constraints;
 -- boolExpr has to be in negation-prenex normal form.
-inferInterval :: (Monad m, Functor m) => Expression -> Constraints -> Id -> Execution m Interval
+inferInterval :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Id -> Execution m Interval
 inferInterval boolExpr constraints x = (case node boolExpr of
   FF -> return bot
   BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 constraints x) (inferInterval be2 constraints x)
@@ -995,7 +1037,7 @@ type LinearForm = (Interval, Interval)
 
 -- | If possible, convert arithmetic expression aExpr into a linear form over variable x,
 -- assuming all other quantified variables satisfy constraints.
-toLinearForm :: (Monad m, Functor m) => Expression -> Constraints -> Id -> Execution m LinearForm
+toLinearForm :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Id -> Execution m LinearForm
 toLinearForm aExpr constraints x = case node aExpr of
   Numeral n -> return (0, fromInteger n)
   Var y -> if x == y
