@@ -318,9 +318,9 @@ instance Eq FSig where
   
 -- | Function definition
 data FDef = FDef {
-    fdefArgs  :: [Id],       -- ^ Argument names (in the same order as 'fsigArgTypes' in the corresponding signature)
-    fdefGuard :: Expression, -- ^ Condition under which this definition applies    
-    fdefBody  :: Expression  -- ^ Body 
+    fdefArgs  :: [Id],              -- ^ Argument names (in the same order as 'fsigArgTypes' in the corresponding signature)
+    fdefGuard :: Maybe Expression,  -- ^ Condition under which this definition applies    
+    fdefBody  :: Expression         -- ^ Body 
   }
  
 -- | Procedure signature 

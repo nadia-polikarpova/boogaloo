@@ -14,6 +14,7 @@ module Language.Boogie.Environment (
   mapSource,
   mapValues,
   refIdTypeName,
+  underConstructionTypeName,
   deepDeref,
   objectEq,
   mustAgree,
@@ -21,7 +22,7 @@ module Language.Boogie.Environment (
   valueDoc,
   Store,
   emptyStore,
-  functionCacheName,
+  functionConst,
   userStore,
   storeDoc,
   Memory,
@@ -35,10 +36,10 @@ module Language.Boogie.Environment (
   memoryDoc,  
   Environment,
   envMemory,
-  envConstDefs,
-  envFunctions,
   envProcedures,
-  envConstConstraints,
+  envDefinitions,
+  envConstraints,
+  envMapDefinitions,
   envMapConstraints,
   envTypeContext,
   envGenerator,
@@ -46,23 +47,24 @@ module Language.Boogie.Environment (
   envQBound,
   envInOld,
   initEnv,
-  lookupFunction,
   lookupProcedure,
-  lookupConstConstraints,
+  lookupDefinitions,
+  lookupConstraints,
+  lookupMapDefinitions,
   lookupMapConstraints,
   lookupCustomCount,
   setGlobal,
   setLocal,
   setOld,
   setConst,
-  addConstantDef,
-  addFunctionDefs,
-  addProcedureDef,
-  addConstantConstraint,
+  addProcedureImpl,
+  addDefinition,
+  addConstraint,
+  addMapDefinition,
   addMapConstraint,
   setCustomCount,
-  withHeap,
-  functionsDoc
+  withHeap
+  -- functionsDoc
 ) where
 
 import Language.Boogie.Util
@@ -152,16 +154,19 @@ mapValues h r = flattenMap h r ^. _2
 -- | Dummy user-defined type used to differentiate map values
 refIdTypeName = nonIdChar : "RefId"
 
+-- | Dummy user-defined type used to mark entities whose definitions are currently being evaluated
+underConstructionTypeName = nonIdChar : "UC"
+
 -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
 deepDeref :: Heap Value -> Value -> Value
 deepDeref h v = deepDeref' v
   where
     deepDeref' (Reference r) = let vals = mapValues h r
-      in MapValue . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref') . M.filter (not . isRefId)) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
+      in MapValue . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref') . M.filter (not . isAux)) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
     deepDeref' (MapValue _) = internalError "Attempt to dereference a map directly"
     deepDeref' v = v
-    isRefId (CustomValue id _) | id == refIdTypeName = True
-    isRefId _ = False
+    isAux (CustomValue id _) | id `elem` [refIdTypeName, underConstructionTypeName] = True
+    isAux _ = False
 
 -- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
 objectEq :: Heap Value -> Value -> Value -> Maybe Bool
@@ -206,13 +211,16 @@ storeDoc :: Store -> Doc
 storeDoc vars = vsep $ map varDoc (M.toList vars)
   where varDoc (id, val) = text id <+> text "=" <+> valueDoc val
   
--- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@
+-- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@, and all auxiliary values removed
 userStore :: Heap Value -> Store -> Store
-userStore heap store = M.map (deepDeref heap) store
+userStore heap store = M.filter (not . isAux) $ M.map (deepDeref heap) store
+  where
+    isAux (CustomValue id _) | id == underConstructionTypeName = True
+    isAux _ = False
 
--- | 'functionCacheName' @name@ : name of a constant that stores cached applications of function @name@
+-- | 'functionConst' @name@ : name of a map constant that corresponds function @name@
 -- (must be distinct from all global names)
-functionCacheName name = "function " ++ name
+functionConst name = "function " ++ name
 
 {- Memory -}
 
@@ -258,11 +266,11 @@ instance Show Memory where
 data Environment m = Environment
   {
     _envMemory :: Memory,                   -- ^ Variable values
-    _envConstDefs :: Map Id Expression,     -- ^ Constant definitions
-    _envFunctions :: Map Id [FDef],         -- ^ Function definitions
-    _envProcedures :: Map Id [PDef],        -- ^ Procedure definitions
-    _envConstConstraints :: Map Id [FDef],  -- ^ Constant constraints
-    _envMapConstraints :: Map Ref [FDef],   -- ^ Constraints attached to map values (to be checked lazily duricg selection)
+    _envProcedures :: Map Id [PDef],        -- ^ Procedure implementations
+    _envDefinitions :: Map Id [FDef],       -- ^ Constant and function definitions
+    _envConstraints :: Map Id [FDef],       -- ^ Constant and function constraints
+    _envMapDefinitions :: Map Ref [FDef],   -- ^ Definition attached to map values (to be checked lazily during selection)
+    _envMapConstraints :: Map Ref [FDef],   -- ^ Constraints attached to map values (to be checked lazily during selection)
     _envTypeContext :: Context,             -- ^ Type context
     _envGenerator :: Generator m,           -- ^ Input generator (used for non-deterministic choices)
     _envCustomCount :: Map Id Int,          -- ^ For each user-defined type, number of distinct values of this type already generated
@@ -276,10 +284,10 @@ makeLenses ''Environment
 initEnv tc gen qbound = Environment
   {
     _envMemory = emptyMemory,
-    _envConstDefs = M.empty,
-    _envFunctions = M.empty,
     _envProcedures = M.empty,
-    _envConstConstraints = M.empty,
+    _envDefinitions = M.empty,
+    _envConstraints = M.empty,
+    _envMapDefinitions = M.empty,
     _envMapConstraints = M.empty,
     _envTypeContext = tc,
     _envGenerator = gen,
@@ -294,9 +302,10 @@ lookupGetter getter def key env = case M.lookup key (env ^. getter) of
   Just val -> val
   
 -- Environment queries  
-lookupFunction = lookupGetter envFunctions []  
 lookupProcedure = lookupGetter envProcedures []  
-lookupConstConstraints = lookupGetter envConstConstraints []
+lookupDefinitions = lookupGetter envDefinitions []  
+lookupConstraints = lookupGetter envConstraints []
+lookupMapDefinitions = lookupGetter envMapDefinitions []
 lookupMapConstraints = lookupGetter envMapConstraints []
 lookupCustomCount = lookupGetter envCustomCount 0
 
@@ -305,19 +314,11 @@ setGlobal name val = over (envMemory.memGlobals) (M.insert name val)
 setLocal name val = over (envMemory.memLocals) (M.insert name val)
 setOld name val = over (envMemory.memOld) (M.insert name val)
 setConst name val = over (envMemory.memConstants) (M.insert name val)
-addConstantDef name def = over envConstDefs (M.insert name def)
-addFunctionDefs name defs env = over envFunctions (M.insert name (lookupFunction name env ++ defs)) env
-addProcedureDef name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
-addConstantConstraint name constraint env = over envConstConstraints (M.insert name (lookupConstConstraints name env ++ [constraint])) env
+addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
+addDefinition name def env = over envDefinitions (M.insert name (lookupDefinitions name env ++ [def])) env
+addConstraint name constraint env = over envConstraints (M.insert name (lookupConstraints name env ++ [constraint])) env
+addMapDefinition r def env = over envMapDefinitions (M.insert r (lookupMapDefinitions r env ++ [def])) env
 addMapConstraint r constraint env = over envMapConstraints (M.insert r (lookupMapConstraints r env ++ [constraint])) env
 setCustomCount t n = over envCustomCount (M.insert t n)
 withHeap f env = let (res, h') = f (env^.envMemory.memHeap) 
   in (res, set (envMemory.memHeap) h' env )  
-
--- | Pretty-printed set of function definitions
-functionsDoc :: Map Id [FDef] -> Doc  
-functionsDoc funcs = vsep $ map funcDoc (M.toList funcs)
-  where 
-    funcDoc (id, defs) = vsep $ map (funcsDefDoc id) defs
-    funcsDefDoc id (FDef formals guard body) = exprDoc guard <+> text "->" <+> 
-      text id <> parens (commaSep (map text formals)) <+> text "=" <+> exprDoc body

@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts, Rank2Types #-}
 
 -- | Interpreter for Boogie 2
 module Language.Boogie.Interpreter (
@@ -279,7 +279,7 @@ instance Eq RuntimeFailure where
   f == f' = sameFault f f'
     
 -- | Internal error codes 
-data InternalCode = NotLinear
+data InternalCode = NotLinear | UnderConstruction
   deriving Eq
 
 throwInternalException code = throwRuntimeFailure (InternalException code) noPos
@@ -430,31 +430,68 @@ decRefCountValue val = case val of
   Reference r -> envMemory.memHeap %= decRefCount r
   _ -> return ()     
     
--- | 'unsetVar' @getStore id@ : if @id@ was associated with a reference in @getStore@, decrease its reference count
-unsetVar getStore id = do
+-- | 'unsetVar' @getStore name@ : if @name@ was associated with a reference in @getStore@, decrease its reference count
+unsetVar getStore name = do
   store <- use getStore
-  case M.lookup id store of    
+  case M.lookup name store of    
     Just (Reference r) -> do          
       envMemory.memHeap %= decRefCount r
     _ -> return ()
 
--- | 'setVar' @getStore setter id val@ : set value of variable @id@ to @val@ using @setter@;
--- adjust reference count if needed using @getStore@ to access the current value of @id@  
-setVar getStore setter id val = do
+-- | 'setVar' @getStore setter name val@ : set value of variable @name@ to @val@ using @setter@;
+-- adjust reference count if needed using @getStore@ to access the current value of @name@  
+setVar getStore setter name val = do
   case val of
     Reference r -> do
-      unsetVar getStore id
+      unsetVar getStore name
       envMemory.memHeap %= incRefCount r
     _ -> return ()
-  modify $ setter id val    
-          
--- | 'setAnyVar' @id val@ : set value of global or local variable @id@ to @val@
-setAnyVar id val = do
+  modify $ setter name val    
+            
+-- | 'setAnyVar' @name val@ : set value of a constant, global or local variable @name@ to @val@
+setAnyVar name val = do
   tc <- use envTypeContext
-  if M.member id (localScope tc)
-    then setVar (envMemory.memLocals) setLocal id val
-    else setVar (envMemory.memGlobals) setGlobal id val
-
+  if M.member name (localScope tc)
+    then setVar (envMemory.memLocals) setLocal name val
+    else if M.member name (ctxGlobals tc)
+      then setVar (envMemory.memGlobals) setGlobal name val
+      else setVar (envMemory.memConstants) setConst name val
+      
+-- | 'forgetVar' @getStore name@ : forget value of variable @name@ in @getStore@;
+-- adjust reference count if needed using @getStore@ to access the current value of @name@      
+forgetVar :: (Monad m, Functor m) => SimpleLens (Environment m) Store -> Id -> Execution m ()
+forgetVar getStore name = do
+  unsetVar getStore name
+  modify $ over getStore (M.delete name)  
+      
+-- | 'forgetAnyVar' @name@ : forget value of a constant, global or local variable @name@ to @val@      
+forgetAnyVar name = do
+  tc <- use envTypeContext
+  if M.member name (localScope tc)
+    then forgetVar (envMemory.memLocals) name
+    else if M.member name (ctxGlobals tc)
+      then forgetVar (envMemory.memGlobals) name
+      else forgetVar (envMemory.memConstants) name
+      
+-- | 'setMapValue' @r index val@ : map @index@ to @val@ in the source of the map referenced by @r@
+setMapValue r index val = do
+  MapValue repr <- readHeap r
+  case repr of
+    Source baseVals -> envMemory.memHeap %= update r (MapValue (Source (M.insert index val baseVals)))
+    Derived base override -> setMapValue base index val
+  incRefCountValue val
+  
+-- | 'forgetMapValue' @r index@ : forget value at @index@ in the source of the map referenced by @r@  
+forgetMapValue r index = do
+  MapValue repr <- readHeap r
+  case repr of
+    Source baseVals -> case M.lookup index baseVals of
+      Nothing -> return ()
+      Just val -> do
+        incRefCountValue val
+        envMemory.memHeap %= update r (MapValue (Source (M.delete index baseVals)))
+    Derived base override -> forgetMapValue base index
+        
 -- | 'readHeap' @r@: current value of reference @r@ in the heap
 readHeap r = flip at r <$> use (envMemory.memHeap)
     
@@ -529,8 +566,8 @@ eval expr = case node expr of
   TT -> return $ BoolValue True
   FF -> return $ BoolValue False
   Numeral n -> return $ IntValue n
-  Var id -> evalVar id (position expr)
-  Application id args -> evalApplication id args (position expr)
+  Var name -> evalVar name (position expr)
+  Application name args -> evalMapSelection (functionExpr name) args (position expr)
   MapSelection m args -> evalMapSelection m args (position expr)
   MapUpdate m args new -> evalMapUpdate m args new (position expr)
   Old e -> old $ eval e
@@ -541,104 +578,59 @@ eval expr = case node expr of
   Quantified Lambda _ _ _ -> throwRuntimeFailure (UnsupportedConstruct "lambda expressions") (position expr)
   Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e) (position expr)
   Quantified Exists tv vars e -> evalExists tv vars e (position expr)
+  where
+    functionExpr name = gen . Var $ functionConst name
   
-evalVar id pos = do
+evalVar name pos = do
   tc <- use envTypeContext
-  case M.lookup id (localScope tc) of
-    Just t -> lookupStore (envMemory.memLocals) (init (generateValue t pos) [setLocal] checkWhere)
-    Nothing -> case M.lookup id (ctxGlobals tc) of
+  case M.lookup name (localScope tc) of
+    Just t -> evalVarWith t (envMemory.memLocals) [setLocal]
+    Nothing -> case M.lookup name (ctxGlobals tc) of
       Just t -> do
         inOld <- use envInOld
         let setters = if inOld then [setGlobal] else [setGlobal, setOld]
-        lookupStore (envMemory.memGlobals) (init (generateValue t pos) setters checkWhere)
-      Nothing -> case M.lookup id (ctxConstants tc) of
-        Just t -> lookupStore (envMemory.memConstants) (initConst t)
-        Nothing -> (internalError . show) (text "Encountered unknown identifier during execution:" <+> text id) 
+        evalVarWith t (envMemory.memGlobals) setters
+      Nothing -> case M.lookup name (ctxConstants tc) of
+        Just t -> evalVarWith t (envMemory.memConstants) [setConst]
+        Nothing -> (internalError . show) (text "Encountered unknown identifier during execution:" <+> text name) 
   where
-    -- | Initialize @id@ with a value geberated by @gen@, and then perform @check@
-    init gen sets check = do
-      val <- gen
-      mapM_ (\set -> setVar (to $ const emptyStore) set id val) sets
-      check id pos
-      return val
-    -- | Lookup @id@ in @store@; if occurs return its stored value, otherwise @calculate@
-    lookupStore store calculate = do
-      s <- use store
-      case M.lookup id s of
-        Just val -> return val
-        Nothing -> calculate
-    -- | Initialize constant @id@ of type @t@ using its defininition, if present, and otherwise non-deterministically
-    initConst t = do
-      constants <- use envConstDefs
-      case M.lookup id constants of
-        Just e -> init (eval e) [] checkConstConstraints
-        Nothing -> init (generateValue t pos) [setConst] checkConstConstraints
-  
-evalApplication name args pos = do
-  defs <- gets $ lookupFunction name
-  evalDefs defs
-  where
-    -- | If the guard of one of function definitions evaluates to true, apply that definition; otherwise treat an an undefined constant map
-    evalDefs :: (Monad m, Functor m) => [FDef] -> Execution m Value
-    evalDefs [] = do
-      sig <- funSig name <$> use envTypeContext
-      let mapName = functionCacheName name
-      envTypeContext %= \tc -> tc { ctxConstants = M.insert mapName (fsigType sig) (ctxConstants tc) }
-      evalMapSelection ((gen . Var) mapName) args pos
-    evalDefs (FDef formals guard body : defs) = do
-      argsV <- mapM eval args
-      applicable <- evalLocally formals argsV guard `catchError` addFrame
-      case applicable of
-        BoolValue True -> evalLocally formals argsV body `catchError` addFrame
-        BoolValue False -> evalDefs defs
-    evalLocally formals actuals expr = do
-      sig <- funSig name <$> use envTypeContext
-      executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)
-    returnType tc = exprType tc (gen $ Application name args)
-    addFrame err = addStackFrame (StackFrame pos name) err
-    
+    evalVarWith t getStore setters = do
+      s <- use getStore
+      case M.lookup name s of         -- Lookup a cached value
+        Just val -> wellDefined val
+        Nothing -> do                 -- If not found, look for an applicable definition
+          definedValue <- checkNameDefinitions name t pos
+          case definedValue of
+            Just val -> return val
+            Nothing -> do             -- If not found, choose a value non-deterministically
+              chosenValue <- generateValue t pos
+              mapM_ (\set -> setVar (to $ const emptyStore) set name chosenValue) setters
+              checkNameConstraints name pos
+              return chosenValue
+        
 rejectMapIndex pos idx = case idx of
   Reference r -> throwRuntimeFailure (UnsupportedConstruct "map as an index") pos
   _ -> return ()
-  
--- | 'defineMapValue' @r index val@ : Map @index@ to @val@ in the source of the map referenced by @r@.
-defineMapValue r index val = do
-  MapValue repr <- readHeap r
-  case repr of
-    Source baseVals -> envMemory.memHeap %= update r (MapValue (Source (M.insert index val baseVals)))
-    Derived base override -> defineMapValue base index val
-  incRefCountValue val
-    
+      
 evalMapSelection m args pos = do   
   argsV <- mapM eval args
   mapM_ (rejectMapIndex pos) argsV
   Reference r <- eval m  
   h <- use $ envMemory.memHeap
-  let vals = mapValues h r
-  case M.lookup argsV vals of
-    Just v -> return v
-    Nothing -> do
+  case M.lookup argsV (mapValues h r) of    -- Lookup a cached value
+    Just val -> wellDefined val
+    Nothing -> do                           -- If not found, look for an applicable definition
       tc <- use envTypeContext
-      let rangeType = exprType tc (gen $ MapSelection m args)
-      val <- generateValue rangeType pos
-      defineMapValue r argsV val
-      constraints <- gets $ lookupMapConstraints r
-      mapM_ (checkConstraint argsV) constraints        
-      return val
-  where
-    checkConstraint argsV (FDef formals guard expr) = do
-      applicable <- evalLocally formals argsV guard `catchError` addFrame
-      case applicable of
-        BoolValue True -> do
-          satisfied <- evalLocally formals argsV expr `catchError` addFrame
-          case satisfied of 
-            BoolValue True -> return ()
-            BoolValue False -> throwRuntimeFailure (SpecViolation $ SpecClause Axiom True expr) pos
-        BoolValue False -> return ()
-    evalLocally formals actuals expr = do
-      sig <- fsigFromType . flip exprType m <$> use envTypeContext
-      executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)      
-    addFrame err = addStackFrame (StackFrame pos "axiom") err
+      let mapType = exprType tc m    
+      definedValue <- checkMapDefinitions r mapType args argsV pos
+      case definedValue of
+        Just val -> return val
+        Nothing -> do                       -- If not found, choose a value non-deterministically
+          let rangeType = exprType tc (gen $ MapSelection m args)
+          chosenValue <- generateValue rangeType pos
+          setMapValue r argsV chosenValue
+          checkMapConstraints r mapType args argsV pos
+          return chosenValue  
         
 evalMapUpdate m args new pos = do
   Reference r <- eval m
@@ -810,17 +802,108 @@ checkPreconditions sig def = mapM_ (exec . attachPos (pdefPos def) . Predicate .
 checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predicate . subst sig) (psigEnsures sig)
   where 
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
-
--- | 'checkConstConstraints' @c pos@: Assume constraining axioms of constant @c@ at a program location @pos@
--- (pos will be reported as the location of the failure instead of the location of the variable definition).    
-checkConstConstraints c pos = do
-  constraints <- gets $ lookupConstConstraints c
-  mapM_ checkConstraint constraints
+    
+-- | Dummy value used to entities variables whose definitions are currently being evaluated    
+underConstruction = CustomValue underConstructionTypeName 0    
+    
+-- | 'wellDefined' @val@ : throw an exception if @val@ is 'underConstruction'
+wellDefined val = if val == underConstruction
+  then throwInternalException UnderConstruction
+  else return val
+  
+-- | 'applyDefinition' @evaluation guard body pos@ : 
+-- if either @guard@ evaluates to False or 'underConstruction' was evaluated (which means implies a cycle in definitions), return Nothing
+-- otherwise return the result of evaluating @body@;
+-- use @evaluation@ to evaluate both @guard@ and @body@;
+-- (@pos@ is the position of the definition invocation)
+applyDefinition evaluation guard body pos = do
+  applicable <- case guard of 
+    Just g -> evaluation g `catchError` handler (BoolValue False)
+    Nothing -> return $ BoolValue True
+  case applicable of
+    BoolValue False -> return Nothing
+    BoolValue True -> (Just <$> evaluation body) `catchError` handler Nothing    
   where
-    checkConstraint (FDef [] _ expr) = exec . attachPos pos . Predicate . SpecClause Axiom True $ expr -- No quantified variables, just assume the constraint
-    checkConstraint constr = do -- Forall-constraint: @c@ must be a map, so attach the constraint to its value for lazy evaluation
-      Reference r <- evalVar c pos
-      modify $ addMapConstraint r constr 
+    handler defaultValue err = case rtfSource err of
+      InternalException UnderConstruction -> return defaultValue
+      _ -> addStackFrame (StackFrame pos "axiom") err -- ToDo: add map/function name (axiom that defines which map/function?)      
+    
+-- | 'checkNameDefinitions' @name t pos@ : return a value for @name@ of type @t@ mentioned at @pos@, if there is an applicable definition
+checkNameDefinitions :: (Monad m, Functor m) => Id -> Type -> SourcePos -> Execution m (Maybe Value)    
+checkNameDefinitions name t pos = do
+  setAnyVar name underConstruction
+  defs <- gets (lookupDefinitions name)
+  res <- checkDefs defs
+  forgetAnyVar name
+  return res
+  where
+    checkDefs [] = return Nothing              -- No definition applicable: return Nothing
+    checkDefs (FDef [] guard body : defs) = do -- Simple definition: apply if possible, move on otherwise
+      mVal <- applyDefinition eval guard body pos
+      case mVal of
+        Just val -> return mVal
+        Nothing -> checkDefs defs        
+    checkDefs (_ : defs) = checkDefs defs      -- Forall-definition: ignore, will be attached to the map value by checkNameConstraints  
+        
+-- | 'checkMapDefinitions' @r t args actuals pos@ : return a value at index @actuals@ 
+-- in the map of type @t@ referenced by @r@ mentioned at @pos@, if there is an applicable definition 
+checkMapDefinitions :: (Monad m, Functor m) => Ref -> Type -> [Expression] -> [Value] -> SourcePos -> Execution m (Maybe Value)    
+checkMapDefinitions r t args actuals pos = do
+  setMapValue r actuals underConstruction
+  defs <- gets $ lookupMapDefinitions r
+  res <- checkDefs defs  
+  forgetMapValue r actuals
+  return res
+  where  
+    checkDefs [] = return Nothing
+    checkDefs (FDef formals guard body : defs) = do
+      mVal <- applyDefinition (evalLocally formals) guard body pos
+      case mVal of
+        Just val -> return mVal
+        Nothing -> checkDefs defs
+    sig = fsigFromType t
+    evalLocally formals expr = if null formals
+      then eval expr
+      else executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)
+
+-- | 'checkNameConstraints' @name pos@: assume all constraints of entity @name@ mentioned at @pos@;
+-- is @name@ is of map type, attach all its forall-definitions and forall-contraints to the corresponding reference 
+checkNameConstraints name pos = do
+  constraints <- gets $ lookupConstraints name
+  mapM_ checkConstraint constraints
+  defs <- gets $ lookupDefinitions name
+  mapM_ addDefinition defs
+  where
+    checkConstraint (FDef [] _ expr) = exec . attachPos pos . Predicate . SpecClause Axiom True $ expr -- Simple constraint: assume it
+    checkConstraint constr = do             -- Forall-constraint: attach to the map value
+      Reference r <- evalVar name pos
+      modify $ addMapConstraint r constr
+    addDefinition (FDef [] _ _) = return () -- Simple definition: ignore
+    addDefinition def = do                  -- Forall definition: attach to the map value
+      Reference r <- evalVar name pos
+      modify $ addMapDefinition r def
+      
+-- | 'checkMapConstraints' @r t args actuals pos@ : assume all constraints for the value at index @actuals@ 
+-- in the map of type @t@ referenced by @r@ mentioned at @pos@
+checkMapConstraints r t args actuals pos = do
+  constraints <- gets $ lookupMapConstraints r
+  mapM_ (checkConstraint actuals) constraints        
+  where
+    checkConstraint actuals (FDef formals guard expr) = do
+      applicable <- case guard of 
+        Just g -> evalLocally formals actuals g `catchError` addFrame
+        Nothing -> return $ BoolValue True
+      case applicable of
+        BoolValue True -> do
+          satisfied <- evalLocally formals actuals expr `catchError` addFrame
+          case satisfied of 
+            BoolValue True -> return ()
+            BoolValue False -> throwRuntimeFailure (SpecViolation $ SpecClause Axiom True expr) pos
+        BoolValue False -> return ()
+    evalLocally formals actuals expr = do
+      let sig = fsigFromType t
+      executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)      
+    addFrame err = addStackFrame (StackFrame pos "axiom") err      
 
 -- | 'checkWhere' @id pos@: Assume where clause of variable @id@ at a program location pos
 -- (pos will be reported as the location of the failure instead of the location of the variable definition).
@@ -836,24 +919,26 @@ checkWhere id pos = do
 collectDefinitions :: (Monad m, Functor m) => Program -> SafeExecution m ()
 collectDefinitions (Program decls) = mapM_ processDecl decls
   where
-    processDecl (Pos _ (FunctionDecl name _ args _ (Just body))) = processFunctionBody name args body
+    processDecl (Pos _ (FunctionDecl name _ args _ mBody)) = processFunction name args mBody
     processDecl (Pos pos (ProcedureDecl name _ args rets _ (Just body))) = processProcedureBody name pos (map noWhere args) (map noWhere rets) body
     processDecl (Pos pos (ImplementationDecl name _ args rets bodies)) = mapM_ (processProcedureBody name pos args rets) bodies
     processDecl (Pos _ (AxiomDecl expr)) = processAxiom expr
     processDecl _ = return ()
   
-processFunctionBody name args body = let
-  formals = map (formalName . fst) args
-  guard = gen TT
-  in
-    modify $ addFunctionDefs name [FDef formals guard body]
+processFunction name args mBody = do
+  sig <- funSig name <$> use envTypeContext
+  envTypeContext %= \tc -> tc { ctxConstants = M.insert (functionConst name) (fsigType sig) (ctxConstants tc) }  
+  case mBody of
+    Nothing -> return ()
+    Just body -> modify $ addDefinition (functionConst name) (FDef formals Nothing body)
   where
+    formals = map (formalName . fst) args
     formalName Nothing = dummyFArg 
     formalName (Just n) = n    
     
 processProcedureBody name pos args rets body = do
   tc <- use envTypeContext
-  modify $ addProcedureDef name (PDef argNames retNames (paramsRenamed (procSig name tc)) (flatten tc body) pos) 
+  modify $ addProcedureImpl name (PDef argNames retNames (paramsRenamed (procSig name tc)) (flatten tc body) pos) 
   where
     argNames = map fst args
     retNames = map fst rets
@@ -870,13 +955,13 @@ processAxiom expr = do
 extractConstantConstraints :: (Monad m, Functor m) => Expression -> SafeExecution m ()
 extractConstantConstraints bExpr = do
   tc <- use $ envTypeContext
-  case node $ normalize tc bExpr of  
-    BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addConstantDef c rhs                      -- c == rhs: remember rhs as a definition for c
+  case node $ normalize tc bExpr of 
+    BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addDefinition c (FDef [] Nothing rhs)    -- c == rhs: remember rhs as a definition for c
     Quantified Forall tv vars expr -> extractForallConstraints tv vars expr (position bExpr)      -- universal quantifications: extract forall-constraints
     Quantified Exists _ _ _ -> return ()
-    _ -> mapM_ (\c -> modify $ addConstantConstraint c (simpleConstraint bExpr)) (freeVars bExpr) -- otherwise: remember bExpr as a simple constraint for all its free variables
+    _ -> mapM_ (\c -> modify $ addConstraint c (simpleConstraint bExpr)) (freeVars bExpr) -- otherwise: remember bExpr as a simple constraint for all its free variables
   where
-    simpleConstraint expr = FDef [] (gen TT) expr
+    simpleConstraint expr = FDef [] Nothing expr
     
 -- | 'extractArgs' @vars args@: extract simple arguments from @args@;
 -- an argument is simple if it is either one of variables in @vars@ or does not contain any of @vars@;
@@ -909,13 +994,13 @@ extractForallConstraints tv vars expr pos = mapM_ extractConstraintFor (freeSele
     extractConstraintFor (m, args) = let 
         (formals, guards) = unzip $ extractArgs varNames args
         allGuards = concat guards
-        guard = if null allGuards then gen TT else foldl1 (|&|) allGuards
+        guard = if null allGuards then Nothing else Just $ foldl1 (|&|) allGuards
         extraBV = varNames \\ formals
         constraint = if null extraBV
           then expr
           else attachPos pos $ Quantified Forall tv [(v, t) | (v, t) <- vars, v `elem` extraBV] expr
       in if length formals == length args -- && null (varNames \\ formals) -- ToDo: remove second -- Only possible if all arguments are simple, and there are no extra bound variables
-        then modify $ addConstantConstraint m (FDef formals guard constraint)
+        then modify $ addConstraint m (FDef formals guard constraint)
         else return ()
 
 -- | Extract function definitions from a boolean expression bExpr, using guards extracted from the exclosing expression.
@@ -933,8 +1018,8 @@ extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) oute
   if length formals == length args && closedRhs -- Only possible if all arguments are simple and there are no extra variables in rhs
     then do    
       let allGuards = concat guards ++ outerGuards
-      let guard = if null allGuards then gen TT else foldl1 (|&|) allGuards
-      modify $ addFunctionDefs f [FDef formals guard rhs]
+      let guard = if null allGuards then Nothing else Just $ foldl1 (|&|) allGuards
+      modify $ addDefinition (functionConst f) (FDef formals guard rhs)
     else return ()
 extractFunctionDefs' (BinaryExpression Implies cond bExpr) outerGuards = extractFunctionDefs bExpr (cond : outerGuards)
 extractFunctionDefs' (BinaryExpression And bExpr1 bExpr2) outerGuards = do
@@ -1118,11 +1203,11 @@ evalEquality v1 v2 = do
         Just v -> return v
         Nothing -> do
           v <- generateValueLike template
-          defineMapValue r i v
+          setMapValue r i v
           return v
     makeSourceNeq s1 s2 = do
-      defineMapValue s1 [special s1, special s2] (special s1)
-      defineMapValue s2 [special s1, special s2] (special s2)
+      setMapValue s1 [special s1, special s2] (special s1)
+      setMapValue s2 [special s1, special s2] (special s2)
     special r = CustomValue refIdTypeName $ fromIntegral r
           
 -- | Ensure that two compatible values are equal
@@ -1134,8 +1219,8 @@ makeEq (Reference r1) (Reference r2) = do
   zipWithM_ makeEq (M.elems $ vals1 `M.intersection` vals2) (M.elems $ vals2 `M.intersection` vals1) -- Enforce that the values at shared indexes are equal
   if s1 == s2
     then do -- Same source; compatible, but nonequal overrides
-      mapM_ (uncurry $ defineMapValue s1) (M.toList $ vals2 `M.difference` vals1) -- Store values only defined in r2 in the source
-      mapM_ (uncurry $ defineMapValue s1) (M.toList $ vals1 `M.difference` vals2) -- Store values only defined in r1 in the source
+      mapM_ (uncurry $ setMapValue s1) (M.toList $ vals2 `M.difference` vals1) -- Store values only defined in r2 in the source
+      mapM_ (uncurry $ setMapValue s1) (M.toList $ vals1 `M.difference` vals2) -- Store values only defined in r1 in the source
     else do -- Different sources
       Reference newSource <- allocate . MapValue . Source $ vals1 `M.union` vals2
       mapM_ decRefCountValue (M.elems (vals2 `M.intersection` vals1)) -- Take care of references from vals2 that are no longer used
