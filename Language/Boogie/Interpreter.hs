@@ -473,12 +473,11 @@ forgetAnyVar name = do
       then forgetVar (envMemory.memGlobals) name
       else forgetVar (envMemory.memConstants) name
       
--- | 'setMapValue' @r index val@ : map @index@ to @val@ in the source of the map referenced by @r@
+-- | 'setMapValue' @r index val@ : map @index@ to @val@ in the map referenced by @r@
+-- (@r@ has to be a source map)
 setMapValue r index val = do
-  MapValue repr <- readHeap r
-  case repr of
-    Source baseVals -> envMemory.memHeap %= update r (MapValue (Source (M.insert index val baseVals)))
-    Derived base override -> setMapValue base index val
+  MapValue (Source baseVals) <- readHeap r
+  envMemory.memHeap %= update r (MapValue (Source (M.insert index val baseVals)))
   incRefCountValue val
   
 -- | 'forgetMapValue' @r index@ : forget value at @index@ in the source of the map referenced by @r@  
@@ -617,19 +616,20 @@ evalMapSelection m args pos = do
   mapM_ (rejectMapIndex pos) argsV
   Reference r <- eval m  
   h <- use $ envMemory.memHeap
-  case M.lookup argsV (mapValues h r) of    -- Lookup a cached value
+  let (s, vals) = flattenMap h r
+  case M.lookup argsV vals of    -- Lookup a cached value
     Just val -> wellDefined val
     Nothing -> do                           -- If not found, look for an applicable definition
       tc <- use envTypeContext
       let mapType = exprType tc m    
-      definedValue <- checkMapDefinitions r mapType args argsV pos
+      definedValue <- checkMapDefinitions s mapType args argsV pos
       case definedValue of
         Just val -> return val
         Nothing -> do                       -- If not found, choose a value non-deterministically
           let rangeType = exprType tc (gen $ MapSelection m args)
           chosenValue <- generateValue rangeType pos
-          setMapValue r argsV chosenValue
-          checkMapConstraints r mapType args argsV pos
+          setMapValue s argsV chosenValue
+          checkMapConstraints s mapType args argsV pos
           return chosenValue  
         
 evalMapUpdate m args new pos = do
@@ -1207,12 +1207,12 @@ evalEquality v1 v2 = do
         _ -> False      
     lookupStored r i template = do
       h <- use $ envMemory.memHeap
-      let vals = mapValues h r    
+      let (s, vals) = flattenMap h r    
       case M.lookup i vals of
         Just v -> return v
         Nothing -> do
           v <- generateValueLike template
-          setMapValue r i v
+          setMapValue s i v
           return v
     makeSourceNeq s1 s2 = do
       setMapValue s1 [special s1, special s2] (special s1)
@@ -1235,6 +1235,7 @@ makeEq (Reference r1) (Reference r2) = do
       mapM_ decRefCountValue (M.elems (vals2 `M.intersection` vals1)) -- Take care of references from vals2 that are no longer used
       derive r1 newSource
       derive r2 newSource
+      mergeConstraints s1 s2 newSource
   where
     derive r newSource = do
       deriveBaseOf r newSource M.empty
@@ -1256,6 +1257,13 @@ makeEq (Reference r1) (Reference r2) = do
     addMissing vals (key, oldVal) = do
       newVal <- generateValueLike oldVal
       incRefCountValue newVal
-      return $ M.insert key newVal vals 
+      return $ M.insert key newVal vals
+    mergeConstraints s1 s2 newSource = do
+      defs1 <- gets $ lookupMapDefinitions s1
+      defs2 <- gets $ lookupMapDefinitions s2
+      envMapDefinitions %= M.insert newSource (defs1 ++ defs2)
+      constraints1 <- gets $ lookupMapConstraints s1
+      constraints2 <- gets $ lookupMapConstraints s2
+      envMapConstraints %= M.insert newSource (constraints1 ++ constraints2)
 makeEq (MapValue _) (MapValue _) = internalError "Attempt to call makeEq on maps directly" 
 makeEq _ _ = return ()  
