@@ -866,6 +866,23 @@ checkMapDefinitions r t args actuals pos = do
       then eval expr
       else executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)
 
+-- | 'applyConstraint' @evaluation guard body pos@ : 
+-- check that @guard@ ==> @body@, using @evaluation@ to evaluate both @guard@ and @body@;
+-- (@pos@ is the position of the constraint invocation)      
+applyConstraint evaluation guard body pos = do
+  applicable <- case guard of 
+    Just g -> evaluation g `catchError` handler
+    Nothing -> return $ BoolValue True
+  case applicable of
+    BoolValue True -> do
+      satisfied <- evaluation body `catchError` handler
+      case satisfied of 
+        BoolValue True -> return ()
+        BoolValue False -> throwRuntimeFailure (SpecViolation $ SpecClause Axiom True body) pos
+    BoolValue False -> return ()
+  where
+    handler err = addStackFrame (StackFrame pos "axiom") err -- ToDo: add map/function name (axiom that defines which map/function?)            
+
 -- | 'checkNameConstraints' @name pos@: assume all constraints of entity @name@ mentioned at @pos@;
 -- is @name@ is of map type, attach all its forall-definitions and forall-contraints to the corresponding reference 
 checkNameConstraints name pos = do
@@ -874,7 +891,7 @@ checkNameConstraints name pos = do
   defs <- gets $ lookupDefinitions name
   mapM_ addDefinition defs
   where
-    checkConstraint (FDef [] _ expr) = exec . attachPos pos . Predicate . SpecClause Axiom True $ expr -- Simple constraint: assume it
+    checkConstraint (FDef [] guard body) = applyConstraint eval guard body pos -- Simple constraint: assume it
     checkConstraint constr = do             -- Forall-constraint: attach to the map value
       Reference r <- evalVar name pos
       modify $ addMapConstraint r constr
@@ -887,20 +904,10 @@ checkNameConstraints name pos = do
 -- in the map of type @t@ referenced by @r@ mentioned at @pos@
 checkMapConstraints r t args actuals pos = do
   constraints <- gets $ lookupMapConstraints r
-  mapM_ (checkConstraint actuals) constraints        
+  mapM_ checkConstraint constraints        
   where
-    checkConstraint actuals (FDef formals guard expr) = do
-      applicable <- case guard of 
-        Just g -> evalLocally formals actuals g `catchError` addFrame
-        Nothing -> return $ BoolValue True
-      case applicable of
-        BoolValue True -> do
-          satisfied <- evalLocally formals actuals expr `catchError` addFrame
-          case satisfied of 
-            BoolValue True -> return ()
-            BoolValue False -> throwRuntimeFailure (SpecViolation $ SpecClause Axiom True expr) pos
-        BoolValue False -> return ()
-    evalLocally formals actuals expr = do
+    checkConstraint (FDef formals guard body) = applyConstraint (evalLocally formals) guard body pos
+    evalLocally formals expr = do
       let sig = fsigFromType t
       executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)      
     addFrame err = addStackFrame (StackFrame pos "axiom") err      
