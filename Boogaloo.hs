@@ -214,7 +214,10 @@ harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
       let env = head (toList (execStateT (collectDefinitions p) (initEnv context (exhaustiveGenerator (Just defaultBranch)) (Just defaultBranch))))
-      print $ memoryDoc True (env^.envMemory)
-      -- print $ vsep (map fDoc (M.toList $ env ^. envConstraints))
-    -- fDoc (name, defs) = text name $+$ vsep (map defDoc defs)
-    -- defDoc (FDef formals guard expr) = commaSep (map text formals) <+> text "GUARD:" <+> exprDoc guard <+> text "EXPR:" <+> exprDoc expr
+      -- print $ memoryDoc True (env^.envMemory)
+      putStr "DEFINITIONS:\n"
+      print $ vsep (map fDoc (M.toList $ env ^. envDefinitions))
+      putStr "CONSTRAINTS:\n"
+      print $ vsep (map fDoc (M.toList $ env ^. envConstraints))
+    fDoc (name, defs) = text name $+$ vsep (map defDoc defs)
+    defDoc (FDef formals guard expr) = commaSep (map text formals) <+> text "GUARD:" <+> exprDoc guard <+> text "EXPR:" <+> exprDoc expr

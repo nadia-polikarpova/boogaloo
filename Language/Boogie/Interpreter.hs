@@ -279,7 +279,7 @@ instance Eq RuntimeFailure where
   f == f' = sameFault f f'
     
 -- | Internal error codes 
-data InternalCode = NotLinear | UnderConstruction
+data InternalCode = NotLinear | UnderConstruction Int
   deriving Eq
 
 throwInternalException code = throwRuntimeFailure (InternalException code) noPos
@@ -802,87 +802,91 @@ checkPreconditions sig def = mapM_ (exec . attachPos (pdefPos def) . Predicate .
 checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predicate . subst sig) (psigEnsures sig)
   where 
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
-    
--- | Dummy value used to entities variables whose definitions are currently being evaluated    
-underConstruction = CustomValue underConstructionTypeName 0    
-    
--- | 'wellDefined' @val@ : throw an exception if @val@ is 'underConstruction'
-wellDefined val = if val == underConstruction
-  then throwInternalException UnderConstruction
-  else return val
+        
+-- | 'wellDefined' @val@ : throw an exception if @val@ is under construction
+wellDefined (CustomValue t n) | t == ucTypeName = throwInternalException $ UnderConstruction n
+wellDefined val = return val
   
--- | 'applyDefinition' @evaluation guard body pos@ : 
--- if either @guard@ evaluates to False or 'underConstruction' was evaluated (which means implies a cycle in definitions), return Nothing
--- otherwise return the result of evaluating @body@;
--- use @evaluation@ to evaluate both @guard@ and @body@;
--- (@pos@ is the position of the definition invocation)
-applyDefinition evaluation guard body pos = do
-  applicable <- case guard of 
-    Just g -> evaluation g `catchError` handler (BoolValue False)
-    Nothing -> return $ BoolValue True
-  case applicable of
-    BoolValue False -> return Nothing
-    BoolValue True -> (Just <$> evaluation body) `catchError` handler Nothing    
+-- | 'checkDefinitions' @evalLocally myCode defs pos@ : return the result of the first applicable definition from @defs@;
+-- if none are applicable return 'Nothing', 
+-- unless an under construction value different from @myCode@ has been evaluated, in which case rethrow the UnderConstruction exception;
+-- use @evalLocally formals@ to evaluate expressions inside a definition with arguments @formals@;
+-- @pos@ is the position of the definition invocation
+checkDefinitions :: (Monad m, Functor m) => ([Id] -> Expression -> Execution m Value) -> Int -> [FDef] -> SourcePos -> Execution m (Maybe Value)
+checkDefinitions evalLocally myCode defs pos = checkDefinitions' evalLocally myCode Nothing defs pos 
+
+checkDefinitions' _ _ Nothing [] _ = return Nothing
+checkDefinitions' _ _ (Just code) [] _ = throwInternalException (UnderConstruction code)
+checkDefinitions' evalLocally myCode mCode (FDef formals guard body : defs) pos = tryDefinitions `catchError` ucHandler
   where
-    handler defaultValue err = case rtfSource err of
-      InternalException UnderConstruction -> return defaultValue
-      _ -> addStackFrame (StackFrame pos "axiom") err -- ToDo: add map/function name (axiom that defines which map/function?)      
+    tryDefinitions = do      
+      mVal <- applyDefinition (evalLocally formals) guard body
+      case mVal of
+        Just val -> return mVal
+        Nothing -> checkDefinitions' evalLocally myCode mCode defs pos 
+    ucHandler err = case rtfSource err of
+      InternalException (UnderConstruction code) -> if code == myCode
+        then checkDefinitions' evalLocally myCode mCode defs pos
+        else checkDefinitions' evalLocally myCode (Just code) defs pos
+      _ -> throwError err
+    applyDefinition evaluation guard body = do
+      applicable <- case guard of
+        Pos _ TT -> return $ BoolValue True -- optimization for trivial guards
+        _ -> evaluation guard `catchError` addFrame
+      case applicable of
+        BoolValue False -> return Nothing
+        BoolValue True -> (Just <$> evaluation body) `catchError` addFrame
+    addFrame err = addStackFrame (StackFrame pos "axiom") err -- ToDo: add map/function name (axiom that defines which map/function?)      
     
 -- | 'checkNameDefinitions' @name t pos@ : return a value for @name@ of type @t@ mentioned at @pos@, if there is an applicable definition
 checkNameDefinitions :: (Monad m, Functor m) => Id -> Type -> SourcePos -> Execution m (Maybe Value)    
 checkNameDefinitions name t pos = do
-  setAnyVar name underConstruction
+  n <- gets $ lookupCustomCount ucTypeName
+  setAnyVar name $ CustomValue ucTypeName n  
+  modify $ setCustomCount ucTypeName (n + 1)
   defs <- gets (lookupDefinitions name)
-  res <- checkDefs defs
-  forgetAnyVar name
-  return res
-  where
-    checkDefs [] = return Nothing              -- No definition applicable: return Nothing
-    checkDefs (FDef [] guard body : defs) = do -- Simple definition: apply if possible, move on otherwise
-      mVal <- applyDefinition eval guard body pos
-      case mVal of
-        Just val -> return mVal
-        Nothing -> checkDefs defs        
-    checkDefs (_ : defs) = checkDefs defs      -- Forall-definition: ignore, will be attached to the map value by checkNameConstraints  
+  let simpleDefs = [simpleDef | simpleDef <- defs, null $ fdefArgs simpleDef] -- Ignore forall-definition, they will be attached to the map value by checkNameConstraints
+  checkDefinitions (\_ -> eval) n simpleDefs pos `finally` cleanup n
+  where  
+    cleanup n = do
+      forgetAnyVar name
+      modify $ setCustomCount ucTypeName n
         
 -- | 'checkMapDefinitions' @r t args actuals pos@ : return a value at index @actuals@ 
 -- in the map of type @t@ referenced by @r@ mentioned at @pos@, if there is an applicable definition 
 checkMapDefinitions :: (Monad m, Functor m) => Ref -> Type -> [Expression] -> [Value] -> SourcePos -> Execution m (Maybe Value)    
 checkMapDefinitions r t args actuals pos = do
-  setMapValue r actuals underConstruction
+  n <- gets $ lookupCustomCount ucTypeName
+  setMapValue r actuals $ CustomValue ucTypeName n  
+  modify $ setCustomCount ucTypeName (n + 1)  
   defs <- gets $ lookupMapDefinitions r
-  res <- checkDefs defs  
-  forgetMapValue r actuals
-  return res
+  checkDefinitions (\formals -> evalLocally formals) n defs pos `finally` cleanup n
   where  
-    checkDefs [] = return Nothing
-    checkDefs (FDef formals guard body : defs) = do
-      mVal <- applyDefinition (evalLocally formals) guard body pos
-      case mVal of
-        Just val -> return mVal
-        Nothing -> checkDefs defs
     sig = fsigFromType t
     evalLocally formals expr = if null formals
       then eval expr
       else executeLocally (enterFunction sig formals args) formals formals actuals (eval expr)
+    cleanup n = do
+      forgetMapValue r actuals
+      modify $ setCustomCount ucTypeName n      
 
 -- | 'applyConstraint' @evaluation guard body pos@ : 
 -- check that @guard@ ==> @body@, using @evaluation@ to evaluate both @guard@ and @body@;
 -- (@pos@ is the position of the constraint invocation)      
 applyConstraint evaluation guard body pos = do
-  applicable <- case guard of 
-    Just g -> evaluation g `catchError` handler
-    Nothing -> return $ BoolValue True
+  applicable <- case guard of
+    Pos _ TT -> return $ BoolValue True -- optimization for trivial guards
+    _ -> evaluation guard `catchError` addFrame
   case applicable of
     BoolValue True -> do
-      satisfied <- evaluation body `catchError` handler
+      satisfied <- evaluation body `catchError` addFrame
       case satisfied of 
         BoolValue True -> return ()
         BoolValue False -> throwRuntimeFailure (SpecViolation $ SpecClause Axiom True body) pos
     BoolValue False -> return ()
   where
-    handler err = addStackFrame (StackFrame pos "axiom") err -- ToDo: add map/function name (axiom that defines which map/function?)            
-
+    addFrame err = addStackFrame (StackFrame pos "axiom") err -- ToDo: add map/function name (axiom that defines which map/function?)
+    
 -- | 'checkNameConstraints' @name pos@: assume all constraints of entity @name@ mentioned at @pos@;
 -- is @name@ is of map type, attach all its forall-definitions and forall-contraints to the corresponding reference 
 checkNameConstraints name pos = do
@@ -937,7 +941,7 @@ processFunction name args mBody = do
   envTypeContext %= \tc -> tc { ctxConstants = M.insert (functionConst name) (fsigType sig) (ctxConstants tc) }  
   case mBody of
     Nothing -> return ()
-    Just body -> modify $ addDefinition (functionConst name) (FDef formals Nothing body)
+    Just body -> modify $ addDefinition (functionConst name) (FDef formals (conjunction []) body)
   where
     formals = map (formalName . fst) args
     formalName Nothing = dummyFArg 
@@ -953,23 +957,63 @@ processProcedureBody name pos args rets body = do
     paramsRenamed sig = map itwId (psigParams sig) /= (argNames ++ retNames)     
 
 processAxiom expr = do
-  extractConstantConstraints expr
-  extractFunctionDefs expr []
+  tc <- use envTypeContext
+  extractConstraints [] [] [] (negationNF tc expr)
   
 {- Constant and function constraints -}
 
--- | Extract constant definitions and constraints from a boolean expression bExpr
-extractConstantConstraints :: (Monad m, Functor m) => Expression -> SafeExecution m ()
-extractConstantConstraints bExpr = do
-  tc <- use $ envTypeContext
-  case node $ normalize tc bExpr of 
-    BinaryExpression Eq (Pos _ (Var c)) rhs -> modify $ addDefinition c (FDef [] Nothing rhs)    -- c == rhs: remember rhs as a definition for c
-    Quantified Forall tv vars expr -> extractForallConstraints tv vars expr (position bExpr)      -- universal quantifications: extract forall-constraints
-    Quantified Exists _ _ _ -> return ()
-    _ -> mapM_ (\c -> modify $ addConstraint c (simpleConstraint bExpr)) (freeVars bExpr) -- otherwise: remember bExpr as a simple constraint for all its free variables
+-- | 'extractConstraints' @tv vars guards bExpr@ : extract definitions and constraints from @bExpr@
+-- with bounds variables @tv@ and @vars@ and outer guards @guards@, extracted from the enclosing expression
+extractConstraints :: (Monad m, Functor m) => [Id] -> [IdType] -> [Expression] -> Expression -> SafeExecution m ()
+extractConstraints tv vars guards bExpr = case (node bExpr) of
+  Quantified Forall tv' vars' bExpr' -> extractConstraints (tv ++ tv') (vars ++ vars') guards bExpr'
+  Quantified Exists _ _ _ -> return ()  
+  BinaryExpression And bExpr1 bExpr2 -> do
+    extractConstraints tv vars guards bExpr1
+    extractConstraints tv vars guards bExpr2
+  BinaryExpression Or bExpr1 bExpr2 -> do
+    tc <- use envTypeContext
+    extractConstraints tv vars ((negationNF tc $ enot bExpr1) : guards) bExpr2
+    extractConstraints tv vars ((negationNF tc $ enot bExpr2) : guards) bExpr1
+  BinaryExpression Eq expr1 expr2 -> do
+    extractDefsAtomic expr1 expr2
+    extractDefsAtomic expr2 expr1
+    extractConstraintsAtomic
+  _ -> extractConstraintsAtomic
   where
-    simpleConstraint expr = FDef [] Nothing expr
+    fvExpr = freeVars bExpr
+    fvGuards = concatMap freeVars guards
+    allFV = fvExpr ++ fvGuards
+    usedVars = [(v, t) | (v, t) <- vars, v `elem` allFV]
+  
+    extractDefsAtomic lhs rhs = case node lhs of
+      Var name -> addDefFor (name, []) rhs
+      MapSelection (Pos _ (Var name)) args -> addDefFor (name, args) rhs
+      Application name args -> addDefFor (functionConst name, args) rhs
+      _ -> return ()
+    addDefFor (name, args) rhs = let
+        (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
+        allGuards = concat argGuards ++ guards
+        extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
+      in if length formals == length args && null extraVars -- Only possible if all arguments are simple and there are no extra variables
+        then modify $ addDefinition name (FDef formals (conjunction allGuards) rhs)
+        else return ()
     
+    extractConstraintsAtomic = case usedVars of -- This is a compromise: quantified expressions constrain names they mention of any arity but zero (ToDo: think about it)
+      [] -> mapM_ addSimpleConstraintFor fvExpr       
+      _ -> mapM_ addForallConstraintFor (freeSelections bExpr)
+    addSimpleConstraintFor name = modify $ addConstraint name (FDef [] (conjunction guards) bExpr)    
+    addForallConstraintFor (name, args) = let
+        (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
+        allArgGuards = concat argGuards
+        extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
+        constraint = if null extraVars
+          then conjunction guards |=>| bExpr
+          else attachPos (position bExpr) $ Quantified Forall tv extraVars (conjunction guards |=>| bExpr) -- outer guards are inserted into the body, because they might contain extraVars
+      in if length formals == length args -- Only possible if all arguments are simple
+        then modify $ addConstraint name (FDef formals (conjunction allArgGuards) constraint)
+        else return ()    
+            
 -- | 'extractArgs' @vars args@: extract simple arguments from @args@;
 -- an argument is simple if it is either one of variables in @vars@ or does not contain any of @vars@;
 -- in the latter case the argument is represented as a fresh name and a constraint
@@ -992,49 +1036,7 @@ extractArgs vars args = foldl extractArg [] (zip args [0..])
     freshArgName i = nonIdChar : show i
     varArgs = [v | (Pos p (Var v)) <- args]
     nonfixedBV = vars \\ varArgs    
-    
--- | Extract forall-constraints from a quantification
-extractForallConstraints :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> SourcePos -> SafeExecution m ()
-extractForallConstraints tv vars expr pos = mapM_ extractConstraintFor (freeSelections expr)
-  where
-    varNames = map fst vars
-    extractConstraintFor (m, args) = let 
-        (formals, guards) = unzip $ extractArgs varNames args
-        allGuards = concat guards
-        guard = if null allGuards then Nothing else Just $ foldl1 (|&|) allGuards
-        extraBV = varNames \\ formals
-        constraint = if null extraBV
-          then expr
-          else attachPos pos $ Quantified Forall tv [(v, t) | (v, t) <- vars, v `elem` extraBV] expr
-      in if length formals == length args -- && null (varNames \\ formals) -- ToDo: remove second -- Only possible if all arguments are simple, and there are no extra bound variables
-        then modify $ addConstraint m (FDef formals guard constraint)
-        else return ()
-
--- | Extract function definitions from a boolean expression bExpr, using guards extracted from the exclosing expression.
--- bExpr of the form "(forall x :: P(x, c) ==> f(x, c) == rhs(x, c) && B) && A",
--- with zero or more bound variables x and zero or more constants c,
--- produces a definition "f(x, x') = rhs(x, x')" with a guard "P(x) && x' == c"
-extractFunctionDefs :: (Monad m, Functor m) => Expression -> [Expression] -> SafeExecution m ()
-extractFunctionDefs bExpr guards = extractFunctionDefs' (node bExpr) guards
-
-extractFunctionDefs' (BinaryExpression Eq (Pos _ (Application f args)) rhs) outerGuards = do
-  c <- use envTypeContext
-  let boundVars = M.keys (ctxIns c)
-  let (formals, guards) = unzip $ extractArgs boundVars args
-  let closedRhs = null $ (freeVars rhs \\ formals) `intersect` boundVars
-  if length formals == length args && closedRhs -- Only possible if all arguments are simple and there are no extra variables in rhs
-    then do    
-      let allGuards = concat guards ++ outerGuards
-      let guard = if null allGuards then Nothing else Just $ foldl1 (|&|) allGuards
-      modify $ addDefinition (functionConst f) (FDef formals guard rhs)
-    else return ()
-extractFunctionDefs' (BinaryExpression Implies cond bExpr) outerGuards = extractFunctionDefs bExpr (cond : outerGuards)
-extractFunctionDefs' (BinaryExpression And bExpr1 bExpr2) outerGuards = do
-  extractFunctionDefs bExpr1 outerGuards
-  extractFunctionDefs bExpr2 outerGuards
-extractFunctionDefs' (Quantified Forall tv vars bExpr) outerGuards = executeLocally (enterQuantified tv vars) (map fst vars) [] [] (extractFunctionDefs bExpr outerGuards)
-extractFunctionDefs' _ _ = return ()
-   
+       
 {- Quantification -}
 
 -- | Sets of interval constraints on integer variables

@@ -42,6 +42,7 @@ module Language.Boogie.Util (
   -- * Code generation
   num, eneg, enot,
   (|+|), (|-|), (|*|), (|/|), (|%|), (|=|), (|!=|), (|<|), (|<=|), (|>|), (|>=|), (|&|), (|||), (|=>|), (|<=>|),
+  conjunction,
   assume,
   -- * Misc
   interval,
@@ -318,10 +319,10 @@ instance Eq FSig where
   
 -- | Function definition
 data FDef = FDef {
-    fdefArgs  :: [Id],              -- ^ Argument names (in the same order as 'fsigArgTypes' in the corresponding signature)
-    fdefGuard :: Maybe Expression,  -- ^ Condition under which this definition applies    
-    fdefBody  :: Expression         -- ^ Body 
-  }
+    fdefArgs  :: [Id],           -- ^ Argument names (in the same order as 'fsigArgTypes' in the corresponding signature)
+    fdefGuard :: Expression,     -- ^ Condition under which the definition applies
+    fdefBody  :: Expression      -- ^ Body 
+  }  
  
 -- | Procedure signature 
 data PSig = PSig {
@@ -384,6 +385,9 @@ e1 |||    e2 = inheritPos2 (BinaryExpression Or) e1 e2
 e1 |=>|   e2 = inheritPos2 (BinaryExpression Implies) e1 e2
 e1 |<=>|  e2 = inheritPos2 (BinaryExpression Equiv) e1 e2
 assume e = attachPos (position e) (Predicate (SpecClause Inline True e))
+
+conjunction [] = gen TT
+conjunction es = foldl1 (|&|) es
   
 {- Misc -}
 
@@ -414,6 +418,13 @@ anyM _ [] = return False
 anyM pred (x : xs) = do
   res <- pred x
   if res then return True else anyM pred xs
+  
+-- | Monadic version of 'all' (executes boolean-valued computation for all arguments in a list until the first False is found) 
+allM :: Monad m => (a -> m Bool) -> [a] -> m Bool
+allM _ [] = return True
+allM pred (x : xs) = do
+  res <- pred x
+  if not res then return False else allM pred xs  
 
 -- | Execute a computation with state of type @t@ inside a computation with state of type @s@
 changeState :: Monad m => (s -> t) -> (t -> s -> s) -> StateT t m a -> StateT s m a

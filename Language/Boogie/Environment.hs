@@ -14,7 +14,7 @@ module Language.Boogie.Environment (
   mapSource,
   mapValues,
   refIdTypeName,
-  underConstructionTypeName,
+  ucTypeName,
   deepDeref,
   objectEq,
   mustAgree,
@@ -155,7 +155,7 @@ mapValues h r = flattenMap h r ^. _2
 refIdTypeName = nonIdChar : "RefId"
 
 -- | Dummy user-defined type used to mark entities whose definitions are currently being evaluated
-underConstructionTypeName = nonIdChar : "UC"
+ucTypeName = nonIdChar : "UC"
 
 -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
 deepDeref :: Heap Value -> Value -> Value
@@ -165,7 +165,7 @@ deepDeref h v = deepDeref' v
       in MapValue . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref') . M.filter (not . isAux)) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
     deepDeref' (MapValue _) = internalError "Attempt to dereference a map directly"
     deepDeref' v = v
-    isAux (CustomValue id _) | id `elem` [refIdTypeName, underConstructionTypeName] = True
+    isAux (CustomValue id _) | id == refIdTypeName = True
     isAux _ = False
 
 -- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
@@ -213,10 +213,7 @@ storeDoc vars = vsep $ map varDoc (M.toList vars)
   
 -- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@, and all auxiliary values removed
 userStore :: Heap Value -> Store -> Store
-userStore heap store = M.filter (not . isAux) $ M.map (deepDeref heap) store
-  where
-    isAux (CustomValue id _) | id == underConstructionTypeName = True
-    isAux _ = False
+userStore heap store = M.map (deepDeref heap) store
 
 -- | 'functionConst' @name@ : name of a map constant that corresponds function @name@
 -- (must be distinct from all global names)
