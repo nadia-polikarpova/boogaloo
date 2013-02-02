@@ -1001,7 +1001,7 @@ extractConstraints tv vars guards bExpr = case (node bExpr) of
     
     extractConstraintsAtomic = case usedVars of -- This is a compromise: quantified expressions constrain names they mention of any arity but zero (ToDo: think about it)
       [] -> mapM_ addSimpleConstraintFor fvExpr       
-      _ -> mapM_ addForallConstraintFor (freeSelections bExpr)
+      _ -> mapM_ addForallConstraintFor (freeSelections bExpr ++ over (mapped._1) functionConst (applications bExpr))
     addSimpleConstraintFor name = modify $ addConstraint name (FDef [] (conjunction guards) bExpr)    
     addForallConstraintFor (name, args) = let
         (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args

@@ -18,6 +18,7 @@ module Language.Boogie.Util (
   exprSubst,
   paramSubst,
   freeSelections,
+  applications,
   -- * Specs
   preconditions,
   postconditions,
@@ -260,6 +261,24 @@ freeSelections' (UnaryExpression _ e) = freeSelections e
 freeSelections' (BinaryExpression _ e1 e2) = nub . concat $ [freeSelections e1, freeSelections e2]
 freeSelections' (Quantified _ _ boundVars e) = let boundVarNames = map fst boundVars 
   in [(m, args) | (m, args) <- freeSelections e, m `notElem` boundVarNames]
+  
+-- | 'applications' @expr@ : all function applications that occur in @expr@
+applications :: Expression -> [(Id, [Expression])]
+applications expr = applications' $ node expr
+
+applications' FF = []
+applications' TT = []
+applications' (Numeral _) = []
+applications' (Var x) = []
+applications' (Application name args) = (name, args) : (nub . concat $ map applications args)
+applications' (MapSelection m args) = nub . concat $ map applications (m : args)
+applications' (MapUpdate m args val) =  nub . concat $ map applications (val : m : args)
+applications' (Old e) = internalError "applications should only be applied in single-state context"
+applications' (IfExpr cond e1 e2) = nub . concat $ [applications cond, applications e1, applications e2]
+applications' (Coercion e _) = applications e
+applications' (UnaryExpression _ e) = applications e
+applications' (BinaryExpression _ e1 e2) = nub . concat $ [applications e1, applications e2]
+applications' (Quantified _ _ _ e) = applications e  
 
 {- Specs -}
 
