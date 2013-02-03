@@ -844,7 +844,7 @@ checkNameDefinitions name t pos = do
   n <- gets $ lookupCustomCount ucTypeName
   setAnyVar name $ CustomValue ucTypeName n  
   modify $ setCustomCount ucTypeName (n + 1)
-  defs <- gets (lookupDefinitions name)
+  defs <- fst <$> gets (lookupNameConstraints name)
   let simpleDefs = [simpleDef | simpleDef <- defs, null $ fdefArgs simpleDef] -- Ignore forall-definition, they will be attached to the map value by checkNameConstraints
   checkDefinitions (\_ -> eval) n simpleDefs pos `finally` cleanup n
   where  
@@ -859,7 +859,7 @@ checkMapDefinitions r t args actuals pos = do
   n <- gets $ lookupCustomCount ucTypeName
   setMapValue r actuals $ CustomValue ucTypeName n  
   modify $ setCustomCount ucTypeName (n + 1)  
-  defs <- gets $ lookupMapDefinitions r
+  defs <- fst <$> gets (lookupMapConstraints r)
   checkDefinitions (\formals -> evalLocally formals) n defs pos `finally` cleanup n
   where  
     sig = fsigFromType t
@@ -890,24 +890,23 @@ applyConstraint evaluation guard body pos = do
 -- | 'checkNameConstraints' @name pos@: assume all constraints of entity @name@ mentioned at @pos@;
 -- is @name@ is of map type, attach all its forall-definitions and forall-contraints to the corresponding reference 
 checkNameConstraints name pos = do
-  constraints <- gets $ lookupConstraints name
+  (defs, constraints) <- gets $ lookupNameConstraints name
   mapM_ checkConstraint constraints
-  defs <- gets $ lookupDefinitions name
-  mapM_ addDefinition defs
+  mapM_ attachDefinition defs
   where
     checkConstraint (FDef [] guard body) = applyConstraint eval guard body pos -- Simple constraint: assume it
     checkConstraint constr = do             -- Forall-constraint: attach to the map value
       Reference r <- evalVar name pos
       modify $ addMapConstraint r constr
-    addDefinition (FDef [] _ _) = return () -- Simple definition: ignore
-    addDefinition def = do                  -- Forall definition: attach to the map value
+    attachDefinition (FDef [] _ _) = return () -- Simple definition: ignore
+    attachDefinition def = do                  -- Forall definition: attach to the map value
       Reference r <- evalVar name pos
       modify $ addMapDefinition r def
       
 -- | 'checkMapConstraints' @r t args actuals pos@ : assume all constraints for the value at index @actuals@ 
 -- in the map of type @t@ referenced by @r@ mentioned at @pos@
 checkMapConstraints r t args actuals pos = do
-  constraints <- gets $ lookupMapConstraints r
+  constraints <- snd <$> gets (lookupMapConstraints r)
   mapM_ checkConstraint constraints        
   where
     checkConstraint (FDef formals guard body) = applyConstraint (evalLocally formals) guard body pos
@@ -1259,11 +1258,8 @@ makeEq (Reference r1) (Reference r2) = do
       incRefCountValue newVal
       return $ M.insert key newVal vals
     mergeConstraints s1 s2 newSource = do
-      defs1 <- gets $ lookupMapDefinitions s1
-      defs2 <- gets $ lookupMapDefinitions s2
-      envMapDefinitions %= M.insert newSource (defs1 ++ defs2)
-      constraints1 <- gets $ lookupMapConstraints s1
-      constraints2 <- gets $ lookupMapConstraints s2
-      envMapConstraints %= M.insert newSource (constraints1 ++ constraints2)
+      (defs1, constraints1) <- gets $ lookupMapConstraints s1
+      (defs2, constraints2) <- gets $ lookupMapConstraints s2
+      envConstraints.amHeap %= M.insert newSource (defs1 ++ defs2, constraints1 ++ constraints2)
 makeEq (MapValue _) (MapValue _) = internalError "Attempt to call makeEq on maps directly" 
 makeEq _ _ = return ()  

@@ -17,7 +17,8 @@ module Language.Boogie.PrettyPrinter (
   optionMaybe,
   unOpDoc,
   binOpDoc,
-  sigDoc
+  sigDoc,
+  nestDef
 ) where
 
 import Language.Boogie.AST

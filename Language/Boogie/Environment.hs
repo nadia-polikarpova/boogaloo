@@ -33,14 +33,20 @@ module Language.Boogie.Environment (
   memHeap,
   emptyMemory,
   visibleVariables,
-  memoryDoc,  
+  memoryDoc,
+  ConstraintSet,
+  fdefDoc,
+  constraintSetDoc,
+  AbstractStore,
+  abstractStoreDoc,
+  AbstractMemory,
+  amLocals,
+  amGlobals,
+  amHeap,
   Environment,
   envMemory,
   envProcedures,
-  envDefinitions,
   envConstraints,
-  envMapDefinitions,
-  envMapConstraints,
   envTypeContext,
   envGenerator,
   envCustomCount,
@@ -48,9 +54,7 @@ module Language.Boogie.Environment (
   envInOld,
   initEnv,
   lookupProcedure,
-  lookupDefinitions,
-  lookupConstraints,
-  lookupMapDefinitions,
+  lookupNameConstraints,
   lookupMapConstraints,
   lookupCustomCount,
   setGlobal,
@@ -68,6 +72,7 @@ module Language.Boogie.Environment (
 ) where
 
 import Language.Boogie.Util
+import Language.Boogie.Position
 import Language.Boogie.Tokens (nonIdChar)
 import Language.Boogie.AST
 import Language.Boogie.Heap
@@ -221,13 +226,13 @@ functionConst name = "function " ++ name
 
 {- Memory -}
 
--- | Dynamic part of the execution state
+-- | Memory: stores concrete values associated with names and references
 data Memory = Memory {
-  _memLocals :: Store,                          -- ^ Local variable store
-  _memGlobals :: Store,                         -- ^ Global variable store
-  _memOld :: Store,                             -- ^ Old global variable store (in two-state contexts)
-  _memConstants :: Store,                       -- ^ Constant and function cache
-  _memHeap :: Heap Value                        -- ^ Heap
+  _memLocals :: Store,      -- ^ Local variable store
+  _memGlobals :: Store,     -- ^ Global variable store
+  _memOld :: Store,         -- ^ Old global variable store (in two-state contexts)
+  _memConstants :: Store,   -- ^ Constant and function cache
+  _memHeap :: Heap Value    -- ^ Heap
 } deriving Eq
 
 makeLenses ''Memory
@@ -255,19 +260,57 @@ memoryDoc debug mem = vsep $ [text "Locals:" <+> storeDoc (storeRepr $ mem^.memL
     storeRepr store = if debug then store else userStore (mem^.memHeap) store
     
 instance Show Memory where
-  show mem = show $ memoryDoc True mem  
+  show mem = show $ memoryDoc True mem
+  
+{- Abstract memory -}
+
+-- | Constraint set: contains a list of definitions and a list of constraints
+type ConstraintSet = ([FDef], [FDef])
+
+-- | 'fdefDoc' @isDef fdef@ : @fdef@ pretty-printed as definition if @isDef@ and as constraint otherwise
+fdefDoc :: Bool -> FDef -> Doc
+fdefDoc isDef (FDef formals guard expr) = 
+  (if null formals then empty else parens (commaSep (map text formals))) <+> 
+  (if node guard == TT then empty else brackets (exprDoc guard)) <+> 
+  (if isDef then text "=" else text ":") <+>
+  exprDoc expr
+
+-- | Pretty-printed constraint set  
+constraintSetDoc :: ConstraintSet -> Doc   
+constraintSetDoc cs = vsep (map (fdefDoc True) (fst cs)) $+$ vsep (map (fdefDoc False) (snd cs))
+
+-- | Abstract store: maps names to their constraints
+type AbstractStore = Map Id ConstraintSet
+
+-- | Pretty-printed abstract store
+abstractStoreDoc :: AbstractStore -> Doc
+abstractStoreDoc vars = vsep $ map varDoc (M.toList vars)
+  where varDoc (name, cs) = text name $+$ nestDef (constraintSetDoc cs)
+
+-- | Abstract memory: stores constraints associated with names and references
+data AbstractMemory = AbstractMemory {
+  _amLocals :: AbstractStore,       -- | Local name constraints
+  _amGlobals :: AbstractStore,      -- | Global name constraints
+  _amHeap :: Map Ref ConstraintSet  -- | Reference constraints
+}
+
+makeLenses ''AbstractMemory
+
+-- | Empty abstract memory
+emptyAbstractMemory = AbstractMemory {
+  _amLocals = M.empty,
+  _amGlobals = M.empty,
+  _amHeap = M.empty
+}
 
 {- Environment -}
   
 -- | Execution state
 data Environment m = Environment
   {
-    _envMemory :: Memory,                   -- ^ Variable values
+    _envMemory :: Memory,                   -- ^ Concrete values
+    _envConstraints :: AbstractMemory,      -- ^ Abstract values
     _envProcedures :: Map Id [PDef],        -- ^ Procedure implementations
-    _envDefinitions :: Map Id [FDef],       -- ^ Constant and function definitions
-    _envConstraints :: Map Id [FDef],       -- ^ Constant and function constraints
-    _envMapDefinitions :: Map Ref [FDef],   -- ^ Definition attached to map values (to be checked lazily during selection)
-    _envMapConstraints :: Map Ref [FDef],   -- ^ Constraints attached to map values (to be checked lazily during selection)
     _envTypeContext :: Context,             -- ^ Type context
     _envGenerator :: Generator m,           -- ^ Input generator (used for non-deterministic choices)
     _envCustomCount :: Map Id Int,          -- ^ For each user-defined type, number of distinct values of this type already generated
@@ -281,17 +324,16 @@ makeLenses ''Environment
 initEnv tc gen qbound = Environment
   {
     _envMemory = emptyMemory,
+    _envConstraints = emptyAbstractMemory,
     _envProcedures = M.empty,
-    _envDefinitions = M.empty,
-    _envConstraints = M.empty,
-    _envMapDefinitions = M.empty,
-    _envMapConstraints = M.empty,
     _envTypeContext = tc,
     _envGenerator = gen,
     _envCustomCount = M.empty,
     _envQBound = qbound,
     _envInOld = False
   }
+  
+combineGetters f g1 g2 = to $ \env -> (env ^. g1) `f` (env ^. g2)
   
 -- | 'lookupGetter' @getter def key env@ : lookup @key@ in a map accessible with @getter@ from @env@; if it does not occur return @def@
 lookupGetter getter def key env = case M.lookup key (env ^. getter) of
@@ -300,10 +342,8 @@ lookupGetter getter def key env = case M.lookup key (env ^. getter) of
   
 -- Environment queries  
 lookupProcedure = lookupGetter envProcedures []  
-lookupDefinitions = lookupGetter envDefinitions []  
-lookupConstraints = lookupGetter envConstraints []
-lookupMapDefinitions = lookupGetter envMapDefinitions []
-lookupMapConstraints = lookupGetter envMapConstraints []
+lookupNameConstraints = lookupGetter (envConstraints.amGlobals) ([], [])
+lookupMapConstraints = lookupGetter (envConstraints.amHeap) ([], [])
 lookupCustomCount = lookupGetter envCustomCount 0
 
 -- Environment modifications  
@@ -312,10 +352,10 @@ setLocal name val = over (envMemory.memLocals) (M.insert name val)
 setOld name val = over (envMemory.memOld) (M.insert name val)
 setConst name val = over (envMemory.memConstants) (M.insert name val)
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
-addDefinition name def env = over envDefinitions (M.insert name (lookupDefinitions name env ++ [def])) env
-addConstraint name constraint env = over envConstraints (M.insert name (lookupConstraints name env ++ [constraint])) env
-addMapDefinition r def env = over envMapDefinitions (M.insert r (lookupMapDefinitions r env ++ [def])) env
-addMapConstraint r constraint env = over envMapConstraints (M.insert r (lookupMapConstraints r env ++ [constraint])) env
+addDefinition name def env = over (envConstraints.amGlobals) (M.insert name (over _1 (++ [def]) (lookupNameConstraints name env))) env
+addConstraint name constraint env = over (envConstraints.amGlobals) (M.insert name (over _2 (++ [constraint]) (lookupNameConstraints name env))) env
+addMapDefinition r def env = over (envConstraints.amHeap) (M.insert r (over _1 (++ [def]) (lookupMapConstraints r env))) env
+addMapConstraint r constraint env = over (envConstraints.amHeap) (M.insert r (over _2 (++ [constraint]) (lookupMapConstraints r env))) env
 setCustomCount t n = over envCustomCount (M.insert t n)
 withHeap f env = let (res, h') = f (env^.envMemory.memHeap) 
   in (res, set (envMemory.memHeap) h' env )  
