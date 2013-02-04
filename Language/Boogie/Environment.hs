@@ -34,11 +34,6 @@ module Language.Boogie.Environment (
   emptyMemory,
   visibleVariables,
   memoryDoc,
-  ConstraintSet,
-  fdefDoc,
-  constraintSetDoc,
-  AbstractStore,
-  abstractStoreDoc,
   AbstractMemory,
   amLocals,
   amGlobals,
@@ -62,13 +57,14 @@ module Language.Boogie.Environment (
   setOld,
   setConst,
   addProcedureImpl,
-  addDefinition,
-  addConstraint,
+  addGlobalDefinition,
   addMapDefinition,
   addMapConstraint,
   setCustomCount,
-  withHeap
-  -- functionsDoc
+  withHeap,
+  PDef (..),
+  pdefLocals,
+  paramSubst  
 ) where
 
 import Language.Boogie.Util
@@ -264,29 +260,6 @@ instance Show Memory where
   
 {- Abstract memory -}
 
--- | Constraint set: contains a list of definitions and a list of constraints
-type ConstraintSet = ([FDef], [FDef])
-
--- | 'fdefDoc' @isDef fdef@ : @fdef@ pretty-printed as definition if @isDef@ and as constraint otherwise
-fdefDoc :: Bool -> FDef -> Doc
-fdefDoc isDef (FDef formals guard expr) = 
-  (if null formals then empty else parens (commaSep (map text formals))) <+> 
-  (if node guard == TT then empty else brackets (exprDoc guard)) <+> 
-  (if isDef then text "=" else text ":") <+>
-  exprDoc expr
-
--- | Pretty-printed constraint set  
-constraintSetDoc :: ConstraintSet -> Doc   
-constraintSetDoc cs = vsep (map (fdefDoc True) (fst cs)) $+$ vsep (map (fdefDoc False) (snd cs))
-
--- | Abstract store: maps names to their constraints
-type AbstractStore = Map Id ConstraintSet
-
--- | Pretty-printed abstract store
-abstractStoreDoc :: AbstractStore -> Doc
-abstractStoreDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (name, cs) = text name $+$ nestDef (constraintSetDoc cs)
-
 -- | Abstract memory: stores constraints associated with names and references
 data AbstractMemory = AbstractMemory {
   _amLocals :: AbstractStore,       -- | Local name constraints
@@ -342,7 +315,7 @@ lookupGetter getter def key env = case M.lookup key (env ^. getter) of
   
 -- Environment queries  
 lookupProcedure = lookupGetter envProcedures []  
-lookupNameConstraints = lookupGetter (envConstraints.amGlobals) ([], [])
+lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.amLocals) (envConstraints.amGlobals)) ([], [])
 lookupMapConstraints = lookupGetter (envConstraints.amHeap) ([], [])
 lookupCustomCount = lookupGetter envCustomCount 0
 
@@ -352,8 +325,7 @@ setLocal name val = over (envMemory.memLocals) (M.insert name val)
 setOld name val = over (envMemory.memOld) (M.insert name val)
 setConst name val = over (envMemory.memConstants) (M.insert name val)
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
-addDefinition name def env = over (envConstraints.amGlobals) (M.insert name (over _1 (++ [def]) (lookupNameConstraints name env))) env
-addConstraint name constraint env = over (envConstraints.amGlobals) (M.insert name (over _2 (++ [constraint]) (lookupNameConstraints name env))) env
+addGlobalDefinition name def env = over (envConstraints.amGlobals) (M.insert name (over _1 (++ [def]) (lookupGetter (envConstraints.amGlobals) ([], []) name env))) env
 addMapDefinition r def env = over (envConstraints.amHeap) (M.insert r (over _1 (++ [def]) (lookupMapConstraints r env))) env
 addMapConstraint r constraint env = over (envConstraints.amHeap) (M.insert r (over _2 (++ [constraint]) (lookupMapConstraints r env))) env
 setCustomCount t n = over envCustomCount (M.insert t n)

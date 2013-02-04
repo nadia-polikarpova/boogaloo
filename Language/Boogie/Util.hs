@@ -30,6 +30,9 @@ module Language.Boogie.Util (
   fsigType,
   fsigFromType,
   FDef (..),
+  ConstraintSet,
+  AbstractStore,
+  asUnion,
   PSig (..),
   psigParams,
   psigArgTypes,
@@ -341,7 +344,17 @@ data FDef = FDef {
     fdefArgs  :: [Id],           -- ^ Argument names (in the same order as 'fsigArgTypes' in the corresponding signature)
     fdefGuard :: Expression,     -- ^ Condition under which the definition applies
     fdefBody  :: Expression      -- ^ Body 
-  }  
+  }
+
+-- | Constraint set: contains a list of definitions and a list of constraints
+type ConstraintSet = ([FDef], [FDef])
+
+-- | Abstract store: maps names to their constraints
+type AbstractStore = Map Id ConstraintSet
+
+-- | Union of abstract stores (values at the same key are concatenated)
+asUnion :: AbstractStore -> AbstractStore -> AbstractStore
+asUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2
  
 -- | Procedure signature 
 data PSig = PSig {
@@ -373,11 +386,12 @@ psigEnsures = postconditions . psigContracts
 -- | Procedure definition;
 -- a single procedure might have multiple definitions (one per body)
 data PDef = PDef { 
-    pdefIns :: [Id],            -- ^ In-parameter names (in the same order as 'psigArgs' in the corresponding signature)
-    pdefOuts :: [Id],           -- ^ Out-parameter names (in the same order as 'psigRets' in the corresponding signature)
-    pdefParamsRenamed :: Bool,  -- ^ Are any parameter names in this definition different for the procedure signature? (used for optimizing parameter renaming, True is a safe default)
-    pdefBody :: BasicBody,      -- ^ Body
-    pdefPos :: SourcePos        -- ^ Location of the (first line of the) procedure definition in the source
+    pdefIns :: [Id],                  -- ^ In-parameter names (in the same order as 'psigArgs' in the corresponding signature)
+    pdefOuts :: [Id],                 -- ^ Out-parameter names (in the same order as 'psigRets' in the corresponding signature)
+    pdefParamsRenamed :: Bool,        -- ^ Are any parameter names in this definition different for the procedure signature? (used for optimizing parameter renaming, True is a safe default)
+    pdefBody :: BasicBody,            -- ^ Body
+    pdefConstraints :: AbstractStore, -- ^ Constraints on local names
+    pdefPos :: SourcePos              -- ^ Location of the (first line of the) procedure definition in the source
   }
   
 -- | All local names of a procedure definition  

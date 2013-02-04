@@ -7,6 +7,10 @@ module Language.Boogie.PrettyPrinter (
   exprDoc,
   statementDoc,
   declDoc,
+  -- * Functions and procedures
+  fdefDoc,
+  constraintSetDoc,
+  abstractStoreDoc,
   -- * Utility
   newline,
   vsep,
@@ -24,6 +28,7 @@ module Language.Boogie.PrettyPrinter (
 import Language.Boogie.AST
 import Language.Boogie.Position
 import Language.Boogie.Tokens
+import Language.Boogie.Util
 import Data.Maybe
 import Data.Map (Map, (!))
 import qualified Data.Map as M
@@ -277,6 +282,25 @@ implementationDoc name fv args rets bodies =
   text "returns" <+>
   parens (commaSep (map idTypeDoc rets)) $+$
   vsep (map bodyDoc bodies)
+  
+{- Functions and procedures -}
+
+-- | 'fdefDoc' @isDef fdef@ : @fdef@ pretty-printed as definition if @isDef@ and as constraint otherwise
+fdefDoc :: Bool -> FDef -> Doc
+fdefDoc isDef (FDef formals guard expr) = 
+  (if null formals then empty else parens (commaSep (map text formals))) <+> 
+  (if node guard == TT then empty else brackets (exprDoc guard)) <+> 
+  (if isDef then text "=" else text ":") <+>
+  exprDoc expr
+
+-- | Pretty-printed constraint set  
+constraintSetDoc :: ConstraintSet -> Doc   
+constraintSetDoc cs = vsep (map (fdefDoc True) (fst cs)) $+$ vsep (map (fdefDoc False) (snd cs))
+
+-- | Pretty-printed abstract store
+abstractStoreDoc :: AbstractStore -> Doc
+abstractStoreDoc vars = vsep $ map varDoc (M.toList vars)
+  where varDoc (name, cs) = text name $+$ nestDef (constraintSetDoc cs)  
   
 {- Misc -}
   

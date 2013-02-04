@@ -11,37 +11,27 @@ import qualified Data.Map as M
 -- | Negation normal form of a Boolean expression:
 -- no negation above boolean connectives, quantifiers or relational operators;
 -- no boolean connectives except @&&@ and @||@
-negationNF :: Context -> Expression -> Expression
-negationNF c boolExpr = case node boolExpr of
+negationNF :: Expression -> Expression
+negationNF boolExpr = case node boolExpr of
   UnaryExpression Not e -> case node e of
-    UnaryExpression Not e' -> negationNF c e'
-    BinaryExpression And e1 e2 -> negationNF c (enot e1) ||| negationNF c (enot e2)
-    BinaryExpression Or e1 e2 -> negationNF c (enot e1) |&| negationNF c (enot e2)
-    BinaryExpression Implies e1 e2 -> negationNF c e1 |&| negationNF c (enot e2)
-    BinaryExpression Equiv e1 e2 -> (negationNF c e1 |&| negationNF c (enot e2)) |&| (negationNF c (enot e1) |&| negationNF c e2)
-    BinaryExpression Eq e1 e2 -> case exprType c e1 of
-      BoolType -> negationNF c (enot (e1 |<=>| e2))
-      _ -> e1 |!=| e2
-    BinaryExpression Neq e1 e2 -> case exprType c e1 of
-      BoolType -> negationNF c (e1 |<=>| e2)
-      _ -> e1 |=| e2
+    UnaryExpression Not e' -> negationNF e'
+    BinaryExpression And e1 e2 -> negationNF (enot e1) ||| negationNF (enot e2)
+    BinaryExpression Or e1 e2 -> negationNF (enot e1) |&| negationNF (enot e2)
+    BinaryExpression Implies e1 e2 -> negationNF e1 |&| negationNF (enot e2)
+    BinaryExpression Equiv e1 e2 -> (negationNF e1 |&| negationNF (enot e2)) |&| (negationNF (enot e1) |&| negationNF e2)
+    BinaryExpression Eq e1 e2 -> e1 |!=| e2
+    BinaryExpression Neq e1 e2 -> e1 |=| e2
     BinaryExpression Leq ae1 ae2 -> ae1 |>| ae2
     BinaryExpression Ls ae1 ae2 -> ae1 |>=| ae2
     BinaryExpression Geq ae1 ae2 -> ae1 |<| ae2
     BinaryExpression Gt ae1 ae2 -> ae1 |<=| ae2
-    Quantified Forall tv vars e' -> attachPos (position e) $ Quantified Exists tv vars (negationNF (enterQuantified tv vars c) (enot e'))
-    Quantified Exists tv vars e' -> attachPos (position e) $ Quantified Forall tv vars (negationNF (enterQuantified tv vars c) (enot e'))
+    Quantified Forall tv vars e' -> attachPos (position e) $ Quantified Exists tv vars (negationNF (enot e'))
+    Quantified Exists tv vars e' -> attachPos (position e) $ Quantified Forall tv vars (negationNF (enot e'))
     _ -> boolExpr
-  BinaryExpression Implies e1 e2 -> negationNF c (enot e1) ||| negationNF c e2
-  BinaryExpression Equiv e1 e2 -> (negationNF c (enot e1) ||| negationNF c e2) |&| (negationNF c e1 ||| negationNF c (enot e2))
-  BinaryExpression Eq e1 e2 -> case exprType c e1 of
-    BoolType -> negationNF c (e1 |<=>| e2)
-    _ -> boolExpr
-  BinaryExpression Neq e1 e2 -> case exprType c e1 of
-    BoolType -> negationNF c (enot (e1 |<=>| e2))
-    _ -> boolExpr
-  BinaryExpression op e1 e2 | op == And || op == Or -> inheritPos2 (BinaryExpression op) (negationNF c e1) (negationNF c e2)    
-  Quantified qop tv vars e -> attachPos (position boolExpr) $ Quantified qop tv vars (negationNF (enterQuantified tv vars c) e)
+  BinaryExpression Implies e1 e2 -> negationNF (enot e1) ||| negationNF e2
+  BinaryExpression Equiv e1 e2 -> (negationNF (enot e1) ||| negationNF e2) |&| (negationNF e1 ||| negationNF (enot e2))
+  BinaryExpression op e1 e2 | op == And || op == Or -> inheritPos2 (BinaryExpression op) (negationNF e1) (negationNF e2)    
+  Quantified qop tv vars e -> attachPos (position boolExpr) $ Quantified qop tv vars (negationNF e)
   _ -> boolExpr
 
 -- | Prenex normal form of a Boolean expression:
@@ -77,5 +67,5 @@ prenexNF boolExpr = glue $ rawPrenex boolExpr
       _ -> boolExpr
 
 -- | Negation and prenex normal form of a Boolean expression
-normalize :: Context -> Expression -> Expression      
-normalize c boolExpr = prenexNF $ negationNF c boolExpr
+normalize :: Expression -> Expression      
+normalize boolExpr = prenexNF $ negationNF boolExpr

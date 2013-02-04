@@ -77,10 +77,10 @@ alloc v h = let (r, h') = getFreshRef h in (r, insert r v h')
       else let (r, f') = S.deleteFindMin (h^.hFree) in (r, h & hFree .~ f')
     insert r v h = h & (over hValCounts (M.insert r (v, 0))) . (over hGarbage (S.insert r))
 
--- | Collect some garbage reference in the heap and return the value previously stored at that reference and the new heap;
+-- | Collect some garbage reference in the heap and return that reference and the new heap;
 -- the heap must have garbage
-dealloc :: Heap a -> (a, Heap a)
-dealloc h = let (r, g') = S.deleteFindMin (h^.hGarbage) in (fst ((h^.hValCounts) ! r), 
+dealloc :: Heap a -> (Ref, Heap a)
+dealloc h = let (r, g') = S.deleteFindMin (h^.hGarbage) in (r, 
   h & (over hValCounts (M.delete r)) .
       (hGarbage .~ g') .
       (over hFree (S.insert r)) 

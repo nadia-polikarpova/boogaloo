@@ -16,8 +16,6 @@
   
 - Interpreter
   -> Check function and map constraints lazily
-    - Extract constraints and definitions from where-clauses
-      - Handle AbstractMemory like memory (take care of locals in executeLocally, delete from heap on garbage collection)
     - Add name to FDef to display in errors instead of "axiom"
     - Rename FDef?
     - Map equality with overrides: check that values chosen for old sources conform to constraints, add non-equal guards to the new source
