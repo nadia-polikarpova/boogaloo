@@ -831,7 +831,7 @@ checkDefinitions evalLocally myCode defs pos = checkDefinitions' evalLocally myC
 
 checkDefinitions' _ _ Nothing [] _ = return Nothing
 checkDefinitions' _ _ (Just code) [] _ = throwInternalException (UnderConstruction code)
-checkDefinitions' evalLocally myCode mCode (FDef formals guard body : defs) pos = tryDefinitions `catchError` ucHandler
+checkDefinitions' evalLocally myCode mCode (FDef name formals guard body : defs) pos = tryDefinitions `catchError` ucHandler
   where
     tryDefinitions = do      
       mVal <- applyDefinition (evalLocally formals) guard body
@@ -850,7 +850,7 @@ checkDefinitions' evalLocally myCode mCode (FDef formals guard body : defs) pos 
       case applicable of
         BoolValue False -> return Nothing
         BoolValue True -> (Just <$> evaluation body) `catchError` addFrame
-    addFrame err = addStackFrame (StackFrame pos "axiom") err -- ToDo: add map/function name (axiom that defines which map/function?)      
+    addFrame = addStackFrame (StackFrame pos name)
     
 -- | 'checkNameDefinitions' @name t pos@ : return a value for @name@ of type @t@ mentioned at @pos@, if there is an applicable definition
 checkNameDefinitions :: (Monad m, Functor m) => Id -> Type -> SourcePos -> Execution m (Maybe Value)    
@@ -884,10 +884,10 @@ checkMapDefinitions r t args actuals pos = do
       forgetMapValue r actuals
       modify $ setCustomCount ucTypeName n      
 
--- | 'applyConstraint' @evaluation guard body pos@ : 
--- check that @guard@ ==> @body@, using @evaluation@ to evaluate both @guard@ and @body@;
+-- | 'applyConstraint' @name evaluation guard body pos@ : 
+-- check for an entity @name@ that @guard@ ==> @body@, using @evaluation@ to evaluate both @guard@ and @body@;
 -- (@pos@ is the position of the constraint invocation)      
-applyConstraint evaluation guard body pos = do
+applyConstraint name evaluation guard body pos = do
   applicable <- case guard of
     Pos _ TT -> return $ BoolValue True -- optimization for trivial guards
     _ -> evaluation guard `catchError` addFrame
@@ -899,7 +899,7 @@ applyConstraint evaluation guard body pos = do
         BoolValue False -> throwRuntimeFailure (SpecViolation $ SpecClause Axiom True body) pos
     BoolValue False -> return ()
   where
-    addFrame err = addStackFrame (StackFrame pos "axiom") err -- ToDo: add map/function name (axiom that defines which map/function?)
+    addFrame = addStackFrame (StackFrame pos name)
     
 -- | 'checkNameConstraints' @name pos@: assume all constraints of entity @name@ mentioned at @pos@;
 -- is @name@ is of map type, attach all its forall-definitions and forall-contraints to the corresponding reference 
@@ -908,12 +908,12 @@ checkNameConstraints name pos = do
   mapM_ checkConstraint constraints
   mapM_ attachDefinition defs
   where
-    checkConstraint (FDef [] guard body) = applyConstraint eval guard body pos -- Simple constraint: assume it
+    checkConstraint (FDef _ [] guard body) = applyConstraint name eval guard body pos -- Simple constraint: assume it
     checkConstraint constr = do             -- Forall-constraint: attach to the map value
       Reference r <- evalVar name pos
       modify $ addMapConstraint r constr
-    attachDefinition (FDef [] _ _) = return () -- Simple definition: ignore
-    attachDefinition def = do                  -- Forall definition: attach to the map value
+    attachDefinition (FDef _ [] _ _) = return ()  -- Simple definition: ignore
+    attachDefinition def = do                     -- Forall definition: attach to the map value
       Reference r <- evalVar name pos
       modify $ addMapDefinition r def
       
@@ -923,11 +923,10 @@ checkMapConstraints r t args actuals pos = do
   constraints <- snd <$> gets (lookupMapConstraints r)
   mapM_ checkConstraint constraints        
   where
-    checkConstraint (FDef formals guard body) = applyConstraint (evalLocally formals) guard body pos
+    checkConstraint (FDef name formals guard body) = applyConstraint name (evalLocally formals) guard body pos
     evalLocally formals expr = do
       let sig = fsigFromType t
       executeLocally (enterFunction sig formals args) formals formals actuals M.empty (eval expr)      
-    addFrame err = addStackFrame (StackFrame pos "axiom") err      
 
 {- Preprocessing -}
 
@@ -948,7 +947,7 @@ processFunction name args mBody = do
   envTypeContext %= \tc -> tc { ctxConstants = M.insert (functionConst name) (fsigType sig) (ctxConstants tc) }  
   case mBody of
     Nothing -> return ()
-    Just body -> modify $ addGlobalDefinition (functionConst name) (FDef formals (conjunction []) body)
+    Just body -> modify $ addGlobalDefinition (functionConst name) (FDef name formals (conjunction []) body)
   where
     formals = map (formalName . fst) args
     formalName Nothing = dummyFArg 
@@ -1008,13 +1007,13 @@ extractConstraints' tv vars guards bExpr = case (node bExpr) of
         allGuards = concat argGuards ++ guards
         extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
       in if length formals == length args && null extraVars -- Only possible if all arguments are simple and there are no extra variables
-        then M.singleton name ([FDef formals (conjunction allGuards) rhs], [])
+        then M.singleton name ([FDef name formals (conjunction allGuards) rhs], [])
         else M.empty
     
     extractConstraintsAtomic = case usedVars of -- This is a compromise: quantified expressions constrain names they mention of any arity but zero (ToDo: think about it)
       [] -> foldr asUnion M.empty $ map addSimpleConstraintFor fvExpr
       _ -> foldr asUnion M.empty $ map addForallConstraintFor (freeSelections bExpr ++ over (mapped._1) functionConst (applications bExpr))
-    addSimpleConstraintFor name = M.singleton name ([], [FDef [] (conjunction guards) bExpr])
+    addSimpleConstraintFor name = M.singleton name ([], [FDef name [] (conjunction guards) bExpr])
     addForallConstraintFor (name, args) = let
         (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
         allArgGuards = concat argGuards
@@ -1023,7 +1022,7 @@ extractConstraints' tv vars guards bExpr = case (node bExpr) of
           then conjunction guards |=>| bExpr
           else attachPos (position bExpr) $ Quantified Forall tv extraVars (conjunction guards |=>| bExpr) -- outer guards are inserted into the body, because they might contain extraVars
       in if length formals == length args -- Only possible if all arguments are simple
-        then M.singleton name ([], [FDef formals (conjunction allArgGuards) constraint])
+        then M.singleton name ([], [FDef name formals (conjunction allArgGuards) constraint])
         else M.empty
             
 -- | 'extractArgs' @vars args@: extract simple arguments from @args@;

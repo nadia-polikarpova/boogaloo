@@ -47,10 +47,9 @@ procedure Test() returns ()
   modifies x, y, n;
 {
   var m1: [int] int;
-  assert N > 0;
   
-  assert M == 5;
-  
+  assert N > 0;  
+  assert M == 5;  
   assert A + B == 5;
   
   assert D == 5;
