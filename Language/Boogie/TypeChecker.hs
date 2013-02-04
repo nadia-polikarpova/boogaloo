@@ -84,7 +84,6 @@ enterProcedure sig def actuals lhss c = c
     ctxTypeVars = [],
     ctxIns = M.fromList $ zip ins inTypes,
     ctxLocals = M.union (M.fromList $ zip localNames localTypes) (M.fromList $ zip outs outTypes),
-    ctxWhere = foldl addWhere (ctxWhere c) (zip (ins ++ outs ++ localNames) (paramWhere ++ localWhere)), 
     ctxModifies = psigModifies sig,
     ctxTwoState = True,
     ctxInLoop = False
@@ -102,9 +101,6 @@ enterProcedure sig def actuals lhss c = c
     outTypes = map (typeSubst inst) (psigRetTypes sig)
     localTypes = map (typeSubst inst . itwType) locals
     localNames = map itwId locals
-    addWhere m (id, w) = M.insert id w m
-    localWhere = map itwWhere locals
-    paramWhere = map (paramSubst sig def . itwWhere) (psigArgs sig ++ psigRets sig)
    
 -- | Local context of a quantified expression   
 enterQuantified :: [Id] -> [IdType] -> Context -> Context 
@@ -129,7 +125,6 @@ data Context = Context
     ctxConstants :: Map Id Type,            -- ^ constant types (type synonyms resolved)
     ctxFunctions :: Map Id FSig,            -- ^ function signatures (type synonyms resolved)
     ctxProcedures :: Map Id PSig,           -- ^ procedure signatures (type synonyms resolved)
-    ctxWhere :: Map Id Expression,          -- ^ where clauses of global variables (global and local)    
       -- Local:
     ctxTypeVars :: [Id],                    -- ^ free type variables
     ctxIns :: Map Id Type,                  -- ^ input parameter types
@@ -152,7 +147,6 @@ emptyContext = Context {
     ctxConstants        = M.empty,
     ctxFunctions        = M.empty,
     ctxProcedures       = M.empty,
-    ctxWhere            = M.empty,
     ctxTypeVars         = [],
     ctxIns              = M.empty,
     ctxLocals           = M.empty,
@@ -759,7 +753,6 @@ checkWhere var = do
   locally $ do
     modify $ setTwoState False
     checkMatch (text "where clause") BoolType (itwWhere var)
-  modify $ \c -> c { ctxWhere = M.insert (itwId var) (itwWhere var) (ctxWhere c) }
 
 -- | 'checkParentInfo' @ids t parents@ : Check that identifiers in @parents@ are distinct constants of type @t@ and do not occur among @ids@
 checkParentInfo :: [Id] -> Type -> [Id] -> Typing ()

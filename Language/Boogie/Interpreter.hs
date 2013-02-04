@@ -709,14 +709,19 @@ execPredicate specClause pos = do
     BoolValue True -> return ()
     BoolValue False -> throwRuntimeFailure (SpecViolation specClause) pos      
     
-execHavoc ids pos = do
-  tc <- use envTypeContext
-  mapM_ (havoc tc) ids 
+execHavoc names pos = do
+  mapM_ havoc names 
   where
-    havoc tc id = do
-      val <- generateValue (exprType tc . gen . Var $ id) pos
-      setAnyVar id val
-      checkWhere id pos      
+    havoc name = do
+      tc <- use envTypeContext
+      let t = exprType tc . gen . Var $ name
+      definedValue <- checkNameDefinitions name t pos
+      case definedValue of
+        Just val -> setAnyVar name val
+        Nothing -> do
+          chosenValue <- generateValue t pos
+          setAnyVar name chosenValue
+          checkNameConstraints name pos
     
 execAssign lhss rhss = do
   rVals <- mapM eval rhss'
@@ -923,14 +928,6 @@ checkMapConstraints r t args actuals pos = do
       let sig = fsigFromType t
       executeLocally (enterFunction sig formals args) formals formals actuals M.empty (eval expr)      
     addFrame err = addStackFrame (StackFrame pos "axiom") err      
-
--- | 'checkWhere' @id pos@: Assume where clause of variable @id@ at a program location pos
--- (pos will be reported as the location of the failure instead of the location of the variable definition).
-checkWhere id pos = do
-  whereClauses <- ctxWhere <$> use envTypeContext
-  case M.lookup id whereClauses of
-    Nothing -> return ()
-    Just w -> (exec . attachPos pos . Predicate . SpecClause Where True) w
 
 {- Preprocessing -}
 
