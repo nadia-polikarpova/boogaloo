@@ -59,7 +59,7 @@ emptyHeap = Heap {
 -- | 'at' @h r@: value of @r@ in heap @h@
 at :: Show a => Heap a -> Ref -> a
 at h r = case M.lookup r (h^.hValCounts) of
-  Nothing -> internalError . show $ text "Cannot find reference" <+> refDoc r <+> text "in heap" <+> heapDoc h
+  Nothing -> internalError . show $ text "Cannot find reference" <+> refDoc r <+> text "in heap" $+$ heapDoc h
   Just (v, c) -> v
   
 -- | Does the heap have any garbage?
