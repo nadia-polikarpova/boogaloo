@@ -287,9 +287,10 @@ implementationDoc name fv args rets bodies =
 
 -- | 'fdefDoc' @isDef fdef@ : @fdef@ pretty-printed as definition if @isDef@ and as constraint otherwise
 fdefDoc :: Bool -> FDef -> Doc
-fdefDoc isDef (FDef name formals guard expr) = 
+fdefDoc isDef (FDef name tv formals guard expr) = 
   text name <>
-  (if null formals then empty else parens (commaSep (map text formals))) <+> 
+  (if null tv then empty else angles (commaSep (map text tv))) <+> 
+  (if null formals then empty else parens (commaSep (map idTypeDoc formals))) <+> 
   (if node guard == TT then empty else brackets (exprDoc guard)) <+> 
   (if isDef then text "=" else text ":") <+>
   exprDoc expr

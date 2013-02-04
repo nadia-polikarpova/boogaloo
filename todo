@@ -18,7 +18,6 @@
   - Check function and map constraints lazily
     - Rename FDef?
     - Map equality with overrides: check that values chosen for old sources conform to constraints, add non-equal guards to the new source
-    - For constraints and definitions take types of quantified variables into account (for a polymorphic function/map, a type can serve as a guard)
     - Move definitions/constraints without guards to the front    
     - Eager bounded mode: do not check constraints if map index is beyond bounds?
     - Lazy mode: only enforce a constraint when all involved values are already defined (less consistent, but doesn't loop)

@@ -28,6 +28,11 @@ function f(int): int;
 axiom (forall x: int :: x >= 0 ==> f(x)*f(x) == 16);
 axiom (forall x: int :: x < 0 ==> f(x) == -x);
 
+// Constraints with type guards
+function g<a>(x: a): a;
+axiom (forall i: int :: g(i) >= i); // This one should only apply for integer arguments
+axiom (forall <b> x: b :: g(x) != x); // This one should apply for all arguments
+
 // Where clauses
 var x: int where x > 0;
 var y: int where y != x;
@@ -68,6 +73,9 @@ procedure Test() returns ()
 
   assert f(1000) == 4 || f(1000) == -4;
   assert f(-1000) == 1000;
+  
+  assert g(3) > 3;
+  assert !g(true);  
   
   call y := p(0);
   

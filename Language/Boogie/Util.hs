@@ -341,10 +341,11 @@ instance Eq FSig where
   
 -- | Function definition
 data FDef = FDef {
-    fdefName  :: Id,             -- ^ Entity to which the definition belongs
-    fdefArgs  :: [Id],           -- ^ Argument names (in the same order as 'fsigArgTypes' in the corresponding signature)
-    fdefGuard :: Expression,     -- ^ Condition under which the definition applies
-    fdefBody  :: Expression      -- ^ Body 
+    fdefName  :: Id,            -- ^ Entity to which the definition belongs
+    fdefTV    :: [Id],          -- ^ Type variables
+    fdefArgs  :: [IdType],      -- ^ Arguments (types may be less general than in the corresponding signature)
+    fdefGuard :: Expression,    -- ^ Condition under which the definition applies
+    fdefBody  :: Expression     -- ^ Body 
   }
 
 -- | Constraint set: contains a list of definitions and a list of constraints
