@@ -158,7 +158,7 @@ restoreOld oldMem = do
   let (oldOlds, newOlds) = M.partitionWithKey (\var _ -> M.member var (oldMem^.memGlobals)) (mem^.memOld)
   envMemory.memOld .= (oldMem^.memOld) `M.union` newOlds -- Add old values for freshly initialized globals (they are valid up until the program entry point, so could be accessed until the end of the program)
   mapM_ decRefCountValue (M.elems oldOlds) -- Old values for previously initialized varibles go out of scope
-  
+    
 -- | Enter local scope (apply localTC to the type context and assign actuals to formals),
 -- execute computation,
 -- then restore type context and local variables to their initial values
@@ -176,6 +176,7 @@ executeLocally localTC locals formals actuals localConstraints computation = do
       mapM_ (unsetVar (envMemory.memLocals)) locals
       env <- get
       envTypeContext .= oldEnv^.envTypeContext
+      envMemory.memLocals .= deleteAll locals (env^.envMemory.memLocals) `M.union` (oldEnv^.envMemory.memLocals)
       envConstraints.amLocals .= oldEnv^.envConstraints.amLocals -- Constraints cannot be initialized in a nested context, so here we can just restore old locals
                               
 {- Runtime failures -}
@@ -615,8 +616,7 @@ rejectMapIndex pos idx = case idx of
   _ -> return ()
       
 evalMapSelection m args pos = do   
-  argsV <- mapM eval args
-  mapM_ (rejectMapIndex pos) argsV
+  argsV <- mapM eval args  
   Reference r <- eval m  
   h <- use $ envMemory.memHeap
   let (s, vals) = flattenMap h r
@@ -629,6 +629,7 @@ evalMapSelection m args pos = do
       case definedValue of
         Just val -> return val
         Nothing -> do                       -- If not found, choose a value non-deterministically
+          mapM_ (rejectMapIndex pos) argsV
           let rangeType = exprType tc (gen $ MapSelection m args)
           chosenValue <- generateValue rangeType pos
           setMapValue s argsV chosenValue
