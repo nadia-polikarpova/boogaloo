@@ -16,8 +16,9 @@
   
 - Interpreter
   - Check function and map constraints lazily
-    - Rename FDef?
-    - Map equality with overrides: check that values chosen for old sources conform to constraints, add non-equal guards to the new source
+    - Map equality with overrides
+      - check that values chosen for old sources conform to constraints (problem that we don't have types when choosing a value)
+      - add non-equal guards to the new source 
     - Move definitions/constraints without guards to the front    
     - Eager bounded mode: do not check constraints if map index is beyond bounds?
     - Lazy mode: only enforce a constraint when all involved values are already defined (less consistent, but doesn't loop)

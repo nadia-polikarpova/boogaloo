@@ -9,9 +9,18 @@ axiom N > 0;
 const A, B: int;
 axiom A + B == 5;
 
+// It used to be the case that if D is evaluated first, the first definition failed and as a result C was initialized to 0 instead of 5
 const C, D: int;
-axiom C == D; // It used to be the case that if D is evaluated first, the first definition failed and as a result C was initialized to 0 instead of 5
+axiom C == D;
 axiom D == 5;
+
+// It used to be the case that if I is evaluated first, its definition fails, so it gets initialized to 0 before its constraints get checked;
+// its only constraint is "H == I", at which point H is evaluated;
+// H has a definition "= I", but I is already intiialized to 0, so H gets 0 and its constraints are never checked (because it has a definition).
+// Fixed by checking constraints also if an entity has a definition, because evaluating the definition might have included non-deterministic choices
+const H, I: int;
+axiom H == I;
+axiom H >= 3;
 
 // Cyclic definition: a value has to be chosen
 const E, F, G: int;
@@ -59,6 +68,8 @@ procedure Test() returns ()
   
   assert D == 5;
   assert C == 5;
+  
+  assert I >= 3;
   
   assume G == 3;
   assert E == 3 && F == 3;

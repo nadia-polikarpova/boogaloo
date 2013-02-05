@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell, Rank2Types #-}
 
 -- | Execution state for the interpreter
 module Language.Boogie.Environment ( 
@@ -26,6 +26,7 @@ module Language.Boogie.Environment (
   userStore,
   storeDoc,
   Memory,
+  StoreLens,
   memLocals,
   memGlobals,
   memOld,
@@ -232,6 +233,8 @@ data Memory = Memory {
 } deriving Eq
 
 makeLenses ''Memory
+
+type StoreLens = SimpleLens Memory Store
 
 -- | Empty memory
 emptyMemory = Memory {

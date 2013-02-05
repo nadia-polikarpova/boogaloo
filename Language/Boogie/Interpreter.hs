@@ -30,7 +30,7 @@ module Language.Boogie.Interpreter (
   eval,
   exec,
   execProcedure,
-  collectDefinitions
+  preprocess
   ) where
 
 import Language.Boogie.Environment  
@@ -82,7 +82,7 @@ executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> Generator
 executeProgramGeneric p tc generator qbound entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc generator qbound)
   where
     programExecution = do
-      execUnsafely $ collectDefinitions p
+      execUnsafely $ preprocess p
       execRootCall
     sig = procSig entryPoint tc
     execRootCall = do
@@ -168,12 +168,12 @@ executeLocally localTC locals formals actuals localConstraints computation = do
   envTypeContext %= localTC
   envMemory.memLocals %= deleteAll locals
   envConstraints.amLocals .= localConstraints
-  zipWithM_ (setVar (to $ const emptyStore) setLocal) formals actuals -- All formals are fresh, can use emptyStore for current values
+  zipWithM_ (setVar memLocals) formals actuals -- All formals are fresh, can use emptyStore for current values
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
     unwind oldEnv = do
-      mapM_ (unsetVar (envMemory.memLocals)) locals
+      mapM_ (unsetVar memLocals) locals
       env <- get
       envTypeContext .= oldEnv^.envTypeContext
       envMemory.memLocals .= deleteAll locals (env^.envMemory.memLocals) `M.union` (oldEnv^.envMemory.memLocals)
@@ -432,48 +432,50 @@ decRefCountValue val = case val of
   Reference r -> envMemory.memHeap %= decRefCount r
   _ -> return ()     
     
--- | 'unsetVar' @getStore name@ : if @name@ was associated with a reference in @getStore@, decrease its reference count
-unsetVar getStore name = do
-  store <- use getStore
+-- | 'unsetVar' @getter name@ : if @name@ was associated with a reference in @getter@, decrease its reference count
+unsetVar getter name = do
+  store <- use $ envMemory.getter
   case M.lookup name store of    
     Just (Reference r) -> do          
       envMemory.memHeap %= decRefCount r
     _ -> return ()
 
--- | 'setVar' @getStore setter name val@ : set value of variable @name@ to @val@ using @setter@;
--- adjust reference count if needed using @getStore@ to access the current value of @name@  
-setVar getStore setter name val = do
-  case val of
-    Reference r -> do
-      unsetVar getStore name
-      envMemory.memHeap %= incRefCount r
-    _ -> return ()
-  modify $ setter name val    
+-- | 'setVar' @setter name val@ : set value of variable @name@ to @val@ using @setter@
+setVar setter name val = do
+  incRefCountValue val
+  envMemory.setter %= M.insert name val
+
+-- | 'resetVar' @lens name val@ : set value of variable @name@ to @val@ using @lens@;
+-- if @name@ was associated with a reference, decrease its reference count
+resetVar :: (Monad m, Functor m) => StoreLens -> Id -> Value -> Execution m ()  
+resetVar lens name val = do
+  unsetVar lens name
+  setVar lens name val
             
--- | 'setAnyVar' @name val@ : set value of a constant, global or local variable @name@ to @val@
-setAnyVar name val = do
+-- | 'resetAnyVar' @name val@ : set value of a constant, global or local variable @name@ to @val@
+resetAnyVar name val = do
   tc <- use envTypeContext
   if M.member name (localScope tc)
-    then setVar (envMemory.memLocals) setLocal name val
+    then resetVar memLocals name val
     else if M.member name (ctxGlobals tc)
-      then setVar (envMemory.memGlobals) setGlobal name val
-      else setVar (envMemory.memConstants) setConst name val
+      then resetVar memGlobals name val
+      else resetVar memConstants name val
       
--- | 'forgetVar' @getStore name@ : forget value of variable @name@ in @getStore@;
--- adjust reference count if needed using @getStore@ to access the current value of @name@      
-forgetVar :: (Monad m, Functor m) => SimpleLens (Environment m) Store -> Id -> Execution m ()
-forgetVar getStore name = do
-  unsetVar getStore name
-  modify $ over getStore (M.delete name)  
+-- | 'forgetVar' @lens name@ : forget value of variable @name@ in @lens@;
+-- if @name@ was associated with a reference, decrease its reference count      
+forgetVar :: (Monad m, Functor m) => StoreLens -> Id -> Execution m ()
+forgetVar lens name = do
+  unsetVar lens name
+  envMemory.lens %= M.delete name
       
 -- | 'forgetAnyVar' @name@ : forget value of a constant, global or local variable @name@ to @val@      
 forgetAnyVar name = do
   tc <- use envTypeContext
   if M.member name (localScope tc)
-    then forgetVar (envMemory.memLocals) name
+    then forgetVar memLocals name
     else if M.member name (ctxGlobals tc)
-      then forgetVar (envMemory.memGlobals) name
-      else forgetVar (envMemory.memConstants) name
+      then forgetVar memGlobals name
+      else forgetVar memConstants name
       
 -- | 'setMapValue' @r index val@ : map @index@ to @val@ in the map referenced by @r@
 -- (@r@ has to be a source map)
@@ -482,16 +484,15 @@ setMapValue r index val = do
   envMemory.memHeap %= update r (MapValue (Source (M.insert index val baseVals)))
   incRefCountValue val
   
--- | 'forgetMapValue' @r index@ : forget value at @index@ in the source of the map referenced by @r@  
+-- | 'forgetMapValue' @r index@ : forget value at @index@ in the map referenced by @r@  
+-- (@r@ has to be a source map)
 forgetMapValue r index = do
-  MapValue repr <- readHeap r
-  case repr of
-    Source baseVals -> case M.lookup index baseVals of
-      Nothing -> return ()
-      Just val -> do
-        incRefCountValue val
-        envMemory.memHeap %= update r (MapValue (Source (M.delete index baseVals)))
-    Derived base override -> forgetMapValue base index
+  MapValue (Source baseVals) <- readHeap r
+  case M.lookup index baseVals of
+    Nothing -> return ()
+    Just val -> do
+      decRefCountValue val
+      envMemory.memHeap %= update r (MapValue (Source (M.delete index baseVals)))
         
 -- | 'readHeap' @r@: current value of reference @r@ in the heap
 readHeap r = flip at r <$> use (envMemory.memHeap)
@@ -584,30 +585,36 @@ eval expr = case node expr of
   where
     functionExpr name = gen . Var $ functionConst name
   
+evalVar :: (Monad m, Functor m) => Id -> SourcePos -> Execution m Value  
 evalVar name pos = do
   tc <- use envTypeContext
   case M.lookup name (localScope tc) of
-    Just t -> evalVarWith t (envMemory.memLocals) [setLocal]
+    Just t -> evalVarWith t memLocals False
     Nothing -> case M.lookup name (ctxGlobals tc) of
       Just t -> do
         inOld <- use envInOld
-        let setters = if inOld then [setGlobal] else [setGlobal, setOld]
-        evalVarWith t (envMemory.memGlobals) setters
+        evalVarWith t memGlobals (not inOld) -- Unless we are evaluating and old expression, also initialize the old value of the global
       Nothing -> case M.lookup name (ctxConstants tc) of
-        Just t -> evalVarWith t (envMemory.memConstants) [setConst]
+        Just t -> evalVarWith t memConstants False
         Nothing -> (internalError . show) (text "Encountered unknown identifier during execution:" <+> text name) 
-  where
-    evalVarWith t getStore setters = do
-      s <- use getStore
+  where  
+    evalVarWith :: (Monad m, Functor m) => Type -> StoreLens -> Bool -> Execution m Value
+    evalVarWith t lens initOld = do
+      s <- use $ envMemory.lens
       case M.lookup name s of         -- Lookup a cached value
         Just val -> wellDefined val
         Nothing -> do                 -- If not found, look for an applicable definition
           definedValue <- checkNameDefinitions name t pos
           case definedValue of
-            Just val -> return val
+            Just val -> do
+              setVar lens name val
+              checkNameConstraints name pos
+              forgetVar lens name
+              return val
             Nothing -> do             -- If not found, choose a value non-deterministically
               chosenValue <- generateValue t pos
-              mapM_ (\set -> setVar (to $ const emptyStore) set name chosenValue) setters
+              setVar lens name chosenValue
+              when initOld $ setVar memOld name chosenValue
               checkNameConstraints name pos
               return chosenValue
         
@@ -627,7 +634,11 @@ evalMapSelection m args pos = do
       let mapType = exprType tc m    
       definedValue <- checkMapDefinitions s mapType args argsV pos
       case definedValue of
-        Just val -> return val
+        Just val -> do
+          setMapValue s argsV val
+          checkMapConstraints s mapType args argsV pos
+          forgetMapValue s argsV
+          return val
         Nothing -> do                       -- If not found, choose a value non-deterministically
           mapM_ (rejectMapIndex pos) argsV
           let rangeType = exprType tc (gen $ MapSelection m args)
@@ -686,7 +697,7 @@ evalExists' tv vars e = do
     -- | Fix the value of var to val, then evaluate e for each combination of values for the rest of vars
     fixOne :: (Monad m, Functor m) => [Id] -> [Domain] -> Id -> Value -> Execution m Bool
     fixOne vars doms var val = do
-      setVar (envMemory.memLocals) setLocal var val
+      resetVar memLocals var val
       evalForEach vars doms
     varNames = map fst vars
       
@@ -717,15 +728,17 @@ execHavoc names pos = do
       let t = exprType tc . gen . Var $ name
       definedValue <- checkNameDefinitions name t pos
       case definedValue of
-        Just val -> setAnyVar name val
+        Just val -> do
+          resetAnyVar name val
+          checkNameConstraints name pos
         Nothing -> do
           chosenValue <- generateValue t pos
-          setAnyVar name chosenValue
+          resetAnyVar name chosenValue
           checkNameConstraints name pos
     
 execAssign lhss rhss = do
   rVals <- mapM eval rhss'
-  zipWithM_ setAnyVar lhss' rVals
+  zipWithM_ resetAnyVar lhss' rVals
   where
     lhss' = map fst (zipWith simplifyLeft lhss rhss)
     rhss' = map snd (zipWith simplifyLeft lhss rhss)
@@ -744,7 +757,7 @@ execCallBySig sig lhss args pos = do
   (sig', def) <- selectDef tc defs
   let lhssExpr = map (attachPos (ctxPos tc) . Var) lhss
   retsV <- execProcedure sig' def args lhssExpr `catchError` addFrame
-  zipWithM_ setAnyVar lhss retsV
+  zipWithM_ resetAnyVar lhss retsV
   where
     selectDef tc [] = return (assumePostconditions sig, dummyDef tc)
     selectDef tc defs = do
@@ -859,7 +872,7 @@ checkDefinitions' typeGuard evalLocally myCode mCode (FDef name tv formals guard
 checkNameDefinitions :: (Monad m, Functor m) => Id -> Type -> SourcePos -> Execution m (Maybe Value)    
 checkNameDefinitions name t pos = do
   n <- gets $ lookupCustomCount ucTypeName
-  setAnyVar name $ CustomValue ucTypeName n  
+  resetAnyVar name $ CustomValue ucTypeName n  
   modify $ setCustomCount ucTypeName (n + 1)
   defs <- fst <$> gets (lookupNameConstraints name)
   let simpleDefs = [simpleDef | simpleDef <- defs, null $ fdefArgs simpleDef] -- Ignore forall-definition, they will be attached to the map value by checkNameConstraints
@@ -941,9 +954,9 @@ checkMapConstraints r t args actuals pos = do
 
 {- Preprocessing -}
 
--- | Collect constant, function and procedure definitions from the program
-collectDefinitions :: (Monad m, Functor m) => Program -> SafeExecution m ()
-collectDefinitions (Program decls) = mapM_ processDecl decls
+-- | Collect procedure implementations, and constant/function/global variable constraints
+preprocess :: (Monad m, Functor m) => Program -> SafeExecution m ()
+preprocess (Program decls) = mapM_ processDecl decls
   where
     processDecl decl = case node decl of
       FunctionDecl name _ args _ mBody -> processFunction name args mBody

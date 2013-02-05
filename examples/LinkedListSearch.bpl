@@ -63,10 +63,14 @@ procedure search(v: int) returns (i: int)
 const N: int;
 axiom N == 3;
 
+axiom acyclic(head);
+axiom length(head) == N;
+axiom (forall i, j: int :: 0 <= i && i < j && j < N ==> at(head, i) != at(head, j));
+
 procedure Main() returns (result: int)
 {
-  assume acyclic(head);
-  assume length(head) == N;
-  assume (forall i, j: int :: 0 <= i && i < j && j < N ==> at(head, i) != at(head, j));
+  // assume acyclic(head);
+  // assume length(head) == N;
+  // assume (forall i, j: int :: 0 <= i && i < j && j < N ==> at(head, i) != at(head, j));
   call result := search(0);
 }

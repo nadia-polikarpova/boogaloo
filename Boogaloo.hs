@@ -213,6 +213,6 @@ printSeparate doc = when (not (isEmpty doc)) (do printNewline; print doc)
 harness file = runOnFile printOutcome file
   where
     printOutcome p context = do
-      let env = head (toList (execStateT (collectDefinitions p) (initEnv context (exhaustiveGenerator (Just defaultBranch)) (Just defaultBranch))))
+      let env = head (toList (execStateT (preprocess p) (initEnv context (exhaustiveGenerator (Just defaultBranch)) (Just defaultBranch))))
       -- print $ memoryDoc True (env^.envMemory)
       print $ abstractStoreDoc (env ^. envConstraints . amGlobals)
