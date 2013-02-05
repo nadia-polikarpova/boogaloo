@@ -27,7 +27,7 @@
   - Refactor executeLocally, execCall and execProcedure
   - Refactor evalVar, setAnyVar and so on, so that there is a unified meachism to lookup a name in the type context
   - Printable class?  
-  - Lazy initialization of arguments (in execLocally only copy those args that are already initialize, at the end propage the initizlization back with assume)
+  - Lazy initialization of arguments (in execLocally only copy those args that are already initialized, at the end propage the initizlization back with assume)
   - Lambda expressions
   - Turn source positions into spans; use the end of the span to report postcondition violations  
   - Extends ordering

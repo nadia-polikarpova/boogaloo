@@ -2,11 +2,12 @@
 // Bubble Sort, where the specification says the output is a permutation of
 // the input.
 
+// Run "boogaloo -p BubbleSort Bubble.bpl" to observe a possible execution (use axioms and assumptions to constrain possible executions)
 // Run "boogaloo test -p BubbleSort Bubble.bpl" to test BubbleSort exhaustively within the default range of inputs
 // Run "boogaloo rtest -p BubbleSort Bubble.bpl" to test BubbleSort on a default number of random inputs
 
-// Introduce a variable 'N'
-var N: int;
+// Introduce a constant 'N'
+const N: int;
 
 // Declare a map from integers to integers.  In the procedure below, 'a' will be
 // treated as an array of 'N' elements, indexed from 0 to less than 'N'.
@@ -35,8 +36,8 @@ procedure BubbleSort() returns (perm: [int]int)
   // the final array is that permutation of the input array
   ensures (forall i: int :: 0 <= i && i < N ==> a[i] == old(a)[perm[i]]);
 {
-  var n, p, tmp: int;
-
+  var n, p, tmp: int;  
+  
   n := 0;
   while (n < N)
     invariant n <= N;

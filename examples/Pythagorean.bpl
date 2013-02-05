@@ -1,3 +1,5 @@
+// Run "boogaloo -o n Pythagorean.bpl" to observe n possible executions
+
 var x, y, z: int;
 
 // Find a positive solution to x^2 + y^2 == z^2

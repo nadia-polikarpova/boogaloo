@@ -54,19 +54,18 @@ procedure BinarySearch(a: [int] int, N: int, key: int) returns (index: int)
 }
 
 // Global variable for the array and results
-var array: [int] int;
-var k, l: int;
+const N: int;
+const array: [int] int;
+
+axiom N == 3;
+axiom sorted(array, N);
 
 // One way to call LinearSearch and BinarySearch
-procedure Main() returns ()
-  modifies array, k, l;
+procedure Main(value: int) returns (b, l: int)
 {
-  array[0] := -5;
-  array[1] := 14;
-  array[2] := 14;
-  array[3] := 135;
-  array[4] := 1000; // Change this value to -1000 to see the precondition fail
-  call k := LinearSearch(array, 5, 135);
-  call l := BinarySearch(array, 5, 135);
-  assert k == l;
+  assume (forall i, j: int :: 0 <= i && i < j && j < N ==> array[i] != array[j]);
+  assume (exists i: int :: 0 <= i && i < N ==> array[i] == value);
+  call l := LinearSearch(array, N, value);
+  call b := BinarySearch(array, N, value);
+  assert b == l;
 }

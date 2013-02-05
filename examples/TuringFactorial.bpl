@@ -5,6 +5,7 @@
 // published in the "Report of a Conference of High Speed Automatic Calculating Machines",
 // pp. 67-69, 1949.
 
+// Run "boogaloo -p ComputeFactorial -o n TuringFactorial.bpl" to observe n possible executions
 // Run "boogaloo test -p ComputeFactorial TuringFactorial.bpl" to test ComputeFactorial exhaustively within the default range of inputs
 // Run "boogaloo rtest -p ComputeFactorial TuringFactorial.bpl" to test ComputeFactorial on a default number of random inputs
 
