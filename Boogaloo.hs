@@ -28,8 +28,8 @@ import Text.PrettyPrint hiding (mode)
 import Text.ParserCombinators.Parsec (parse, parseFromFile)
 
 programName = "boogaloo"
-versionName = "0.1"
-releaseDate = fromGregorian 2012 10 25
+versionName = "0.2"
+releaseDate = fromGregorian 2013 2 5
 
 -- | Execute or test a Boogie program, according to command-line arguments
 main = do

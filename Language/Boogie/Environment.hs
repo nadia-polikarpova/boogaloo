@@ -53,19 +53,12 @@ module Language.Boogie.Environment (
   lookupNameConstraints,
   lookupMapConstraints,
   lookupCustomCount,
-  setGlobal,
-  setLocal,
-  setOld,
-  setConst,
   addProcedureImpl,
   addGlobalDefinition,
   addMapDefinition,
   addMapConstraint,
   setCustomCount,
   withHeap,
-  PDef (..),
-  pdefLocals,
-  paramSubst  
 ) where
 
 import Language.Boogie.Util
@@ -87,7 +80,7 @@ import Text.PrettyPrint
 
 -- | Representation of a map value
 data MapRepr = 
-  Source (Map [Value] Value) |    -- ^ Map that comes directly from a non-deterministic choice, possibly with some key-value pair defined
+  Source (Map [Value] Value) |    -- ^ Map that comes directly from a non-deterministic choice, possibly with some key-value pairs defined
   Derived Ref (Map [Value] Value) -- ^ Map that is derived from another map by redefining values at some keys
   deriving (Eq, Ord)
   
@@ -117,6 +110,8 @@ data Value = IntValue Integer |  -- ^ Integer value
   Reference Ref                  -- ^ Reference to a map stored in the heap
   deriving (Eq, Ord)
   
+-- | 'valueFromInteger' @t n@: value of type @t@ with an integer code @n@
+valueFromInteger :: Type -> Integer -> Value  
 valueFromInteger IntType n        = IntValue n
 valueFromInteger (IdType id _) n  = CustomValue id (fromInteger n)
 valueFromInteger _ _              = error "cannot create a boolean or map value from integer" 
@@ -234,6 +229,7 @@ data Memory = Memory {
 
 makeLenses ''Memory
 
+-- | Lens that selects a store from memory
 type StoreLens = SimpleLens Memory Store
 
 -- | Empty memory
@@ -265,9 +261,9 @@ instance Show Memory where
 
 -- | Abstract memory: stores constraints associated with names and references
 data AbstractMemory = AbstractMemory {
-  _amLocals :: AbstractStore,       -- | Local name constraints
-  _amGlobals :: AbstractStore,      -- | Global name constraints
-  _amHeap :: Map Ref ConstraintSet  -- | Reference constraints
+  _amLocals :: AbstractStore,       -- ^ Local name constraints
+  _amGlobals :: AbstractStore,      -- ^ Global name constraints
+  _amHeap :: Map Ref ConstraintSet  -- ^ Reference constraints
 }
 
 makeLenses ''AbstractMemory
@@ -323,10 +319,6 @@ lookupMapConstraints = lookupGetter (envConstraints.amHeap) ([], [])
 lookupCustomCount = lookupGetter envCustomCount 0
 
 -- Environment modifications  
-setGlobal name val = over (envMemory.memGlobals) (M.insert name val)
-setLocal name val = over (envMemory.memLocals) (M.insert name val)
-setOld name val = over (envMemory.memOld) (M.insert name val)
-setConst name val = over (envMemory.memConstants) (M.insert name val)
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
 addGlobalDefinition name def env = over (envConstraints.amGlobals) (M.insert name (over _1 (++ [def]) (lookupGetter (envConstraints.amGlobals) ([], []) name env))) env
 addMapDefinition r def env = over (envConstraints.amHeap) (M.insert r (over _1 (++ [def]) (lookupMapConstraints r env))) env

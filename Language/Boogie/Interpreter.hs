@@ -1231,16 +1231,17 @@ evalEquality v1 v2 = do
               if compareOverrides
                 then decideOverrideEquality r1 vals1 r2 vals2           -- decide equality based on overrides
                 else do makeSourceNeq s1 s2; return $ BoolValue False   -- otherwise make the sources incompatible and return False
-    decideOverrideEquality r1 vals1 r2 vals2 = do
-      let diff = if hasMapValues $ vals1 `M.intersection` vals2                     -- If there are maps stored at common indexes
-          then vals1 `M.union` vals2                                                -- then even values at a common index might be different
-          else (vals2 `M.difference` vals1) `M.union` (vals1 `M.difference` vals2)  -- otherwise only values at non-shared indexes might be different
-      (i, val) <- (`M.elemAt` diff) <$> generate (`genIndex` M.size diff) -- Choose an index at which the values might be different
-      val1 <- lookupStored r1 i val
-      val2 <- lookupStored r2 i val
-      BoolValue answer <- evalEquality val1 val2
-      when answer $ makeEq v1 v2
-      return $ BoolValue answer 
+    decideOverrideEquality r1 vals1 r2 vals2 = 
+      let diff = if hasMapValues $ vals1 `M.intersection` vals2                               -- If there are maps stored at common indexes
+                    then vals1 `M.union` vals2                                                -- then even values at a common index might be different
+                    else (vals2 `M.difference` vals1) `M.union` (vals1 `M.difference` vals2)  -- otherwise only values at non-shared indexes might be different
+      in do
+        (i, val) <- (`M.elemAt` diff) <$> generate (`genIndex` M.size diff) -- Choose an index at which the values might be different
+        val1 <- lookupStored r1 i val
+        val2 <- lookupStored r2 i val
+        BoolValue answer <- evalEquality val1 val2
+        when answer $ makeEq v1 v2
+        return $ BoolValue answer 
     hasMapValues m
       | M.null m  = False
       | otherwise = case M.findMin m of
