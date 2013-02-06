@@ -826,7 +826,7 @@ checkImplementation name tv args rets bodies = do
     Just sig -> do
       argTypes <- gets $ \c -> map (resolve c . snd) args
       retTypes <- gets $ \c -> map (resolve c . snd) rets        
-      case unifier [] [psigType sig] [MapType tv argTypes (tupleType retTypes)] of
+      case unifier [] [psigType sig] [MapType tv argTypes (IdType tupleTypeName retTypes)] of
         Nothing -> throwTypeError (text "Could not match procedure signature" <+> 
           doubleQuotes (sigDoc (psigArgTypes sig) (psigRetTypes sig)) <+>
           text "against implementation signature" <+>

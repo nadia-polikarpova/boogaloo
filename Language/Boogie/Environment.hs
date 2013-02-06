@@ -13,8 +13,6 @@ module Language.Boogie.Environment (
   flattenMap,
   mapSource,
   mapValues,
-  refIdTypeName,
-  ucTypeName,
   deepDeref,
   objectEq,
   mustAgree,
@@ -22,7 +20,6 @@ module Language.Boogie.Environment (
   valueDoc,
   Store,
   emptyStore,
-  functionConst,
   userStore,
   storeDoc,
   Memory,
@@ -63,7 +60,6 @@ module Language.Boogie.Environment (
 
 import Language.Boogie.Util
 import Language.Boogie.Position
-import Language.Boogie.Tokens (nonIdChar)
 import Language.Boogie.AST
 import Language.Boogie.Heap
 import Language.Boogie.Generator
@@ -148,12 +144,6 @@ mapSource h r = flattenMap h r ^. _1
 -- | Second component of 'flattenMap'
 mapValues h r = flattenMap h r ^. _2
 
--- | Dummy user-defined type used to differentiate map values
-refIdTypeName = nonIdChar : "RefId"
-
--- | Dummy user-defined type used to mark entities whose definitions are currently being evaluated
-ucTypeName = nonIdChar : "UC"
-
 -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
 deepDeref :: Heap Value -> Value -> Value
 deepDeref h v = deepDeref' v
@@ -211,10 +201,6 @@ storeDoc vars = vsep $ map varDoc (M.toList vars)
 -- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@, and all auxiliary values removed
 userStore :: Heap Value -> Store -> Store
 userStore heap store = M.map (deepDeref heap) store
-
--- | 'functionConst' @name@ : name of a map constant that corresponds function @name@
--- (must be distinct from all global names)
-functionConst name = "function " ++ name
 
 {- Memory -}
 
@@ -305,12 +291,12 @@ initEnv tc gen qbound = Environment
     _envInOld = False
   }
   
-combineGetters f g1 g2 = to $ \env -> (env ^. g1) `f` (env ^. g2)
-  
 -- | 'lookupGetter' @getter def key env@ : lookup @key@ in a map accessible with @getter@ from @env@; if it does not occur return @def@
 lookupGetter getter def key env = case M.lookup key (env ^. getter) of
   Nothing -> def
   Just val -> val
+  
+combineGetters f g1 g2 = to $ \env -> (env ^. g1) `f` (env ^. g2)  
   
 -- Environment queries  
 lookupProcedure = lookupGetter envProcedures []  
