@@ -182,11 +182,11 @@ executeLocally localTC locals formals actuals localConstraints computation = do
 {- Runtime failures -}
 
 data FailureSource = 
-  SpecViolation SpecClause |          -- ^ Violation of user-defined specification
-  DivisionByZero |                    -- ^ Division by zero  
-  UnsupportedConstruct String |       -- ^ Language construct is not yet supported (should disappear in later versions)
-  InfiniteDomain Id Interval |        -- ^ Quantification over an infinite set
-  InternalException InternalCode      -- ^ Must be cought inside the interpreter and never reach the user
+  SpecViolation SpecClause (Maybe Expression) | -- ^ Violation of user-defined specification
+  DivisionByZero |                              -- ^ Division by zero  
+  UnsupportedConstruct String |                 -- ^ Language construct is not yet supported (should disappear in later versions)
+  InfiniteDomain Id Interval |                  -- ^ Quantification over an infinite set
+  InternalException InternalCode                -- ^ Must be cought inside the interpreter and never reach the user
   deriving Eq
 
 -- | Information about a procedure or function call  
@@ -222,8 +222,8 @@ data FailureKind = Error | -- ^ Error state reached (assertion violation)
 -- | Kind of a run-time failure
 failureKind :: RuntimeFailure -> FailureKind
 failureKind err = case rtfSource err of
-  SpecViolation (SpecClause _ True _) -> Unreachable
-  SpecViolation (SpecClause _ False _) -> Error
+  SpecViolation (SpecClause _ True _) _ -> Unreachable
+  SpecViolation (SpecClause _ False _) _ -> Error
   DivisionByZero -> Error
   _ -> Nonexecutable
   
@@ -239,7 +239,9 @@ runtimeFailureDoc debug err =
   (if isEmpty sDoc then empty else text "with") $+$ nest 2 sDoc $+$
   vsep (map stackFrameDoc (reverse (rtfTrace err)))
   where
-    failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
+    failureSourceDoc (SpecViolation (SpecClause specType isFree e) lt) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+>
+      lastTermDoc lt <+>
+      text "violated"
     failureSourceDoc (DivisionByZero) = text "Division by zero"
     failureSourceDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
     failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
@@ -255,8 +257,12 @@ runtimeFailureDoc debug err =
     defPosition LoopInvariant _ = empty
     defPosition _ e = text "defined" <+> posDoc (position e)
     
+    lastTermDoc lt = case lt of
+      Nothing -> empty
+      Just t -> parens (text "last evaluated term:" <+> doubleQuotes (exprDoc t) <+> posDoc (position t))
+    
     isRelevant k = case rtfSource err of
-      SpecViolation (SpecClause _ _ expr) -> k `elem` freeVars expr
+      SpecViolation (SpecClause _ _ expr) _ -> k `elem` freeVars expr
       _ -> False
     
     stackFrameDoc f = text "in call to" <+> text (callName f) <+> posDoc (callPos f)
@@ -270,10 +276,10 @@ instance Show RuntimeFailure where
 -- | Do two runtime failures represent the same fault?
 -- Yes if the same property failed at the same program location
 -- or, for preconditions, for the same caller   
-sameFault f f' = rtfSource f == rtfSource f' && 
+sameFault f f' = rtfSource f == rtfSource f' && rtfPos f == rtfPos f' &&
   case rtfSource f of
-    SpecViolation (SpecClause Precondition False _) -> last (rtfTrace f) == last (rtfTrace f')
-    _ -> rtfPos f == rtfPos f'    
+    SpecViolation _ lt -> let SpecViolation _ lt' = rtfSource f' in lt == lt'
+    _ -> True
   
 instance Eq RuntimeFailure where
   f == f' = sameFault f f'
@@ -520,7 +526,10 @@ unOp :: UnOp -> Value -> Value
 unOp Neg (IntValue n)   = IntValue (-n)
 unOp Not (BoolValue b)  = BoolValue (not b)
 
--- | Semi-strict semantics of binary operators:
+-- | Short-circuit boolean operators
+shortCircuitOps = [And, Or, Implies, Explies]
+
+-- | Short-circuit semantics of binary operators:
 -- 'binOpLazy' @op lhs@ : returns the value of @lhs op@ if already defined, otherwise Nothing 
 binOpLazy :: BinOp -> Value -> Maybe Value
 binOpLazy And     (BoolValue False) = Just $ BoolValue False
@@ -564,7 +573,12 @@ a `euclidean` b =
 -- | Evaluate an expression;
 -- can have a side-effect of initializing variables that were not previously defined
 eval :: (Monad m, Functor m) => Expression -> Execution m Value
-eval expr = case node expr of
+eval expr = do
+  envLastTerm .= Nothing
+  evalSub expr
+
+-- | Evaluate a sub-epression (this should be called instead of eval from inside expression evaluation)  
+evalSub expr = case node expr of
   TT -> return $ BoolValue True
   FF -> return $ BoolValue False
   Numeral n -> return $ IntValue n
@@ -572,10 +586,10 @@ eval expr = case node expr of
   Application name args -> evalMapSelection (functionExpr name) args (position expr)
   MapSelection m args -> evalMapSelection m args (position expr)
   MapUpdate m args new -> evalMapUpdate m args new (position expr)
-  Old e -> old $ eval e
+  Old e -> old $ evalSub e
   IfExpr cond e1 e2 -> evalIf cond e1 e2
-  Coercion e t -> eval e
-  UnaryExpression op e -> unOp op <$> eval e
+  Coercion e t -> evalSub e
+  UnaryExpression op e -> unOp op <$> evalSub e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
   Quantified Lambda _ _ _ -> throwRuntimeFailure (UnsupportedConstruct "lambda expressions") (position expr)
   Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e) (position expr)
@@ -620,36 +634,39 @@ rejectMapIndex pos idx = case idx of
   Reference r -> throwRuntimeFailure (UnsupportedConstruct "map as an index") pos
   _ -> return ()
       
-evalMapSelection m args pos = do   
-  argsV <- mapM eval args  
-  Reference r <- eval m
-  h <- use $ envMemory.memHeap
-  let (s, vals) = flattenMap h r
-  case M.lookup argsV vals of    -- Lookup a cached value
-    Just val -> wellDefined val
-    Nothing -> do                           -- If not found, look for an applicable definition
-      tc <- use envTypeContext
-      let mapType = exprType tc m    
-      definedValue <- checkMapDefinitions s mapType args argsV pos
-      case definedValue of
-        Just val -> do
-          setMapValue s argsV val
-          checkMapConstraints s mapType args argsV pos
-          forgetMapValue s argsV
-          return val
-        Nothing -> do                       -- If not found, choose a value non-deterministically
-          mapM_ (rejectMapIndex pos) argsV
-          let rangeType = exprType tc (gen $ MapSelection m args)
-          chosenValue <- generateValue rangeType pos
-          setMapValue s argsV chosenValue
-          checkMapConstraints s mapType args argsV pos
-          return chosenValue  
+evalMapSelection m args pos = do
+  mV <- evalSub m
+  case mV of
+    Reference r -> do
+      argsV <- mapM evalSub args
+      h <- use $ envMemory.memHeap
+      let (s, vals) = flattenMap h r
+      case M.lookup argsV vals of    -- Lookup a cached value
+        Just val -> wellDefined val
+        Nothing -> do                           -- If not found, look for an applicable definition
+          tc <- use envTypeContext
+          let mapType = exprType tc m    
+          definedValue <- checkMapDefinitions s mapType args argsV pos
+          case definedValue of
+            Just val -> do
+              setMapValue s argsV val
+              checkMapConstraints s mapType args argsV pos
+              forgetMapValue s argsV
+              return val
+            Nothing -> do                       -- If not found, choose a value non-deterministically
+              mapM_ (rejectMapIndex pos) argsV
+              let rangeType = exprType tc (gen $ MapSelection m args)
+              chosenValue <- generateValue rangeType pos
+              setMapValue s argsV chosenValue
+              checkMapConstraints s mapType args argsV pos
+              return chosenValue
+    _ -> return mV -- function without arguments (ToDo: is this how it should be handled?)
         
 evalMapUpdate m args new pos = do
-  Reference r <- eval m
-  argsV <- mapM eval args
+  Reference r <- evalSub m
+  argsV <- mapM evalSub args
   mapM_ (rejectMapIndex pos) argsV
-  newV <- eval new
+  newV <- evalSub new
   MapValue repr <- readHeap r
   let 
     (newSource, newRepr) = case repr of 
@@ -660,18 +677,25 @@ evalMapUpdate m args new pos = do
   allocate $ MapValue newRepr
   
 evalIf cond e1 e2 = do
-  v <- eval cond
+  v <- evalSub cond
   case v of
-    BoolValue True -> eval e1    
-    BoolValue False -> eval e2    
+    BoolValue True -> evalSub e1    
+    BoolValue False -> evalSub e2    
       
-evalBinary op e1 e2 = do
-  left <- eval e1
-  case binOpLazy op left of
-    Just result -> return result
-    Nothing -> do
-      right <- eval e2
-      binOp (position e1) op left right
+evalBinary op e1 e2 = if op `elem` shortCircuitOps
+  then do -- Keep track of which terms got evaluated
+    envLastTerm .= Just e1
+    left <- evalSub e1
+    case binOpLazy op left of
+      Just result -> return result
+      Nothing -> do
+        envLastTerm .= Just e2
+        right <- evalSub e2
+        binOp (position e1) op left right
+  else do
+    left <- evalSub e1
+    right <- evalSub e2
+    binOp (position e1) op left right
 
 -- | Finite domain      
 type Domain = [Value]      
@@ -690,7 +714,7 @@ evalExists' tv vars e = do
       evalForEach varNames doms
     -- | evalForEach vars domains: evaluate e for each combination of possible values of vars, drown from respective domains
     evalForEach :: (Monad m, Functor m) => [Id] -> [Domain] -> Execution m Bool
-    evalForEach [] [] = unValueBool <$> eval e
+    evalForEach [] [] = unValueBool <$> evalSub e
     evalForEach (var : vars) (dom : doms) = anyM (fixOne vars doms var) dom
     -- | Fix the value of var to val, then evaluate e for each combination of values for the rest of vars
     fixOne :: (Monad m, Functor m) => [Id] -> [Domain] -> Id -> Value -> Execution m Bool
@@ -716,7 +740,9 @@ execPredicate specClause pos = do
   b <- eval $ specExpr specClause
   case b of 
     BoolValue True -> return ()
-    BoolValue False -> throwRuntimeFailure (SpecViolation specClause) pos      
+    BoolValue False -> do
+      lt <- use envLastTerm
+      throwRuntimeFailure (SpecViolation specClause lt) pos      
     
 execHavoc names pos = do
   mapM_ havoc names 
@@ -754,7 +780,7 @@ execCallBySig sig lhss args pos = do
   tc <- use envTypeContext
   (sig', def) <- selectDef tc defs
   let lhssExpr = map (attachPos (ctxPos tc) . Var) lhss
-  retsV <- execProcedure sig' def args lhssExpr `catchError` addFrame
+  retsV <- execProcedure sig' def args lhssExpr pos `catchError` addFrame
   zipWithM_ resetAnyVar lhss retsV
   where
     selectDef tc [] = return (assumePostconditions sig, dummyDef tc)
@@ -797,8 +823,8 @@ tryOneOf blocks (l : lbs) = execBlock blocks l `catchError` retry
   
 -- | 'execProcedure' @sig def args lhss@ :
 -- Execute definition @def@ of procedure @sig@ with actual arguments @args@ and call left-hand sides @lhss@
-execProcedure :: (Monad m, Functor m) => PSig -> PDef -> [Expression] -> [Expression] -> Execution m [Value]
-execProcedure sig def args lhss = let 
+execProcedure :: (Monad m, Functor m) => PSig -> PDef -> [Expression] -> [Expression] -> SourcePos -> Execution m [Value]
+execProcedure sig def args lhss callPos = let 
   ins = pdefIns def
   outs = pdefOuts def
   blocks = snd (pdefBody def)
@@ -807,7 +833,7 @@ execProcedure sig def args lhss = let
     then pdefPos def  -- Fall off the procedure body: take the procedure definition location
     else pos          -- A return statement inside the body
   execBody = do
-    checkPreconditions sig def    
+    checkPreconditions sig def callPos   
     pos <- exitPoint <$> execBlock blocks startLabel
     checkPostonditions sig def pos    
     mapM (eval . attachPos (pdefPos def) . Var) outs
@@ -819,7 +845,7 @@ execProcedure sig def args lhss = let
 {- Specs -}
 
 -- | Assert preconditions of definition def of procedure sig
-checkPreconditions sig def = mapM_ (exec . attachPos (pdefPos def) . Predicate . subst sig) (psigRequires sig)
+checkPreconditions sig def callPos = mapM_ (exec . attachPos callPos . Predicate . subst sig) (psigRequires sig)
   where 
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
 
@@ -874,7 +900,7 @@ checkNameDefinitions name t pos = do
   modify $ setCustomCount ucTypeName (n + 1)
   defs <- fst <$> gets (lookupNameConstraints name)
   let simpleDefs = [simpleDef | simpleDef <- defs, null $ fdefArgs simpleDef] -- Ignore forall-definition, they will be attached to the map value by checkNameConstraints
-  checkDefinitions (\_ _ -> True) (\_ -> eval) n simpleDefs pos `finally` cleanup n
+  checkDefinitions (\_ _ -> True) (\_ -> evalSub) n simpleDefs pos `finally` cleanup n
   where  
     cleanup n = do
       forgetAnyVar name
@@ -895,8 +921,8 @@ checkMapDefinitions r t args actuals pos = do
     sig = fsigFromType t
     typeGuard argTypes tv formalTypes = isJust $ unifier tv formalTypes argTypes
     evalLocally formals expr = if null formals
-        then eval expr
-        else executeLocally (enterFunction sig formals args) formals formals actuals M.empty (eval expr)
+        then evalSub expr
+        else executeLocally (enterFunction sig formals args) formals formals actuals M.empty (evalSub expr)
     cleanup n = do
       forgetMapValue r actuals
       modify $ setCustomCount ucTypeName n      
@@ -913,7 +939,9 @@ applyConstraint name evaluation guard body pos = do
       satisfied <- evaluation body `catchError` addFrame
       case satisfied of 
         BoolValue True -> return ()
-        BoolValue False -> throwRuntimeFailure (SpecViolation $ SpecClause Axiom True body) pos
+        BoolValue False -> do
+          lt <- use envLastTerm
+          throwRuntimeFailure (SpecViolation (SpecClause Axiom True body) lt) pos
     BoolValue False -> return ()
   where
     addFrame = addStackFrame (StackFrame pos name)
@@ -925,7 +953,7 @@ checkNameConstraints name pos = do
   mapM_ checkConstraint constraints
   mapM_ attachDefinition defs
   where
-    checkConstraint (FDef _ [] [] guard body) = applyConstraint name eval guard body pos -- Simple constraint: assume it
+    checkConstraint (FDef _ [] [] guard body) = applyConstraint name evalSub guard body pos -- Simple constraint: assume it
     checkConstraint constr = do             -- Forall-constraint: attach to the map value
       Reference r <- evalVar name pos
       modify $ addMapConstraint r constr
@@ -950,8 +978,8 @@ checkMapConstraints r t args actuals pos = do
       let sig = fsigFromType t
       let MapType tv domainTypes rangeType = t
       -- Here: enterFunction removes all local names; instead conflicts have to be resolved?
-      -- executeLocally (enterFunction sig formalNames args) formalNames formalNames actuals M.empty (eval expr)
-      executeLocally (enterQuantified tv (zip formalNames domainTypes)) formalNames formalNames actuals M.empty (eval expr)
+      -- executeLocally (enterFunction sig formalNames args) formalNames formalNames actuals M.empty (evalSub expr)
+      executeLocally (enterQuantified tv (zip formalNames domainTypes)) formalNames formalNames actuals M.empty (evalSub expr)
 
 {- Preprocessing -}
 

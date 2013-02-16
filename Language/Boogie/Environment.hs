@@ -45,6 +45,7 @@ module Language.Boogie.Environment (
   envCustomCount,
   envQBound,
   envInOld,
+  envLastTerm,
   initEnv,
   lookupProcedure,
   lookupNameConstraints,
@@ -274,7 +275,8 @@ data Environment m = Environment
     _envGenerator :: Generator m,           -- ^ Input generator (used for non-deterministic choices)
     _envCustomCount :: Map Id Int,          -- ^ For each user-defined type, number of distinct values of this type already generated
     _envQBound :: Maybe Integer,            -- ^ Maximum number of values to try for a quantified variable (unbounded if Nothing)
-    _envInOld :: Bool                       -- ^ Is an old expression currently being evaluated?
+    _envInOld :: Bool,                      -- ^ Is an old expression currently being evaluated?
+    _envLastTerm :: Maybe Expression        -- ^ Last evaluated term (used to determine which part of short-circuit expression determined its result)
   }
   
 makeLenses ''Environment
@@ -289,7 +291,8 @@ initEnv tc gen qbound = Environment
     _envGenerator = gen,
     _envCustomCount = M.empty,
     _envQBound = qbound,
-    _envInOld = False
+    _envInOld = False,
+    _envLastTerm = Nothing
   }
   
 -- | 'lookupGetter' @getter def key env@ : lookup @key@ in a map accessible with @getter@ from @env@; if it does not occur return @def@

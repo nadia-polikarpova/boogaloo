@@ -15,7 +15,7 @@
   - Annotate AST with expr types
   
 - Interpreter
-  - Report which conjunct/disjunct fails: when executing a short circuit operator always remember if both sides were executed or just the first and use it in error reporting 
+  - Check that Explies is supported everywhere
   - Check function and map constraints lazily
     - When checking map constraints replace the map name in the original constraint with something, because maps can escape their scope and more than one variable can be associated with the same reference
     - Currently function definitions written as bodies are not added as constraints (this e.g. leads to unsoundness in LinkedListTraversal without acyclicity constraints). Checking these constraints is costly (or non-terminating?) in case of resursive function, since their values are not cached.
