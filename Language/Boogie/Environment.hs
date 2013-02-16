@@ -52,6 +52,7 @@ module Language.Boogie.Environment (
   lookupCustomCount,
   addProcedureImpl,
   addGlobalDefinition,
+  addGlobalConstraint,
   addMapDefinition,
   addMapConstraint,
   setCustomCount,
@@ -307,6 +308,7 @@ lookupCustomCount = lookupGetter envCustomCount 0
 -- Environment modifications  
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
 addGlobalDefinition name def env = over (envConstraints.amGlobals) (M.insert name (over _1 (++ [def]) (lookupGetter (envConstraints.amGlobals) ([], []) name env))) env
+addGlobalConstraint name def env = over (envConstraints.amGlobals) (M.insert name (over _2 (++ [def]) (lookupGetter (envConstraints.amGlobals) ([], []) name env))) env
 addMapDefinition r def env = over (envConstraints.amHeap) (M.insert r (over _1 (++ [def]) (lookupMapConstraints r env))) env
 addMapConstraint r constraint env = over (envConstraints.amHeap) (M.insert r (over _2 (++ [constraint]) (lookupMapConstraints r env))) env
 setCustomCount t n = over envCustomCount (M.insert t n)

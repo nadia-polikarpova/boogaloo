@@ -186,7 +186,6 @@ data FailureSource =
   DivisionByZero |                    -- ^ Division by zero  
   UnsupportedConstruct String |       -- ^ Language construct is not yet supported (should disappear in later versions)
   InfiniteDomain Id Interval |        -- ^ Quantification over an infinite set
-  MapEquality Value Value |           -- ^ Equality of two maps cannot be determined
   InternalException InternalCode      -- ^ Must be cought inside the interpreter and never reach the user
   deriving Eq
 
@@ -243,7 +242,6 @@ runtimeFailureDoc debug err =
     failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+> text "violated"
     failureSourceDoc (DivisionByZero) = text "Division by zero"
     failureSourceDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
-    failureSourceDoc (MapEquality m1 m2) = text "Cannot determine equality of map values" <+> valueDoc m1 <+> text "and" <+> valueDoc m2
     failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
     
     clauseName Inline isFree = if isFree then "Assumption" else "Assertion"  
@@ -624,7 +622,7 @@ rejectMapIndex pos idx = case idx of
       
 evalMapSelection m args pos = do   
   argsV <- mapM eval args  
-  Reference r <- eval m  
+  Reference r <- eval m
   h <- use $ envMemory.memHeap
   let (s, vals) = flattenMap h r
   case M.lookup argsV vals of    -- Lookup a cached value
@@ -950,7 +948,10 @@ checkMapConstraints r t args actuals pos = do
       else return ()
     evalLocally formalNames expr = do
       let sig = fsigFromType t
-      executeLocally (enterFunction sig formalNames args) formalNames formalNames actuals M.empty (eval expr)
+      let MapType tv domainTypes rangeType = t
+      -- Here: enterFunction removes all local names; instead conflicts have to be resolved?
+      -- executeLocally (enterFunction sig formalNames args) formalNames formalNames actuals M.empty (eval expr)
+      executeLocally (enterQuantified tv (zip formalNames domainTypes)) formalNames formalNames actuals M.empty (eval expr)
 
 {- Preprocessing -}
 
@@ -969,13 +970,17 @@ preprocess (Program decls) = mapM_ processDecl decls
 processFunction name args mBody = do
   sig <- funSig name <$> use envTypeContext
   envTypeContext %= \tc -> tc { ctxConstants = M.insert (functionConst name) (fsigType sig) (ctxConstants tc) }  
+  let constName = functionConst name  
   case mBody of
     Nothing -> return ()
-    Just body -> modify $ addGlobalDefinition (functionConst name) (FDef name (fsigTypeVars sig) formals (conjunction []) body)
+    Just body -> do
+      modify $ addGlobalDefinition constName (FDef constName (fsigTypeVars sig) formals (conjunction []) body)
+      -- let constExpr = attachPos (position body) $ Var constName -- ToDo: think about this
+      -- modify $ addGlobalConstraint constName (FDef constName (fsigTypeVars sig) formals (conjunction []) (constExpr |=| body))
   where    
     formals = over (mapped._1) formalName args
     formalName Nothing = dummyFArg 
-    formalName (Just n) = n    
+    formalName (Just n) = n
     
 processProcedureBody name pos args rets body = do
   tc <- use envTypeContext
