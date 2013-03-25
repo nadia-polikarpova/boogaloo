@@ -15,7 +15,6 @@
   - Annotate AST with expr types
   
 - Interpreter
-  - Check that Explies is supported everywhere
   - Fix control flow non-determinism (if(*) should generate two executions)
   - Change backtracking model: introduce generateSuchThat, which would not generate assumption violation
   - Check function and map constraints lazily

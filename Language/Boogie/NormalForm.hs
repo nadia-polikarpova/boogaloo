@@ -18,6 +18,7 @@ negationNF boolExpr = case node boolExpr of
     BinaryExpression And e1 e2 -> negationNF (enot e1) ||| negationNF (enot e2)
     BinaryExpression Or e1 e2 -> negationNF (enot e1) |&| negationNF (enot e2)
     BinaryExpression Implies e1 e2 -> negationNF e1 |&| negationNF (enot e2)
+    BinaryExpression Explies e1 e2 -> negationNF (enot e1) |&| negationNF e2
     BinaryExpression Equiv e1 e2 -> (negationNF e1 |&| negationNF (enot e2)) |&| (negationNF (enot e1) |&| negationNF e2)
     BinaryExpression Eq e1 e2 -> e1 |!=| e2
     BinaryExpression Neq e1 e2 -> e1 |=| e2
@@ -29,6 +30,7 @@ negationNF boolExpr = case node boolExpr of
     Quantified Exists tv vars e' -> attachPos (position e) $ Quantified Forall tv vars (negationNF (enot e'))
     _ -> boolExpr
   BinaryExpression Implies e1 e2 -> negationNF (enot e1) ||| negationNF e2
+  BinaryExpression Explies e1 e2 -> negationNF e1 ||| negationNF (enot e2)
   BinaryExpression Equiv e1 e2 -> (negationNF (enot e1) ||| negationNF e2) |&| (negationNF e1 ||| negationNF (enot e2))
   BinaryExpression op e1 e2 | op == And || op == Or -> inheritPos2 (BinaryExpression op) (negationNF e1) (negationNF e2)    
   Quantified qop tv vars e -> attachPos (position boolExpr) $ Quantified qop tv vars (negationNF e)
