@@ -24,6 +24,7 @@ module Language.Boogie.PrettyPrinter (
   hsep,
   vsep,
   punctuate,
+  tupled,
   -- * Enclosing
   commaSep,  
   parens,

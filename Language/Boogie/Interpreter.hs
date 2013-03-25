@@ -331,7 +331,7 @@ testCaseDoc debug header n tc =
 -- | 'testCaseSummary' @debug tc@ : Summary of @tc@'s inputs and outcome
 testCaseSummary debug tc@(TestCase sig mem mErr) = (text (psigName sig) <> 
   parens (commaSep (map (inDoc . itwId) (psigArgs sig))) <>
-  (option (not $ M.null globalInputsRepr) ((parens . commaSep . map globDoc . M.toList) globalInputsRepr))) <+>
+  (option (not $ M.null globalInputsRepr) ((tupled . map globDoc . M.toList) globalInputsRepr))) <+>
   outcomeDoc tc
   where
     storeRepr store = if debug then store else userStore (mem^.memHeap) store
