@@ -16,6 +16,7 @@
   
 - Interpreter
   - Check that Explies is supported everywhere
+  - Fix control flow non-determinism (if(*) should generate two executions)
   - Check function and map constraints lazily
     - When checking map constraints replace the map name in the original constraint with something, because maps can escape their scope and more than one variable can be associated with the same reference
     - Currently function definitions written as bodies are not added as constraints (this e.g. leads to unsoundness in LinkedListTraversal without acyclicity constraints). Checking these constraints is costly (or non-terminating?) in case of resursive function, since their values are not cached.
@@ -30,7 +31,6 @@
   - Indexing by maps (so far only for functions)
   - Refactor executeLocally, execCall and execProcedure
   - Refactor evalVar, setAnyVar and so on, so that there is a unified meachism to lookup a name in the type context
-  - Printable class?  
   - Lazy initialization of arguments (in execLocally only copy those args that are already initialized, at the end propage the initizlization back with assume)
   - Lambda expressions
   - Turn source positions into spans; use the end of the span to report postcondition violations  

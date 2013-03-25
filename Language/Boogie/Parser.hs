@@ -11,7 +11,6 @@ import Language.Boogie.AST
 import Language.Boogie.Util
 import Language.Boogie.Position
 import Language.Boogie.Tokens
-import Language.Boogie.PrettyPrinter hiding (option, optionMaybe, commaSep, angles)
 import Data.List
 import Text.ParserCombinators.Parsec hiding (token, label)
 import qualified Text.ParserCombinators.Parsec.Token as P

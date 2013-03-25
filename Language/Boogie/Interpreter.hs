@@ -21,11 +21,8 @@ module Language.Boogie.Interpreter (
   isInvalid,
   isNonexecutable,
   isFail,
-  testCaseSummary,  
-  finalStateDoc,
-  Summary (..),
-  testSessionSummary,
-  summaryDoc,
+  testCaseDoc,
+  sessionSummaryDoc,
   -- * Executing parts of programs
   eval,
   exec,
@@ -41,7 +38,8 @@ import Language.Boogie.Generator
 import Language.Boogie.Intervals
 import Language.Boogie.Position
 import Language.Boogie.Tokens (nonIdChar)
-import Language.Boogie.PrettyPrinter
+import Language.Boogie.PrettyPrinter hiding ((<$>))
+import qualified Language.Boogie.PrettyPrinter as PP
 import Language.Boogie.TypeChecker
 import Language.Boogie.NormalForm
 import Language.Boogie.BasicBlocks
@@ -57,7 +55,6 @@ import Control.Monad.State hiding (join)
 import Control.Monad.Identity hiding (join)
 import Control.Monad.Stream
 import Control.Lens hiding (Context, at)
-import Text.PrettyPrint
 
 {- Interface -}
 
@@ -184,7 +181,7 @@ executeLocally localTC locals formals actuals localConstraints computation = do
 data FailureSource = 
   SpecViolation SpecClause (Maybe Expression) | -- ^ Violation of user-defined specification
   DivisionByZero |                              -- ^ Division by zero  
-  UnsupportedConstruct String |                 -- ^ Language construct is not yet supported (should disappear in later versions)
+  UnsupportedConstruct Doc |                    -- ^ Language construct is not yet supported (should disappear in later versions)
   InfiniteDomain Id Interval |                  -- ^ Quantification over an infinite set
   InternalException InternalCode                -- ^ Must be cought inside the interpreter and never reach the user
   deriving Eq
@@ -228,23 +225,23 @@ failureKind err = case rtfSource err of
   _ -> Nonexecutable
   
 instance Error RuntimeFailure where
-  noMsg    = RuntimeFailure (UnsupportedConstruct "unknown") noPos emptyMemory []
-  strMsg s = RuntimeFailure (UnsupportedConstruct s) noPos emptyMemory []
+  noMsg    = RuntimeFailure (UnsupportedConstruct $ text "unknown") noPos emptyMemory []
+  strMsg s = RuntimeFailure (UnsupportedConstruct $ text s) noPos emptyMemory []
   
 -- | Pretty-printed run-time failure
 runtimeFailureDoc debug err = 
   let store = (if debug then id else userStore ((rtfMemory err)^.memHeap)) (M.filterWithKey (\k _ -> isRelevant k) (visibleVariables (rtfMemory err)))
       sDoc = storeDoc store 
   in failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) <+> 
-  (if isEmpty sDoc then empty else text "with") $+$ nest 2 sDoc $+$
-  vsep (map stackFrameDoc (reverse (rtfTrace err)))
+    (nest 2 $ option (not (isEmpty sDoc)) (text "with") PP.<$> sDoc) PP.<$>
+    vsep (map stackFrameDoc (reverse (rtfTrace err)))
   where
-    failureSourceDoc (SpecViolation (SpecClause specType isFree e) lt) = text (clauseName specType isFree) <+> doubleQuotes (exprDoc e) <+> defPosition specType e <+>
+    failureSourceDoc (SpecViolation (SpecClause specType isFree e) lt) = text (clauseName specType isFree) <+> dquotes (pretty e) <+> defPosition specType e <+>
       lastTermDoc lt <+>
       text "violated"
     failureSourceDoc (DivisionByZero) = text "Division by zero"
     failureSourceDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
-    failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> text s
+    failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> s
     
     clauseName Inline isFree = if isFree then "Assumption" else "Assertion"  
     clauseName Precondition isFree = if isFree then "Free precondition" else "Precondition"  
@@ -259,7 +256,7 @@ runtimeFailureDoc debug err =
     
     lastTermDoc lt = case lt of
       Nothing -> empty
-      Just t -> parens (text "last evaluated term:" <+> doubleQuotes (exprDoc t) <+> posDoc (position t))
+      Just t -> parens (text "last evaluated term:" <+> dquotes (pretty t) <+> posDoc (position t))
     
     isRelevant k = case rtfSource err of
       SpecViolation (SpecClause _ _ expr) _ -> k `elem` freeVars expr
@@ -268,10 +265,9 @@ runtimeFailureDoc debug err =
     stackFrameDoc f = text "in call to" <+> text (callName f) <+> posDoc (callPos f)
     posDoc pos
       | pos == noPos = text "from the environment"
-      | otherwise = text "at" <+> text (sourceName pos) <+> text "line" <+> int (sourceLine pos)
+      | otherwise = text "on line" <+> int (sourceLine pos)
 
-instance Show RuntimeFailure where
-  show err = show (runtimeFailureDoc True err)
+instance Pretty RuntimeFailure where pretty err = runtimeFailureDoc True err
   
 -- | Do two runtime failures represent the same fault?
 -- Yes if the same property failed at the same program location
@@ -320,20 +316,30 @@ isNonexecutable _                     = False
 isFail :: TestCase -> Bool
 isFail tc = not (isPass tc || isInvalid tc || isNonexecutable tc)
 
--- | 'testCaseSummary' @debug tc@ : Summary of @tc@'s inputs and outcome,
+-- | 'testCaseDoc' @debug header n tc@ : Pretty printed @tc@',
 -- displayed in user or debug format depending on 'debug'
-testCaseSummary :: Bool -> TestCase -> Doc
-testCaseSummary debug tc@(TestCase sig mem mErr) = text (psigName sig) <> 
+-- with a header "'header' 'n':".
+testCaseDoc :: Bool -> String -> Integer -> TestCase -> Doc
+testCaseDoc debug header n tc = 
+  auxDoc (text header <+> integer n <> text ":") <+> 
+  testCaseSummary debug tc PP.<$>
+  case tcFailure tc of
+    Just err -> errorDoc (runtimeFailureDoc debug err) PP.<$>
+      option debug (linebreak <> finalStateDoc True tc)
+    Nothing -> finalStateDoc debug tc  
+
+-- | 'testCaseSummary' @debug tc@ : Summary of @tc@'s inputs and outcome
+testCaseSummary debug tc@(TestCase sig mem mErr) = (text (psigName sig) <> 
   parens (commaSep (map (inDoc . itwId) (psigArgs sig))) <>
-  (if M.null globalInputsRepr then empty else parens (commaSep (map globDoc (M.toList globalInputsRepr)))) <+>
+  (option (not $ M.null globalInputsRepr) ((parens . commaSep . map globDoc . M.toList) globalInputsRepr))) <+>
   outcomeDoc tc
   where
     storeRepr store = if debug then store else userStore (mem^.memHeap) store
     removeEmptyMaps store = M.filter (\val -> val /= MapValue emptyMap) store
     localsRepr = storeRepr $ mem^.memLocals
     globalInputsRepr = removeEmptyMaps . storeRepr $ (mem^.memOld) `M.union` (mem^.memConstants)
-    inDoc name = valueDoc $ localsRepr ! name    
-    globDoc (name, val) = text name <+> text "=" <+> valueDoc val
+    inDoc name = pretty $ localsRepr ! name    
+    globDoc (name, val) = text name <+> text "=" <+> pretty val
     outcomeDoc tc 
       | isPass tc = text "passed"
       | isInvalid tc = text "invalid"
@@ -344,9 +350,9 @@ testCaseSummary debug tc@(TestCase sig mem mErr) = text (psigName sig) <>
 -- displayed in user or debug format depending on 'debug' 
 finalStateDoc :: Bool -> TestCase -> Doc
 finalStateDoc debug tc@(TestCase sig mem mErr) = vsep $
-    (if M.null outsRepr then [] else [text "Outs:" <+> storeDoc outsRepr]) ++
-    (if M.null globalsRepr then [] else [text "Globals:" <+> storeDoc globalsRepr]) ++ 
-    (if debug then [text "Heap:" <+> heapDoc (mem^.memHeap)] else [])
+    (if M.null outsRepr then [] else [text "Outs:" <+> align (storeDoc outsRepr)]) ++
+    (if M.null globalsRepr then [] else [text "Globals:" <+> align (storeDoc globalsRepr)]) ++ 
+    (if debug then [text "Heap:" <+> align (heapDoc (mem^.memHeap))] else [])
   where
     storeRepr store = if debug then store else userStore (mem^.memHeap) store
     outNames = map itwId (psigRets sig)
@@ -369,16 +375,13 @@ data Summary = Summary {
 totalCount s = sPassCount s + sFailCount s + sInvalidCount s + sNonExecutableCount s
 
 -- | Pretty-printed test session summary
-summaryDoc :: Summary -> Doc
-summaryDoc summary = 
-  text "Test cases:" <+> int (totalCount summary) $+$
-  text "Passed:" <+> int (sPassCount summary) $+$
-  text "Invalid:" <+> int (sInvalidCount summary) $+$
-  text "Non executable:" <+> int (sNonExecutableCount summary) $+$
-  text "Failed:" <+> int (sFailCount summary) <+> parens (int (length (sUniqueFailures summary)) <+> text "unique") <>
-  (if null (sUniqueFailures summary) then empty else newline)
-  
-instance Show Summary where show s = show (summaryDoc s)
+instance Pretty Summary where 
+  pretty summary =
+    text "Test cases:" <+> int (totalCount summary) PP.<$>
+    text "Passed:" <+> int (sPassCount summary) PP.<$>
+    text "Invalid:" <+> int (sInvalidCount summary) PP.<$>
+    text "Non executable:" <+> int (sNonExecutableCount summary) PP.<$>
+    text "Failed:" <+> int (sFailCount summary) <+> parens (int (length (sUniqueFailures summary)) <+> text "unique")
 
 -- | Summary of a set of test cases   
 testSessionSummary :: [TestCase] -> Summary
@@ -393,7 +396,14 @@ testSessionSummary tcs = let
     sInvalidCount = length invalid,  
     sNonExecutableCount = length nexec,
     sUniqueFailures = nubBy equivalent failing
-  }    
+  }
+
+-- | Pretty-printed summary of a test session
+sessionSummaryDoc :: Bool -> [TestCase] -> Doc
+sessionSummaryDoc debug tcs = let sum = testSessionSummary tcs 
+  in vsep . punctuate linebreak $
+    pretty sum :
+    zipWith (testCaseDoc debug "Failure") [0..] (sUniqueFailures sum)
 
 {- Basic executions -}      
 
@@ -407,7 +417,7 @@ generate f = do
 -- fail if @t@ is a type variable
 generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
 generateValue t pos = case t of
-  IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct ("choice of a value from unknown type " ++ show t)) pos
+  IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct (text "choice of a value from unknown type" <+> pretty t)) pos
   -- Maps are initializaed lazily, allocate an empty map on the heap:
   MapType _ _ _ -> allocate $ MapValue emptyMap
   BoolType -> BoolValue <$> generate genBool
@@ -560,7 +570,7 @@ binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 >= b2)
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
 binOp pos Eq      v1 v2                         = evalEquality v1 v2
 binOp pos Neq     v1 v2                         = vnot <$> evalEquality v1 v2
-binOp pos Lc      v1 v2                         = throwRuntimeFailure (UnsupportedConstruct "orders") pos
+binOp pos Lc      v1 v2                         = throwRuntimeFailure (UnsupportedConstruct $ text "orders") pos
 
 -- | Euclidean division used by Boogie for integer division and modulo
 euclidean :: Integer -> Integer -> (Integer, Integer)
@@ -591,7 +601,7 @@ evalSub expr = case node expr of
   Coercion e t -> evalSub e
   UnaryExpression op e -> unOp op <$> evalSub e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
-  Quantified Lambda _ _ _ -> throwRuntimeFailure (UnsupportedConstruct "lambda expressions") (position expr)
+  Quantified Lambda _ _ _ -> throwRuntimeFailure (UnsupportedConstruct $ text "lambda expressions") (position expr)
   Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e) (position expr)
   Quantified Exists tv vars e -> evalExists tv vars e (position expr)
   where
@@ -631,7 +641,7 @@ evalVar name pos = do
               return chosenValue
         
 rejectMapIndex pos idx = case idx of
-  Reference r -> throwRuntimeFailure (UnsupportedConstruct "map as an index") pos
+  Reference r -> throwRuntimeFailure (UnsupportedConstruct $ text "map as an index") pos
   _ -> return ()
       
 evalMapSelection m args pos = do
@@ -1129,7 +1139,7 @@ domains boolExpr vars = do
       qbound <- use envQBound
       case M.lookup var (allVars tc) of
         Just BoolType         -> return c
-        Just (MapType _ _ _)  -> throwRuntimeFailure (UnsupportedConstruct "quantification over a map") (position boolExpr)
+        Just (MapType _ _ _)  -> throwRuntimeFailure (UnsupportedConstruct $ text "quantification over a map") (position boolExpr)
         Just t                -> return $ M.insert var (defaultDomain qbound t) c        
     defaultDomain qbound t = case qbound of
       Nothing -> top

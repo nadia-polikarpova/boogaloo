@@ -1,28 +1,43 @@
 -- | Pretty printer for Boogie 2
 module Language.Boogie.PrettyPrinter (
-  -- * Pretty-printing programs
-  programDoc,
-  renderWithTabs,
-  typeDoc,
-  exprDoc,
-  statementDoc,
-  declDoc,
   -- * Functions and procedures
+  sigDoc,  
   fdefDoc,
   constraintSetDoc,
   abstractStoreDoc,
-  -- * Utility
-  newline,
-  vsep,
-  commaSep,
-  angles,
-  spaces,  
+  -- * Interface
+  Pretty (..),
+  Doc,
+  renderPretty,
+  putDoc,
+  -- * Basic documents  
+  empty,
+  isEmpty,
+  text,
+  int,
+  integer,
+  linebreak,
+  -- * Combinators
   option,
-  optionMaybe,
-  unOpDoc,
-  binOpDoc,
-  sigDoc,
-  nestDef
+  optionMaybe,  
+  (<+>), (<$>), (<>), (<$$>),  
+  hsep,
+  vsep,
+  punctuate,
+  -- * Enclosing
+  commaSep,  
+  parens,
+  dquotes,
+  brackets,
+  braces,
+  spaces,  
+  -- * Indentation
+  nest,
+  align,
+  -- * Formatting
+  errorDoc,
+  auxDoc,
+  plain
 ) where
 
 import Language.Boogie.AST
@@ -32,52 +47,46 @@ import Language.Boogie.Util
 import Data.Maybe
 import Data.Map (Map, (!))
 import qualified Data.Map as M
-import Text.PrettyPrint
+import Text.PrettyPrint.ANSI.Leijen hiding ((<+>), (<$>), hsep, vsep)
+import qualified Text.PrettyPrint.ANSI.Leijen as L
+
+infixr 5 <$>
+infixr 6 <+>
   
 {- Interface -}
 
 -- | Pretty-printed program
-programDoc :: Program -> Doc
-programDoc (Program decls) = (vsep . punctuate newline . map declDoc) decls
-
-instance Show Program where show p = show (programDoc p)
-
--- | Render document with tabs instead of spaces
-renderWithTabs = fullRender (mode style) (lineLength style) (ribbonsPerLine style) spacesToTabs ""
-  where
-    spacesToTabs :: TextDetails -> String -> String
-    spacesToTabs (Chr c) s  = c:s
-    spacesToTabs (Str s1) s2 = if s1 == replicate (length s1) ' ' && length s1 > 1 
-      then replicate (length s1 `div` defaultIndent) '\t' ++ s2 
-      else s1 ++ s2
+instance Pretty Program where 
+  pretty (Program decls) = (vsep . punctuate linebreak . map pretty) decls
       
 {- Tokens -}
 
 -- | Pretty-printed unary operator
-unOpDoc op = text (opName op unOpTokens)
+instance Pretty UnOp where 
+  pretty op = text (opName op unOpTokens)
 -- | Pretty-printed binary operator
-binOpDoc op = text (opName op binOpTokens)
+instance Pretty BinOp where 
+  pretty op = text (opName op binOpTokens)
 -- | Pretty-printed quantifier
-qOpDoc op = text (opName op qOpTokens)
+instance Pretty QOp where 
+  pretty op = text (opName op qOpTokens)
 
 {- Types -}
 
 -- | Pretty-printed type
-typeDoc :: Type -> Doc
-typeDoc BoolType = text "bool"
-typeDoc IntType = text "int"
-typeDoc (MapType fv domains range) = typeArgsDoc fv <> 
-  brackets (commaSep (map typeDoc domains)) <+>
-  typeDoc range
-typeDoc (IdType id args) = text id <+> hsep (map typeDoc args)
-
-instance Show Type where show t = show (typeDoc t)
+instance Pretty Type where 
+  pretty BoolType = text "bool"
+  pretty IntType = text "int"
+  pretty (MapType fv domains range) = typeArgsDoc fv <> 
+    brackets (commaSep (map pretty domains)) <+>
+    pretty range
+  pretty (IdType id args) = text id <+> hsep (map pretty args)
 
 -- | Pretty-printed function or procedure signature
 sigDoc :: [Type] -> [Type] -> Doc
-sigDoc argTypes retTypes = parens(commaSep (map typeDoc argTypes)) <+> 
+sigDoc argTypes retTypes = parens (commaSep (map pretty argTypes)) <+> 
   text "returns" <+> 
-  parens(commaSep (map typeDoc retTypes))
+  parens (commaSep (map pretty retTypes))
   
 {- Expressions -}
 
@@ -120,30 +129,30 @@ exprDocAt n (Pos _ e) = condParens (n' <= n) (
     MapUpdate m args val -> exprDocAt n' m <> brackets (commaSep (map exprDoc args) <+> text ":=" <+> exprDoc val)
     Old e -> text "old" <+> parens (exprDoc e)
     IfExpr cond e1 e2 -> text "if" <+> exprDoc cond <+> text "then" <+> exprDoc e1 <+> text "else" <+> exprDoc e2
-    Coercion e t -> exprDocAt n' e <+> text ":" <+> typeDoc t
-    UnaryExpression unOp e -> unOpDoc unOp <> exprDocAt n' e
-    BinaryExpression binOp e1 e2 -> exprDocAt n' e1 <+> binOpDoc binOp <+> exprDocAt n' e2
-    Quantified qOp fv vars e -> parens (qOpDoc qOp <+> typeArgsDoc fv <+> commaSep (map idTypeDoc vars) <+> text "::" <+> exprDoc e)
+    Coercion e t -> exprDocAt n' e <+> text ":" <+> pretty t
+    UnaryExpression unOp e -> pretty unOp <> exprDocAt n' e
+    BinaryExpression binOp e1 e2 -> exprDocAt n' e1 <+> pretty binOp <+> exprDocAt n' e2
+    Quantified qOp fv vars e -> parens (pretty qOp <+> typeArgsDoc fv <+> commaSep (map idpretty vars) <+> text "::" <+> exprDoc e)
   )
   where
     n' = power e
     
-instance Show BareExpression where show e = show (exprDoc (gen e))      
+instance Pretty BareExpression where pretty e = exprDoc (gen e)
 
 {- Statements -}
 
 -- | Pretty-printed statement
 statementDoc :: Statement -> Doc
 statementDoc (Pos _ s) = case s of
-  Predicate (SpecClause _ isAssume e) -> (if isAssume then text "assume" else text "assert") <+> exprDoc e <> semi
+  Predicate (SpecClause _ isAssume e) -> (if isAssume then text "assume" else text "assert") <+> pretty e <> semi
   Havoc vars -> text "havoc" <+> commaSep (map text vars) <> semi
   Assign lhss rhss -> commaSep (map lhsDoc lhss) <+> 
-    text ":=" <+> commaSep (map exprDoc rhss) <> semi
+    text ":=" <+> commaSep (map pretty rhss) <> semi
   Call lhss name args -> text "call" <+>
     commaSep (map text lhss) <+>
     option (not (null lhss)) (text ":=") <+> 
     text name <> 
-    parens (commaSep (map exprDoc args)) <> 
+    parens (commaSep (map pretty args)) <> 
     semi
   CallForall name args -> text "call forall" <+> 
     text name <> 
@@ -152,20 +161,21 @@ statementDoc (Pos _ s) = case s of
   If cond thenBlock elseBlock -> text "if" <+> parens (wildcardDoc cond) <+> 
     bracedBlockDoc thenBlock <+>
     optionMaybe elseBlock elseDoc
-  While cond invs b -> text "while" <+> parens (wildcardDoc cond) $+$
-    nestDef (vsep (map specClauseDoc invs)) $+$
-    bracedBlockDoc b
-  Break ml -> text "break" <+> optionMaybe ml text <> semi
+  While cond invs b -> nestDef (
+      text "while" <+> parens (wildcardDoc cond) <$>
+      vsep (map specClauseDoc invs)
+    ) <$> bracedBlockDoc b
+  Break ml -> (text "break" <+> optionMaybe ml text) <> semi
   Return -> text "return" <> semi
   Goto ids -> text "goto" <+> commaSep (map text ids) <> semi
   Skip -> empty
   where
-    lhsDoc (id, selects) = text id <> hcat (map (\sel -> brackets (commaSep (map exprDoc sel))) selects)
+    lhsDoc (id, selects) = text id <> hcat (map (\sel -> brackets (commaSep (map pretty sel))) selects)
     wildcardDoc Wildcard = text "*"
-    wildcardDoc (Expr e) = exprDoc e
+    wildcardDoc (Expr e) = pretty e
     elseDoc b = text "else" <+> bracedBlockDoc b
     
-instance Show BareStatement where show s = show (statementDoc (gen s))   
+instance Pretty BareStatement where pretty s = statementDoc (gen s)
 
 {- Blocks -}
 
@@ -174,59 +184,54 @@ blockDoc block = vsep (map lStatementDoc block)
     lStatementDoc (Pos _ (lbs, s)) = hsep (map labelDoc lbs) <+> statementDoc s
     
 bracedBlockDoc block = 
-  lbrace $+$
-  nestDef (blockDoc block) $+$
+  nestDef (lbrace <$> blockDoc block) <$>
   rbrace
     
 bodyDoc (vars, block) =
-  lbrace $+$
-  nestDef (vsep (map varDeclDoc vars) $+$ blockDoc block) $+$
+  nestDef (lbrace <$> (vsep (map varDeclDoc vars) <$> blockDoc block)) <$>
   rbrace
   
 transformedBlockDoc block = vsep (map basicBlockDoc block)
   where
-    basicBlockDoc (l, stmts) = labelDoc l $+$ 
-      nestDef (vsep (map statementDoc stmts))
+    basicBlockDoc (l, stmts) = nestDef (labelDoc l <$> vsep (map statementDoc stmts))
 
 labelDoc l = text l <> text ":"
 
 {- Specs -}     
 
-specTypeDoc Precondition = text "precondition"
-specTypeDoc Postcondition = text "postcondition"
-specTypeDoc LoopInvariant = text "invariant"
+specpretty Precondition = text "precondition"
+specpretty Postcondition = text "postcondition"
+specpretty LoopInvariant = text "invariant"
 
-specClauseDoc (SpecClause t free e) = option free (text "free") <+> specTypeDoc t <+> exprDoc e <> semi
+specClauseDoc (SpecClause t free e) = option free (text "free") <+> specpretty t <+> pretty e <> semi
 
 {- Declarations -}
 
 -- | Pretty-printed top-level declaration
-declDoc :: Decl -> Doc
-declDoc (Pos pos d) = case d of
-  TypeDecl ts -> typeDeclDoc ts
-  ConstantDecl unique names t orderSpec complete -> constantDoc unique names t orderSpec complete
-  FunctionDecl name fv args ret mb -> functionDoc name fv args ret mb
-  AxiomDecl e -> text "axiom" <+> exprDoc e <> semi
-  VarDecl vars -> varDeclDoc vars
-  ProcedureDecl name fv args rets specs mb -> procedureDoc name fv args rets specs mb
-  ImplementationDecl name fv args rets bodies -> implementationDoc name fv args rets bodies
-  
-instance Show BareDecl where show d = show (declDoc (gen d))  
+instance Pretty BareDecl where 
+  pretty d = case d of
+    TypeDecl ts -> typeDeclDoc ts
+    ConstantDecl unique names t orderSpec complete -> constantDoc unique names t orderSpec complete
+    FunctionDecl name fv args ret mb -> functionDoc name fv args ret mb
+    AxiomDecl e -> text "axiom" <+> pretty e <> semi
+    VarDecl vars -> varDeclDoc vars
+    ProcedureDecl name fv args rets specs mb -> procedureDoc name fv args rets specs mb
+    ImplementationDecl name fv args rets bodies -> implementationDoc name fv args rets bodies
   
 typeDeclDoc ts = 
   text "type" <+> 
-  commaSep (map newTypeDoc ts) <> 
+  commaSep (map newpretty ts) <> 
   semi
   where
-    newTypeDoc (NewType id args mVal) = text id <+> hsep (map text args) <+> optionMaybe mVal (\t -> text "=" <+> typeDoc t)
+    newpretty (NewType id args mVal) = text id <+> hsep (map text args) <+> optionMaybe mVal (\t -> text "=" <+> pretty t)
     
 constantDoc unique names t orderSpec complete =
-  text "const" <+>
+  (text "const" <+>
   option unique (text "unique") <+>
   commaSep (map text names) <>
-  text ":" <+> typeDoc t <+>
+  text ":" <+> pretty t <+>
   optionMaybe orderSpec orderSpecDoc <+>
-  option complete (text "complete") <> 
+  option complete (text "complete")) <> 
   semi
   where
     orderSpecDoc parents = text "extends" <+> commaSep (map parentDoc parents)
@@ -239,11 +244,11 @@ functionDoc name fv args ret mb =
   parens (commaSep (map fArgDoc args)) <+>
   text "returns" <+>
   parens (fArgDoc ret) <>
-  option (isNothing mb) semi $+$
-  optionMaybe mb (braces . spaces . exprDoc)
+  option (isNothing mb) semi <$>
+  optionMaybe mb (braces . spaces . pretty)
   where
-    fArgDoc (Nothing, t) = typeDoc t
-    fArgDoc (Just id, t) = idTypeDoc (id, t) 
+    fArgDoc (Nothing, t) = pretty t
+    fArgDoc (Just id, t) = idpretty (id, t) 
     
 varDeclDoc vars =
   text "var" <+>
@@ -251,23 +256,24 @@ varDeclDoc vars =
   semi
       
 procedureDoc name fv args rets specs mb =
+  nestDef (
   text "procedure" <+>
   text name <>
   typeArgsDoc fv <>
   parens (commaSep (map idTypeWhereDoc args)) <+>
   text "returns" <+>
   parens (commaSep (map idTypeWhereDoc rets)) <>
-  option (isNothing mb) semi $+$
-  nestDef (vsep (map specDoc specs)) $+$
+  option (isNothing mb) semi <$>
+  vsep (map specDoc specs)) <$>
   optionMaybe mb bodyDoc
   where
     specDoc (Requires free e) = option free (text "free") <+>
       text "requires" <+>
-      exprDoc e <>
+      pretty e <>
       semi
     specDoc (Ensures free e) = option free (text "free") <+>
       text "ensures" <+>
-      exprDoc e <>
+      pretty e <>
       semi
     specDoc (Modifies free ids) = option free (text "free") <+>
       text "modifies" <+>
@@ -278,9 +284,9 @@ implementationDoc name fv args rets bodies =
   text "implementation" <+>
   text name <>
   typeArgsDoc fv <>
-  parens (commaSep (map idTypeDoc args)) <+>
+  parens (commaSep (map idpretty args)) <+>
   text "returns" <+>
-  parens (commaSep (map idTypeDoc rets)) $+$
+  parens (commaSep (map idpretty rets)) <$>
   vsep (map bodyDoc bodies)
   
 {- Functions and procedures -}
@@ -289,40 +295,58 @@ implementationDoc name fv args rets bodies =
 fdefDoc :: Bool -> FDef -> Doc
 fdefDoc isDef (FDef name tv formals guard expr) = 
   text name <>
-  (if null tv then empty else angles (commaSep (map text tv))) <+> 
-  (if null formals then empty else parens (commaSep (map idTypeDoc formals))) <+> 
-  (if node guard == TT then empty else brackets (exprDoc guard)) <+> 
+  option (not (null tv)) (angles (commaSep (map text tv))) <+> 
+  option (not (null formals)) (parens (commaSep (map idpretty formals))) <+> 
+  option (node guard /= TT) (brackets (pretty guard)) <+> 
   (if isDef then text "=" else text ":") <+>
-  exprDoc expr
+  pretty expr
 
 -- | Pretty-printed constraint set  
 constraintSetDoc :: ConstraintSet -> Doc   
-constraintSetDoc cs = vsep (map (fdefDoc True) (fst cs)) $+$ vsep (map (fdefDoc False) (snd cs))
+constraintSetDoc cs = vsep (map (fdefDoc True) (fst cs)) <$> vsep (map (fdefDoc False) (snd cs))
 
 -- | Pretty-printed abstract store
 abstractStoreDoc :: AbstractStore -> Doc
 abstractStoreDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (name, cs) = text name $+$ nestDef (constraintSetDoc cs)  
-  
+  where varDoc (name, cs) = nestDef (text name <$> constraintSetDoc cs)  
+    
 {- Misc -}
-  
-defaultIndent = 4
-nestDef = nest defaultIndent
 
--- | New line
-newline = char '\n'
+-- | Is documen empty?
+isEmpty d = case renderCompact d of
+  SEmpty -> True
+  _ -> False
+  
+-- | Separate two documents by space if both are nonempty  
+doc1 <+> doc2 = if isEmpty doc1
+  then doc2
+  else if isEmpty doc2
+    then doc1
+    else doc1 L.<+> doc2
+    
+-- | Separate two documents by linebreak if both are nonempty    
+doc1 <$> doc2 = if isEmpty doc1
+  then doc2
+  else if isEmpty doc2
+    then doc1
+    else doc1 L.<$> doc2
+
+-- | Separate by spaces
+hsep = foldr (<+>) empty    
 -- | Separate by new lines
-vsep = foldr ($+$) empty
+vsep = foldr (<$>) empty    
 -- | Separate by commas
 commaSep = hsep . punctuate comma
--- | Enclose in \< \>
-angles d = langle <> d <> rangle
-  where
-    langle = char '<'
-    rangle = char '>'
+
 -- | Enclose in spaces    
 spaces d = space <> d <> space
-
+-- | Conditionally enclose in parentheses  
+condParens b doc = if b then parens doc else doc
+    
+defaultIndent = 4
+-- | Nest with default indentation
+nestDef = nest defaultIndent
+  
 -- | Conditionally produce a doc
 option b doc = if b then doc else empty
 
@@ -331,21 +355,26 @@ optionMaybe mVal toDoc = case mVal of
   Nothing -> empty
   Just val -> toDoc val
   
--- | Conditionally enclose in parentheses  
-condParens b doc = if b then parens doc else doc
+-- | Apply error formatting  
+errorDoc doc = red doc
+-- | Apply auxiliary text formatting
+auxDoc doc = dullyellow doc
     
 -- | Pretty-printed type arguments     
 typeArgsDoc tv = option (not (null tv)) (angles (commaSep (map text tv)))
 
 -- | Pretty-printed name declaration
-idTypeDoc (id, t) = text id <> text ":" <+> typeDoc t
+idpretty (id, t) = text id <> text ":" <+> pretty t
 
 -- | Pretty-printed name declaration with a where clause
-idTypeWhereDoc (IdTypeWhere id t w) = idTypeDoc (id, t) <+> case w of
+idTypeWhereDoc (IdTypeWhere id t w) = idpretty (id, t) <+> case w of
   (Pos _ TT) -> empty
-  e -> text "where" <+> exprDoc e
+  e -> text "where" <+> pretty e
   
 instance Eq Doc where
   d1 == d2 = show d1 == show d2
+  
+instance Pretty a => Pretty (Pos a) where
+  pretty (Pos _ x) = pretty x
   
   

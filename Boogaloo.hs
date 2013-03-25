@@ -22,10 +22,10 @@ import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.State
 import Control.Monad.Stream
-import Control.Applicative
+-- import Control.Applicative
 import Control.Lens hiding (Context, at)
-import Text.PrettyPrint hiding (mode)
 import Text.ParserCombinators.Parsec (parse, parseFromFile)
+import HtmlOutput
 
 programName = "boogaloo"
 versionName = "0.2"
@@ -35,12 +35,12 @@ releaseDate = fromGregorian 2013 2 5
 main = do
   res <- cmdArgsRun $ mode
   case res of
-    Exec file proc_ bound random seed btmax invalid nexec pass fail outMax sum debug -> 
-      executeFromFile file proc_ (natToMaybe bound) random seed btmax invalid nexec pass fail (natToMaybe outMax) sum debug
-    Test file proc_ bound outMax debug ->
-      executeFromFile file proc_ (natToMaybe bound) False Nothing Nothing True True True True (natToMaybe outMax) True debug
-    RTest file proc_ bound seed outMax debug ->
-      executeFromFile file proc_ (natToMaybe bound) True seed Nothing True True True True (natToMaybe outMax) True debug      
+    Exec file proc_ bound random seed btmax invalid nexec pass fail outMax sum debug format -> 
+      executeFromFile file proc_ (natToMaybe bound) random seed btmax invalid nexec pass fail (natToMaybe outMax) sum debug format
+    Test file proc_ bound outMax debug format ->
+      executeFromFile file proc_ (natToMaybe bound) False Nothing Nothing True True True True (natToMaybe outMax) True debug format
+    RTest file proc_ bound seed outMax debug format ->
+      executeFromFile file proc_ (natToMaybe bound) True seed Nothing True True True True (natToMaybe outMax) True debug format      
   where
     natToMaybe n
       | n >= 0      = Just n
@@ -62,14 +62,16 @@ data CommandLineArgs
         fail_ :: Bool,
         out_max :: Int, 
         summary_ :: Bool,
-        debug :: Bool
+        debug :: Bool,
+        format :: OutputFormat
       }
     | Test { 
         file :: String, 
         proc_ :: String,
         branch_max :: Integer,
         out_max :: Int, 
-        debug :: Bool
+        debug :: Bool,
+        format :: OutputFormat
       }
     | RTest { 
         file :: String, 
@@ -77,7 +79,8 @@ data CommandLineArgs
         branch_max :: Integer,
         seed :: Maybe Int,
         out_max :: Int, 
-        debug :: Bool
+        debug :: Bool,
+        format :: OutputFormat
       }
       deriving (Data, Typeable, Show, Eq)
 
@@ -102,9 +105,10 @@ execute = Exec {
   nexec       = True            &= help "Display executions that cannot be carried out completely (default: true)" &= name "N",
   pass        = True            &= help "Display passing executions (default: true)" &= name "P",
   fail_       = True            &= help "Display failing executions (default: true)" &= name "F",
-  out_max      = 1              &= help "Maximum number of executions to display; unbounded if negative (default: 1)",
+  out_max     = 1               &= help "Maximum number of executions to display; unbounded if negative (default: 1)",
   summary_    = False           &= help "Only print a summary of all executions and a list of unique failures (default: false)" &= name "S",
-  debug       = False           &= help "Debug output (default: false)"
+  debug       = False           &= help "Debug output (default: false)",
+  format      = defaultFormat   &= help ("Output format: Plain, Ansi or Html (default: " ++ show defaultFormat ++ ")")
   } &= auto &= help "Execute program"
   
 test = Test {
@@ -113,7 +117,8 @@ test = Test {
   branch_max  = defaultExBranch &= help ("Maximum number of possibilities for each non-deterministic choice; " ++
                                          "unbounded if negative (default: " ++ show defaultExBranch ++ ")"),
   out_max     = -1              &= help "Maximum number of test cases; unbounded if negative (default: -1)",
-  debug       = False           &= help "Debug output (default: false)"
+  debug       = False           &= help "Debug output (default: false)",
+  format      = defaultFormat   &= help ("Output format: Plain, Ansi or Html (default: " ++ show defaultFormat ++ ")")
   } &= help "Test program exhaustively"
   
 rtest = RTest {
@@ -123,7 +128,8 @@ rtest = RTest {
                                          "unbounded if negative (default: " ++ show defaultBranch ++ ")"),
   seed        = Nothing         &= help "Seed for the random number generator" &= typ "NUM",
   out_max     = defaultRTC      &= help ("Number of test cases; unbounded if negative (default: " ++ show defaultRTC ++")"),
-  debug       = False           &= help "Debug output (default: false)"
+  debug       = False           &= help "Debug output (default: false)",
+  format      = defaultFormat   &= help ("Output format: Plain, Ansi or Html (default: " ++ show defaultFormat ++ ")")
   } &= help "Test program on random inputs"
       
 mode = cmdArgsMode $ modes [execute, test, rtest] &= 
@@ -135,11 +141,11 @@ mode = cmdArgsMode $ modes [execute, test, rtest] &=
 
 -- | Execute procedure proc_ from file
 -- | and output either errors or the final values of global variables
-executeFromFile :: String -> String -> Maybe Integer -> Bool -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Maybe Int -> Bool -> Bool -> IO ()
-executeFromFile file proc_ branch_max random seed exec_max invalid nexec pass fail out_max summary debug = runOnFile printFinalState file
+executeFromFile :: String -> String -> Maybe Integer -> Bool -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Maybe Int -> Bool -> Bool -> OutputFormat -> IO ()
+executeFromFile file proc_ branch_max random seed exec_max invalid nexec pass fail out_max summary debug format = runOnFile printFinalState file format
   where
     printFinalState p context = case M.lookup proc_ (ctxProcedures context) of
-      Nothing -> printError (text "Cannot find procedure" <+> text proc_)
+      Nothing -> printDoc format $ errorDoc (text "Cannot find procedure" <+> text proc_)
       Just _ -> do
         rGen <- case seed of
           Nothing -> getStdGen
@@ -147,13 +153,10 @@ executeFromFile file proc_ branch_max random seed exec_max invalid nexec pass fa
         let generator = if random then randomGenerator rGen branch_max else exhaustiveGenerator branch_max
         let outs = (maybeTake out_max . filter keep . maybeTake exec_max) (outcomes p context generator)
         if summary
-          then do
-            let sum = testSessionSummary outs 
-            print $ summaryDoc sum
-            zipWithM_ (printOne "Failure") [0..] (sUniqueFailures sum)
+          then printDoc format $ sessionSummaryDoc debug outs
           else if null outs
-            then printAux $ text "No executions to display"
-            else zipWithM_ (printOne "Execution") [0..] outs
+            then printDoc format $ auxDoc (text "No executions to display")
+            else mapM_ (printDoc format) $ zipWith outcomeDoc [0..] outs
     outcomes p context generator = if exec_max == Just 1 || (keepAll && out_max == Just 1)
       then [executeProgramDet p context branch_max proc_]
       else executeProgram p context generator branch_max proc_
@@ -166,51 +169,38 @@ executeFromFile file proc_ branch_max random seed exec_max invalid nexec pass fa
       (if nexec then True else (not . isNonexecutable) tc) &&
       (if pass then True else (not . isPass) tc) &&
       (if fail then True else (not . isFail) tc)
-    printTestCase tc = do
-      print $ testCaseSummary debug tc
-      case tcFailure tc of
-        Just err -> do
-          printNewline
-          printError $ runtimeFailureDoc debug err
-          when debug (printSeparate $ finalStateDoc True tc)
-        Nothing -> printSeparate $ finalStateDoc debug tc
-    printOne title n tc = do
-      when (n > 0) $ do printNewline; printNewline
-      printAux $ text title <+> integer n
-      printTestCase tc
+    outcomeDoc n tc = option (n > 0) linebreak <> testCaseDoc debug "Execution" n tc
 
 -- | Parse file, type-check the resulting program, then execute command on the resulting program and type context
-runOnFile :: (Program -> Context -> IO ()) -> String -> IO ()      
-runOnFile command file = do 
+runOnFile :: (Program -> Context -> IO ()) -> String -> OutputFormat -> IO ()      
+runOnFile command file format = do 
   parseResult <- parseFromFile Parser.program file
   case parseResult of
-    Left parseErr -> printError parseErr
+    Left parseErr -> printDoc format $ errorDoc $ text (show parseErr)
     Right p -> case typeCheckProgram p of
-      Left typeErrs -> printError (typeErrorsDoc typeErrs)
+      Left typeErrs -> printDoc format $ errorDoc $ typeErrorsDoc typeErrs
       Right context -> command p context
       
 {- Output -}
 
--- | Output errors in red
-printError e = do
-  setSGR [SetColor Foreground Vivid Red]
-  print e
-  setSGR [Reset]
+-- | Output format
+data OutputFormat = Plain -- ^ Plain text
+  | Ansi -- ^ Text with ANSI-terminal special characters
+  | Html -- ^ HTML
+  deriving (Typeable, Data, Eq, Show)
   
--- | Output auxiliary messages in khaki  
-printAux msg = do
-  setSGR [SetColor Foreground Dull Yellow]
-  print msg
-  setSGR [Reset]
-  
-printNewline = putStr "\n"  
-  
-printSeparate doc = when (not (isEmpty doc)) (do printNewline; print doc)
+defaultFormat = Ansi  
+    
+-- | 'printDoc' @format doc@ : print @doc@ to the console using @format@
+printDoc :: OutputFormat -> Doc -> IO()
+printDoc Plain doc = putDoc (plain doc) >> putStr "\n"
+printDoc Ansi doc = putDoc doc >> putStr "\n"
+printDoc Html doc = putStr (showDocHtml (renderPretty 0.4 100 doc))   
       
 {- Helpers for testing internal functions -}      
       
 -- | Harness for testing various internal functions
-harness file = runOnFile printOutcome file
+harness file = runOnFile printOutcome file defaultFormat
   where
     printOutcome p context = do
       let env = head (toList (execStateT (preprocess p) (initEnv context (exhaustiveGenerator (Just defaultBranch)) (Just defaultBranch))))

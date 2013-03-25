@@ -24,7 +24,6 @@ import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Data.Set (Set)
 import qualified Data.Set as S
-import Text.PrettyPrint
 import Control.Lens hiding (Context, at)
 
 -- | Reference (index in the heap)
@@ -57,9 +56,9 @@ emptyHeap = Heap {
 {- Access -}
 
 -- | 'at' @h r@: value of @r@ in heap @h@
-at :: Show a => Heap a -> Ref -> a
+at :: Pretty a => Heap a -> Ref -> a
 at h r = case M.lookup r (h^.hValCounts) of
-  Nothing -> internalError . show $ text "Cannot find reference" <+> refDoc r <+> text "in heap" $+$ heapDoc h
+  Nothing -> internalError . show $ text "Cannot find reference" <+> refDoc r <+> text "in heap" <$> heapDoc h
   Just (v, c) -> v
   
 -- | Does the heap have any garbage?
@@ -109,12 +108,12 @@ decRefCount r h = let (v, c) = (h^.hValCounts) ! r
 {- Ouput -}          
 
 -- | Pretty-printed heap
-heapDoc :: Show a => Heap a -> Doc
-heapDoc h = (vsep $ map entryDoc (M.toList (h^.hValCounts))) $+$
-  text "Garbage" <+> braces (commaSep (map refDoc (S.toList (h^.hGarbage)))) $+$
+heapDoc :: Pretty a => Heap a -> Doc
+heapDoc h = (vsep $ map entryDoc (M.toList (h^.hValCounts))) <$>
+  text "Garbage" <+> braces (commaSep (map refDoc (S.toList (h^.hGarbage)))) <$>
   text "Free" <+> braces (commaSep (map refDoc (S.toList (h^.hFree))))
-  where entryDoc (ref, (val, count)) = refDoc ref <> braces (int count) <+> text "->" <+> text (show val)
+  where entryDoc (ref, (val, count)) = refDoc ref <> braces (int count) <+> text "->" <+> pretty val
   
-instance Show a => Show (Heap a) where
-  show h = show $ heapDoc h
+instance Pretty a => Pretty (Heap a) where
+  pretty h = heapDoc h
   

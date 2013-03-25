@@ -28,7 +28,8 @@ import Language.Boogie.AST
 import Language.Boogie.Util
 import Language.Boogie.ErrorAccum
 import Language.Boogie.Position
-import Language.Boogie.PrettyPrinter
+import Language.Boogie.PrettyPrinter hiding ((<$>), empty)
+import qualified Language.Boogie.PrettyPrinter as PP
 import Data.List
 import Data.Maybe
 import Data.Map (Map, (!))
@@ -36,7 +37,6 @@ import qualified Data.Map as M
 import Control.Monad.Trans.Error
 import Control.Applicative
 import Control.Monad.State
-import Text.PrettyPrint
 
 {- Interface -}
 
@@ -51,7 +51,7 @@ typeCheckProgram p = case runState (runErrorT (checkProgram p)) emptyContext of
 -- fails if expr contains type errors.    
 exprType :: Context -> Expression -> Type
 exprType c expr = case evalState (runErrorT (checkExpression expr)) c of
-  Left _ -> (error . show) (text "encountered ill-typed expression during execution:" <+> exprDoc expr)
+  Left _ -> (error . show) (text "encountered ill-typed expression during execution:" <+> pretty expr)
   Right t -> t
   
 -- | 'enterFunction' @sig formals actuals mRetType c@ :
@@ -71,7 +71,7 @@ enterFunction sig formals actuals c = c
     inst = case evalState (runErrorT (fInstance sig actuals)) c of
       Left _ -> (error . show) (text "encountered ill-typed function application during execution:" <+> 
         text (fsigName sig) <+> parens (commaSep (map text formals)) <+>
-        text "to actual arguments" <+> parens (commaSep (map exprDoc actuals)))
+        text "to actual arguments" <+> parens (commaSep (map pretty actuals)))
       Right sig' -> sig'
     argTypes = fsigArgTypes inst
 
@@ -94,8 +94,8 @@ enterProcedure sig def actuals lhss c = c
     locals = fst (pdefBody def)
     inst = case evalState (runErrorT (pInstance sig actuals lhss)) c of
       Left _ -> (error . show) (text "encountered ill-typed procedure call during execution:" <+> 
-        text (psigName sig) <+> text "with actual arguments" <+> parens (commaSep (map exprDoc actuals)) <+>
-        text "and left-hand sides" <+> parens (commaSep (map exprDoc lhss)))
+        text (psigName sig) <+> text "with actual arguments" <+> parens (commaSep (map pretty actuals)) <+>
+        text "and left-hand sides" <+> parens (commaSep (map pretty lhss)))
       Right u -> u
     inTypes = map (typeSubst inst) (psigArgTypes sig)
     outTypes = map (typeSubst inst) (psigRetTypes sig)
@@ -213,10 +213,10 @@ instance ErrorList TypeError where
   listMsg s = [TypeError noPos (text s)]
 
 -- | Pretty-printed type error  
-typeErrorDoc (TypeError pos msgDoc) = text "Type error in" <+> text (show pos) $+$ msgDoc  
+typeErrorDoc (TypeError pos msgDoc) = text "Type error in" <+> text (show pos) PP.<$> msgDoc  
   
 -- | Pretty-printed list of type errors
-typeErrorsDoc errs = (vsep . punctuate newline . map typeErrorDoc) errs
+typeErrorsDoc errs = (vsep . punctuate linebreak . map typeErrorDoc) errs
   
 -- | Throw a single type error
 throwTypeError msgDoc = do
@@ -226,8 +226,8 @@ throwTypeError msgDoc = do
 -- | 'typeMismatch' @doc1 ts1 doc2 ts2 contextDoc@ : throw an error because types @ts1@ do not match @ts2@;
 -- use @doc1@ and @doc2@ to describe @ts1@ and @ts2@ correspondingly; use @contextDoc@ to describe the context of mismatch
 typeMismatch doc1 ts1 doc2 ts2 contextDoc = throwTypeError $ 
-  text "Cannot match" <+> doc1 <+> doubleQuotes (commaSep (map typeDoc ts1)) <+> 
-  text "against" <+>      doc2 <+> doubleQuotes (commaSep (map typeDoc ts2)) <+>
+  text "Cannot match" <+> doc1 <+> dquotes (commaSep (map pretty ts1)) <+> 
+  text "against" <+>      doc2 <+> dquotes (commaSep (map pretty ts2)) <+>
   contextDoc  
 
 -- | Computation with typing context as state, which can result in either a list of type errors or a    
@@ -371,13 +371,13 @@ checkMapSelection m args = do
     MapType tv domainTypes rangeType -> do
       (_, newRangeType : newDomainTypes) <- withFreshTV tv (rangeType : domainTypes)
       case unifier [] newDomainTypes selectTypes of
-        Nothing -> typeMismatch (text "map domain types") domainTypes (text "map selection types") selectTypes (text "for map" <+> exprDoc m)
+        Nothing -> typeMismatch (text "map domain types") domainTypes (text "map selection types") selectTypes (text "for map" <+> pretty m)
         Just u -> return (typeSubst u newRangeType)
     t -> do
       freshRange <- nullaryType <$> state genFreshTV
       case unifier [] [t] [MapType [] selectTypes freshRange] of
         -- t is not a free variable:
-        Nothing -> throwTypeError (text "Map selection applied to a non-map" <+> exprDoc m <+> text "of type" <+> doubleQuotes (typeDoc t))
+        Nothing -> throwTypeError (text "Map selection applied to a non-map" <+> pretty m <+> text "of type" <+> dquotes (pretty t))
         -- t is a free variable:
         Just u -> return $ typeSubst u freshRange
   
@@ -390,14 +390,14 @@ checkMapUpdate m args val = do
     MapType tv domainTypes rangeType -> do
       (newTV, (newRangeType : newDomainTypes)) <- withFreshTV tv (rangeType : domainTypes)
       case unifier [] newDomainTypes selectTypes of
-        Nothing -> typeMismatch (text "map domain types") domainTypes (text "map selection types") selectTypes (text "for map" <+> exprDoc m)
+        Nothing -> typeMismatch (text "map domain types") domainTypes (text "map selection types") selectTypes (text "for map" <+> pretty m)
         Just u1 -> case unifier [] [typeSubst u1 newRangeType] [updateType] of
-          Nothing -> typeMismatch (text "map range type") [typeSubst (renameTypeVars newTV tv u1) rangeType] (text "map update type") [updateType] (text "for map" <+> exprDoc m)
+          Nothing -> typeMismatch (text "map range type") [typeSubst (renameTypeVars newTV tv u1) rangeType] (text "map update type") [updateType] (text "for map" <+> pretty m)
           Just u2 -> return $ typeSubst (u1 `M.union` u2) mType -- mType does not contain fresh names for tv, so only free type variables that came from outside will be substituted      
     t -> do
       case unifier [] [t] [MapType [] selectTypes updateType] of
         -- t is not a free variable:
-        Nothing -> throwTypeError (text "Map update applied to a non-map" <+> exprDoc m <+> text "of type" <+> doubleQuotes (typeDoc t))
+        Nothing -> throwTypeError (text "Map update applied to a non-map" <+> pretty m <+> text "of type" <+> dquotes (pretty t))
         -- t is a free variable:
         Just u -> return $ typeSubst u t
     
@@ -431,7 +431,7 @@ checkUnaryExpression op e
   | op == Neg = checkMatch (msg op) IntType e >> return IntType
   | op == Not = checkMatch (msg op) BoolType e >> return BoolType
   where 
-    msg op = text "operand to" <+> unOpDoc op
+    msg op = text "operand to" <+> pretty op
   
 checkBinaryExpression :: BinOp -> Expression -> Expression -> Typing Type
 checkBinaryExpression op e1 e2
@@ -443,21 +443,21 @@ checkBinaryExpression op e1 e2
     t1 <- locally $ checkExpression e1; 
     t2 <- locally $ checkExpression e2;
     case unifier ctv [t1] [t2] of
-      Nothing -> typeMismatch (text "type of left operand") [t1] (text "type of right operand") [t2] (text "to" <+> binOpDoc op)
+      Nothing -> typeMismatch (text "type of left operand") [t1] (text "type of right operand") [t2] (text "to" <+> pretty op)
       Just _ -> return BoolType
   | op == Lc = do 
     t1 <- locally $ checkExpression e1; 
     t2 <- locally $ checkExpression e2;
     case unifier [] [t1] [t2] of
-      Nothing -> typeMismatch (text "type of left operand") [t1] (text "type of right operand") [t2] (text "to" <+> binOpDoc op)
+      Nothing -> typeMismatch (text "type of left operand") [t1] (text "type of right operand") [t2] (text "to" <+> pretty op)
       Just _ -> return BoolType
   where 
     matchOperands t1 t2 ret = do
       locally $ checkMatch (msgLeft op) t1 e1
       locally $ checkMatch (msgRight op) t2 e2
       return ret
-    msgLeft op = text "left operand to" <+> binOpDoc op
-    msgRight op = text "right operand to" <+> binOpDoc op
+    msgLeft op = text "left operand to" <+> pretty op
+    msgRight op = text "right operand to" <+> pretty op
     
 checkQuantified :: QOp -> [Id] -> [IdType] -> Expression -> Typing Type
 checkQuantified Lambda tv vars e = do
@@ -765,7 +765,7 @@ checkParentInfo ids t parents = if length parents /= length (nub parents)
       case M.lookup p cconst of
         Nothing -> throwTypeError (text "Not in scope: constant" <+> text p)
         Just t' -> case unifier [] [t] [t'] of
-          Nothing -> typeMismatch (text "type of parent" <+> text p) [t'] (text "constant type") [t] Text.PrettyPrint.empty
+          Nothing -> typeMismatch (text "type of parent" <+> text p) [t'] (text "constant type") [t] PP.empty
           Just _ -> if p `elem` ids
             then throwTypeError (text "Constant" <+> text p <+> text "is decalred to be its own parent")
             else return ()    
@@ -828,9 +828,9 @@ checkImplementation name tv args rets bodies = do
       retTypes <- gets $ \c -> map (resolve c . snd) rets        
       case unifier [] [psigType sig] [MapType tv argTypes (IdType tupleTypeName retTypes)] of
         Nothing -> throwTypeError (text "Could not match procedure signature" <+> 
-          doubleQuotes (sigDoc (psigArgTypes sig) (psigRetTypes sig)) <+>
+          dquotes (sigDoc (psigArgTypes sig) (psigRetTypes sig)) <+>
           text "against implementation signature" <+>
-          doubleQuotes (sigDoc argTypes retTypes) <+>
+          dquotes (sigDoc argTypes retTypes) <+>
           text "in the implementation of" <+> text name)
         Just _ -> do
           modify $ setTypeVars tv
@@ -862,7 +862,7 @@ checkMatch :: Doc -> Type -> Expression -> Typing ()
 checkMatch edoc t e = do
   t' <- locally $ checkExpression e
   case unifier [] [t] [t'] of
-    Nothing -> typeMismatch (text "type of" <+> edoc) [t'] (text "expected type") [t] Text.PrettyPrint.empty
+    Nothing -> typeMismatch (text "type of" <+> edoc) [t'] (text "expected type") [t] PP.empty
     Just u -> return ()
     
 -- 'checkLefts' @ids n@ : 

@@ -17,7 +17,6 @@ module Language.Boogie.Environment (
   objectEq,
   mustAgree,
   mustDisagree,
-  valueDoc,
   Store,
   emptyStore,
   userStore,
@@ -72,7 +71,6 @@ import qualified Data.Map as M
 import Data.Set (Set)
 import qualified Data.Set as S
 import Control.Lens hiding (Context, at)
-import Text.PrettyPrint
 
 {- Values -}
 
@@ -97,8 +95,11 @@ mapReprDoc repr = case repr of
   Derived base override -> refDoc base <> 
     brackets (commaSep (map itemDoc (M.toList override))) 
   where
-    keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map valueDoc) keys
-    itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> valueDoc v
+    keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
+    itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> pretty v
+    
+instance Pretty MapRepr where
+  pretty repr = mapReprDoc repr
 
 -- | Run-time value
 data Value = IntValue Integer |  -- ^ Integer value
@@ -120,16 +121,13 @@ vnot (BoolValue b) = BoolValue (not b)
 unValueMap (MapValue repr) = repr
 
 -- | Pretty-printed value
-valueDoc :: Value -> Doc
-valueDoc (IntValue n) = integer n
-valueDoc (BoolValue False) = text "false"
-valueDoc (BoolValue True) = text "true"
-valueDoc (MapValue repr) = mapReprDoc repr
-valueDoc (CustomValue t n) = text t <+> int n
-valueDoc (Reference r) = refDoc r
-
-instance Show Value where
-  show v = show (valueDoc v)
+instance Pretty Value where
+  pretty (IntValue n) = integer n
+  pretty (BoolValue False) = text "false"
+  pretty (BoolValue True) = text "true"
+  pretty (MapValue repr) = pretty repr
+  pretty (CustomValue t n) = text t <+> int n
+  pretty (Reference r) = refDoc r
   
 {- Map operations -}
 
@@ -198,7 +196,7 @@ emptyStore = M.empty
 -- | Pretty-printed store
 storeDoc :: Store -> Doc
 storeDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (id, val) = text id <+> text "=" <+> valueDoc val
+  where varDoc (id, val) = text id <+> text "=" <+> pretty val
   
 -- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@, and all auxiliary values removed
 userStore :: Heap Value -> Store -> Store
@@ -242,8 +240,8 @@ memoryDoc debug mem = vsep $ [text "Locals:" <+> storeDoc (storeRepr $ mem^.memL
   where
     storeRepr store = if debug then store else userStore (mem^.memHeap) store
     
-instance Show Memory where
-  show mem = show $ memoryDoc True mem
+instance Pretty Memory where
+  pretty mem = memoryDoc True mem
   
 {- Abstract memory -}
 
