@@ -67,7 +67,7 @@ parserSuccess file = do
   parseResult <- parseFromFile program file
   case parseResult of
     Left parseErr -> assertFailure (show parseErr)
-    Right p -> case parse program ('*' : file) (show p) of
+    Right p -> case parse program ('*' : file) (show $ pretty p) of
       Left parseErr' -> assertFailure (show parseErr')
       Right p' -> if p == p'
         then return ()
@@ -99,6 +99,6 @@ interpreterSuccess file = do
     Right p -> case typeCheckProgram p of
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
       Right context -> case (head . filter (not . isInvalid)) (executeProgram p context (exhaustiveGenerator Nothing) Nothing entryPoint) of
-        I.TestCase _ _ (Just err) -> assertFailure (show err)
+        I.TestCase _ _ (Just err) -> assertFailure (show $ pretty err)
         otherwise -> return ()
 
