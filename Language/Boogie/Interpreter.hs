@@ -165,7 +165,7 @@ executeLocally localTC locals formals actuals localConstraints computation = do
   envTypeContext %= localTC
   envMemory.memLocals %= deleteAll locals
   envConstraints.amLocals .= localConstraints
-  zipWithM_ (setVar memLocals) formals actuals -- All formals are fresh, can use emptyStore for current values
+  zipWithM_ (setVar memLocals) formals actuals
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
@@ -482,7 +482,7 @@ forgetVar lens name = do
   unsetVar lens name
   envMemory.lens %= M.delete name
       
--- | 'forgetAnyVar' @name@ : forget value of a constant, global or local variable @name@ to @val@      
+-- | 'forgetAnyVar' @name@ : forget value of a constant, global or local variable @name@
 forgetAnyVar name = do
   tc <- use envTypeContext
   if M.member name (localScope tc)
@@ -789,7 +789,7 @@ execCallBySig sig lhss args pos = do
   defs <- gets $ lookupProcedure (psigName sig)
   tc <- use envTypeContext
   (sig', def) <- selectDef tc defs
-  let lhssExpr = map (attachPos (ctxPos tc) . Var) lhss
+  let lhssExpr = map (gen . Var) lhss
   retsV <- execProcedure sig' def args lhssExpr pos `catchError` addFrame
   zipWithM_ resetAnyVar lhss retsV
   where

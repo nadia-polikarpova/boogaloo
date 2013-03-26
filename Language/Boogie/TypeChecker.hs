@@ -7,10 +7,15 @@ module Language.Boogie.TypeChecker (
   TypeError (..),
   typeErrorsDoc,
   -- * Typing context
-  Context (..),
+  Context,
   emptyContext,
   typeNames,
+  ctxTypeVars,
+  ctxGlobals,
+  ctxConstants,
   globalScope,
+  ctxIns,
+  ctxLocals,
   localScope,
   mutableVars,
   allVars,
@@ -54,9 +59,8 @@ exprType c expr = case evalState (runErrorT (checkExpression expr)) c of
   Left _ -> (error . show) (text "encountered ill-typed expression during execution:" <+> pretty expr)
   Right t -> t
   
--- | 'enterFunction' @sig formals actuals mRetType c@ :
+-- | 'enterFunction' @sig formals actuals c@ :
 -- Local context of function @sig@ with formal arguments @formals@ and actual arguments @actuals@
--- in a context where the return type is exprected to be @mRetType@ (if known)
 enterFunction :: FSig -> [Id] -> [Expression] -> Context -> Context 
 enterFunction sig formals actuals c = c 
   {
