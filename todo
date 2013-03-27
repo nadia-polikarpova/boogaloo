@@ -16,10 +16,6 @@
   - Annotate AST with expr types
   
 - Interpreter
-  - Refactor executeLocally, execCall and execProcedure:
-    two functions for context switch enterLocal and enterNested, do type instantiations uniformly through the map type
-  - Fix control flow non-determinism (if(*) should generate two executions)
-  - Change backtracking model: introduce generateSuchThat, which would not generate assumption violation
   - Check function and map constraints lazily
     - Check name constraints in an appropriate context (global vs local)
     - In value constraints relace variable names with reference literals
@@ -32,11 +28,14 @@
     - Eager bounded mode: do not check constraints if map index is beyond bounds?
     - Lazy mode: only enforce a constraint when all involved values are already defined (less consistent, but doesn't loop)
     - Infer constraints from axioms that mention a map update (using not-equals guard?)
+  - Fix control flow non-determinism (if(*) should generate two executions)
+  - Change backtracking model: introduce generateSuchThat, which would not generate assumption violation    
   - Indexing by maps (so far only for functions)
   - Constraint solving
   - Add symbolic values not just for maps
   - Lambda expressions
   - Evaluation of quantification over types: is it worth to do it with brute force?
+  - Refactor executeLocally, execCall and execProcedure (and saveOld/restoreOld?)
   - Refactor evalVar, setAnyVar and so on, so that there is a unified meachism to lookup a name in the type context
   - Lazy initialization of arguments (in execLocally only copy those args that are already initialized, at the end propage the initizlization back with assume)
   - Extends ordering

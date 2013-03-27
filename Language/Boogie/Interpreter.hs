@@ -727,7 +727,7 @@ evalExists' :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> Executi
 evalExists' tv vars e = do
   when (not (null tv)) $ throwRuntimeFailure (UnsupportedConstruct $ text "quantification over types") (position e)
   localConstraints <- use $ envConstraints.amLocals
-  BoolValue <$> executeLocally (enterQuantified [] vars) (map fst vars) [] [] localConstraints evalWithDomains
+  BoolValue <$> executeLocally (nestedContext M.empty vars) (map fst vars) [] [] localConstraints evalWithDomains
   where
     evalWithDomains = do
       doms <- domains e varNames
@@ -1037,21 +1037,23 @@ processAxiom expr = do
   
 {- Constant and function constraints -}
 
--- | 'extractConstraints' @bExpr@ : extract definitions and constraints from @bExpr@
+-- | 'extractConstraints' @tc bExpr@ : extract definitions and constraints from @bExpr@ in type context @tc@
 extractConstraints :: Context -> Expression -> AbstractStore
-extractConstraints tc bExpr = extractConstraints' tc [] (negationNF bExpr)
+extractConstraints tc bExpr = extractConstraints' tc [] [] [] (negationNF bExpr)
 
-extractConstraints' :: Context -> [Expression] -> Expression -> AbstractStore
-extractConstraints' tc guards bExpr = case (node bExpr) of
-  Quantified Forall tv vars bExpr' -> extractConstraints' (enterQuantified tv vars tc) guards bExpr'
-  Quantified Exists _ _ _ -> M.empty
+-- | 'extractConstraints'' @tc tv vars guards body@ : extract definitions and constraints from expression @guards@ ==> @body@
+-- bound type variables @tv@ and bound variables @vars@ in type context @tc@
+extractConstraints' :: Context -> [Id] -> [IdType] -> [Expression] -> Expression -> AbstractStore
+extractConstraints' tc tv vars guards body = case (node body) of
+  Quantified Forall tv' vars' bExpr -> extractConstraints' tc (tv ++ tv') (vars ++ vars') guards bExpr
+  Quantified Exists _ _ _ -> M.empty -- ToDo: treat as atomic
   BinaryExpression And bExpr1 bExpr2 -> let
-    constraints1 = extractConstraints' tc guards bExpr1
-    constraints2 = extractConstraints' tc guards bExpr2
+    constraints1 = extractConstraints' tc tv vars guards bExpr1
+    constraints2 = extractConstraints' tc tv vars guards bExpr2
     in constraints1 `asUnion` constraints2
   BinaryExpression Or bExpr1 bExpr2 -> let
-    constraints1 = extractConstraints' tc ((negationNF $ enot bExpr1) : guards) bExpr2
-    constraints2 = extractConstraints' tc ((negationNF $ enot bExpr2) : guards) bExpr1
+    constraints1 = extractConstraints' tc tv vars ((negationNF $ enot bExpr1) : guards) bExpr2
+    constraints2 = extractConstraints' tc tv vars ((negationNF $ enot bExpr2) : guards) bExpr1
     in constraints1 `asUnion` constraints2
   BinaryExpression Eq expr1 expr2 -> let
     defs1 = extractDefsAtomic expr1 expr2
@@ -1060,12 +1062,12 @@ extractConstraints' tc guards bExpr = case (node bExpr) of
     in foldr1 asUnion [defs1, defs2, constraints]
   _ -> extractConstraintsAtomic
   where
-    fvExpr = freeVars bExpr
+    fvBody = freeVars body
     fvGuards = concatMap freeVars guards
-    allFV = fvExpr ++ fvGuards
-    tv = ctxTypeVars tc
-    vars = M.toList $ ctxIns tc
+    allFV = fvBody ++ fvGuards
+    -- | Bound variables used in body or guards:
     usedVars = [(v, t) | (v, t) <- vars, v `elem` allFV]
+    boundTC = nestedContext M.empty vars tc { ctxTypeVars = tv }
   
     extractDefsAtomic lhs rhs = case node lhs of
       Var name -> addDefFor name [] rhs
@@ -1073,7 +1075,7 @@ extractConstraints' tc guards bExpr = case (node bExpr) of
       Application name args -> addDefFor (functionConst name) args rhs
       _ -> M.empty
     addDefFor name args rhs = let
-        argTypes = map (exprType tc) args
+        argTypes = map (exprType boundTC) args
         (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
         allGuards = concat argGuards ++ guards
         extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
@@ -1082,24 +1084,24 @@ extractConstraints' tc guards bExpr = case (node bExpr) of
         else M.empty
     
     extractConstraintsAtomic = case usedVars of -- This is a compromise: quantified expressions constrain names they mention of any arity but zero (ToDo: think about it)
-      [] -> foldr asUnion M.empty $ map addSimpleConstraintFor fvExpr
-      _ -> foldr asUnion M.empty $ map addForallConstraintFor (freeSelections bExpr ++ over (mapped._1) functionConst (applications bExpr))
-    addSimpleConstraintFor name = M.singleton name ([], [FDef name [] [] (conjunction guards) bExpr])
+      [] -> foldr asUnion M.empty $ map addSimpleConstraintFor fvBody
+      _ -> foldr asUnion M.empty $ map addForallConstraintFor (freeSelections body ++ over (mapped._1) functionConst (applications body))
+    addSimpleConstraintFor name = M.singleton name ([], [FDef name [] [] (conjunction guards) body])
     addForallConstraintFor (name, args) = let
-        argTypes = map (exprType tc) args
+        argTypes = map (exprType boundTC) args
         (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
         allArgGuards = concat argGuards
         extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
         constraint = if null extraVars
-          then conjunction guards |=>| bExpr
-          else attachPos (position bExpr) $ Quantified Forall tv extraVars (conjunction guards |=>| bExpr) -- outer guards are inserted into the body, because they might contain extraVars
+          then conjunction guards |=>| body
+          else attachPos (position body) $ Quantified Forall tv extraVars (conjunction guards |=>| body) -- outer guards are inserted into the body, because they might contain extraVars
       in if length formals == length args -- Only possible if all arguments are simple
         then M.singleton name ([], [FDef name tv (zip formals argTypes) (conjunction allArgGuards) constraint])
         else M.empty
             
 -- | 'extractArgs' @vars args@: extract simple arguments from @args@;
 -- an argument is simple if it is either one of variables in @vars@ or does not contain any of @vars@;
--- in the latter case the argument is represented as a fresh name and a constraint
+-- in the latter case the argument is represented as a fresh name and a guard
 extractArgs :: [Id] -> [Expression] -> [(Id, [Expression])]
 extractArgs vars args = foldl extractArg [] (zip args [0..])
   where

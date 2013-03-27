@@ -22,7 +22,6 @@ import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.State
 import Control.Monad.Stream
--- import Control.Applicative
 import Control.Lens hiding (Context, at)
 import Text.ParserCombinators.Parsec (parse, parseFromFile)
 import HtmlOutput

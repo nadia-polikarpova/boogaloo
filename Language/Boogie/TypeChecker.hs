@@ -14,8 +14,6 @@ module Language.Boogie.TypeChecker (
   ctxFunctions,
   ctxProcedures,
   ctxTypeVars,
-  ctxIns,
-  ctxLocals,
   emptyContext,
   typeNames,
   globalScope,
@@ -27,6 +25,8 @@ module Language.Boogie.TypeChecker (
   funSig,
   procSig,
   setLocals,
+  localContext,
+  nestedContext,
   enterFunction,
   enterProcedure,
   enterQuantified
@@ -45,6 +45,7 @@ import qualified Data.Map as M
 import Control.Monad.Trans.Error
 import Control.Applicative
 import Control.Monad.State
+import Control.Lens hiding (Context)
 
 {- Interface -}
 
@@ -62,54 +63,42 @@ exprType c expr = case evalState (runErrorT (checkExpression expr)) c of
   Left _ -> (error . show) (text "encountered ill-typed expression during execution:" <+> pretty expr)
   Right t -> t
   
+-- | 'localContext' @inst locals c@ : @c@ with local names replaced by @locals@, thier types instantiated according to @inst@
+localContext :: TypeBinding -> [IdType] -> Context -> Context
+localContext inst locals c = c { ctxLocals = M.fromList (over (mapped._2) (typeSubst inst) locals) }
+
+-- | 'nestedContext' @inst locals c@ : @c@ with local names extended by @locals@, thier types instantiated according to @inst@ and resolved
+nestedContext :: TypeBinding -> [IdType] -> Context -> Context
+nestedContext inst locals c = c { ctxLocals = M.fromList (over (mapped._2) (resolve c . typeSubst inst) locals) `M.union` ctxLocals c }
+  
 -- | 'enterFunction' @sig formals actuals c@ :
 -- Local context of function @sig@ with formal arguments @formals@ and actual arguments @actuals@
 enterFunction :: FSig -> [Id] -> [Expression] -> Context -> Context 
-enterFunction sig formals actuals c = c 
-  {
-    ctxTypeVars = [],
-    ctxIns = M.fromList (zip formals argTypes),
-    ctxLocals = M.empty,
-    ctxModifies = [],
-    ctxTwoState = False,
-    ctxInLoop = False
-  }
+enterFunction sig formals actuals c = localContext inst (zip formals (fsigArgTypes sig)) c
   where 
     inst = case evalState (runErrorT (fInstance sig actuals)) c of
       Left _ -> (error . show) (text "encountered ill-typed function application during execution:" <+> 
         text (fsigName sig) <+> parens (commaSep (map text formals)) <+>
         text "to actual arguments" <+> parens (commaSep (map pretty actuals)))
-      Right sig' -> sig'
-    argTypes = fsigArgTypes inst
+      Right u -> u
 
 -- | 'enterProcedure' @sig def actuals lhss c@ :
 -- Local context of procedure @sig@ with definition @def@ and actual arguments @actuals@
 -- in a call with left-hand sides @lhss@
 enterProcedure :: PSig -> PDef -> [Expression] -> [Expression] -> Context -> Context 
-enterProcedure sig def actuals lhss c = c 
-  {
-    ctxTypeVars = [],
-    ctxIns = M.fromList $ zip ins inTypes,
-    ctxLocals = M.union (M.fromList $ zip localNames localTypes) (M.fromList $ zip outs outTypes),
-    ctxModifies = psigModifies sig,
-    ctxTwoState = True,
-    ctxInLoop = False
-  }
+enterProcedure sig def actuals lhss c = localContext inst (zip ins (psigArgTypes sig) ++ zip outs (psigRetTypes sig) ++ map noWhere localVars) c
   where
-    ins = pdefIns def
-    outs = pdefOuts def
-    locals = fst (pdefBody def)
     inst = case evalState (runErrorT (pInstance sig actuals lhss)) c of
       Left _ -> (error . show) (text "encountered ill-typed procedure call during execution:" <+> 
         text (psigName sig) <+> text "with actual arguments" <+> parens (commaSep (map pretty actuals)) <+>
         text "and left-hand sides" <+> parens (commaSep (map pretty lhss)))
-      Right u -> u
-    inTypes = map (typeSubst inst) (psigArgTypes sig)
-    outTypes = map (typeSubst inst) (psigRetTypes sig)
-    localTypes = map (typeSubst inst . itwType) locals
-    localNames = map itwId locals
+      Right u -> u  
+    localVars = fst (pdefBody def)
+    ins = pdefIns def
+    outs = pdefOuts def    
    
--- | Local context of a quantified expression   
+-- | Nested context of a quantified expression   
+-- ToDo: remove
 enterQuantified :: [Id] -> [IdType] -> Context -> Context 
 enterQuantified tv vars c = c' 
   {
@@ -303,14 +292,14 @@ withFreshTV tv types = do
   return (tv', map (typeSubst binding) types)
 
 -- | 'fInstance' @sig actuals@ :
--- Function signature @sig@ with type variables instantiated given the actual arguments @actuals@
-fInstance :: FSig -> [Expression] -> Typing FSig
+-- Instantiation of type variables in a function @sig@ given the actual arguments @actuals@
+fInstance :: FSig -> [Expression] -> Typing TypeBinding
 fInstance (FSig name tv argTypes retType) actuals = do
   actualTypes <- mapAccum (locally . checkExpression) noType actuals
-  (_, newRetType : newArgTypes) <- withFreshTV tv (retType : argTypes)
+  (newTV, newRetType : newArgTypes) <- withFreshTV tv (retType : argTypes)
   case unifier [] newArgTypes actualTypes of
     Nothing -> typeMismatch (text "formal argument types") argTypes (text "actual argument types") actualTypes (text "in the call to" <+> text name)
-    Just u -> return $ FSig name [] (map (typeSubst u) newArgTypes) (typeSubst u newRetType)
+    Just u -> return $ renameTypeVars newTV tv u `M.union` fromTVNames tv newTV
       
 -- | 'pInstance' @sig actuals lhss@ : 
 -- Instantiation of type variables in a procedure @sig@ given the actual arguments @actuals@ and call left-hand sides @lhss@
@@ -368,7 +357,7 @@ checkApplication id args = do
     Nothing -> throwTypeError (text "Not in scope: function" <+> text id)
     Just sig -> do
       inst <- locally $ fInstance sig args
-      return $ fsigRetType inst
+      return $ typeSubst inst (fsigRetType sig)
     
 checkMapSelection :: Expression -> [Expression] -> Typing Type
 checkMapSelection m args = do
