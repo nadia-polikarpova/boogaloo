@@ -163,25 +163,38 @@ restoreOld callerMem = do
   mapM_ decRefCountValue (M.elems dirtyOlds) -- Dirty old values go out of scope
   envMemory.memModified %= ((callerMem^.memModified) `S.union`)
     
--- | Enter local scope (apply localTC to the type context and assign actuals to formals),
--- execute computation,
--- then restore type context and local variables to their initial values
-executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Id] -> [Value] -> AbstractStore -> s a -> s a
-executeLocally localTC locals formals actuals localConstraints computation = do
+-- | Execute computation in a local context
+executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> AbstractStore -> s a -> s a
+executeLocally localTC formals actuals localConstraints computation = do
   oldEnv <- get
   envTypeContext %= localTC
-  envMemory.memLocals %= deleteAll locals
-  envConstraints.amLocals .= localConstraints
+  envMemory.memLocals .= M.empty
   zipWithM_ (setVar memLocals) formals actuals
+  envConstraints.amLocals .= localConstraints  
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
     unwind oldEnv = do
-      mapM_ (unsetVar memLocals) locals
-      env <- get
+      locals <- use $ envMemory.memLocals
+      mapM_ decRefCountValue (M.elems locals)
       envTypeContext .= oldEnv^.envTypeContext
-      envMemory.memLocals .= deleteAll locals (env^.envMemory.memLocals) `M.union` (oldEnv^.envMemory.memLocals)
-      envConstraints.amLocals .= oldEnv^.envConstraints.amLocals -- Constraints cannot be initialized in a nested context, so here we can just restore old locals
+      envMemory.memLocals .= oldEnv^.envMemory.memLocals
+      envConstraints.amLocals .= oldEnv^.envConstraints.amLocals
+      
+-- | Exucute computation in a nested context      
+executeNested :: (MonadState (Environment m) s, Finalizer s) => TypeBinding -> [IdType] -> s a -> s a
+executeNested inst locals computation = do
+  oldEnv <- get
+  envTypeContext %= nestedContext inst locals
+  envMemory.memLocals %= deleteAll localNames
+  computation `finally` unwind oldEnv
+  where
+    -- | Restore type context and the values of local variables 
+    localNames = map fst locals
+    unwind oldEnv = do      
+      envTypeContext .= oldEnv^.envTypeContext
+      mapM_ (unsetVar memLocals) localNames
+      envMemory.memLocals %= (`M.union` (oldEnv^.envMemory.memLocals)) . deleteAll localNames
                               
 {- Runtime failures -}
 
@@ -727,7 +740,7 @@ evalExists' :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> Executi
 evalExists' tv vars e = do
   when (not (null tv)) $ throwRuntimeFailure (UnsupportedConstruct $ text "quantification over types") (position e)
   localConstraints <- use $ envConstraints.amLocals
-  BoolValue <$> executeLocally (nestedContext M.empty vars) (map fst vars) [] [] localConstraints evalWithDomains
+  BoolValue <$> executeNested M.empty vars evalWithDomains
   where
     evalWithDomains = do
       doms <- domains e varNames
@@ -849,7 +862,7 @@ execProcedure sig def args lhss callPos = let
   in do
     argsV <- mapM eval args
     mem <- saveOld
-    executeLocally (enterProcedure sig def args lhss) (pdefLocals def) ins argsV localConstraints execBody `finally` restoreOld mem
+    executeLocally (enterProcedure sig def args lhss) ins argsV localConstraints execBody `finally` restoreOld mem
     
 {- Specs -}
 
@@ -931,7 +944,7 @@ checkMapDefinitions r t args actuals pos = do
     typeGuard argTypes tv formalTypes = isJust $ unifier tv formalTypes argTypes
     evalLocally formals expr = if null formals
         then evalSub expr
-        else executeLocally (enterFunction sig formals args) formals formals actuals M.empty (evalSub expr)
+        else executeLocally (enterFunction sig formals args) formals actuals M.empty (evalSub expr)
     cleanup n = do
       forgetMapValue r actuals
       modify $ setCustomCount ucTypeName n      
@@ -988,7 +1001,7 @@ checkMapConstraints r t args actuals pos = do
       let MapType tv domainTypes rangeType = t
       -- Here: enterFunction removes all local names; instead conflicts have to be resolved?
       -- executeLocally (enterFunction sig formalNames args) formalNames formalNames actuals M.empty (evalSub expr)
-      executeLocally (enterQuantified tv (zip formalNames domainTypes)) formalNames formalNames actuals M.empty (evalSub expr)
+      executeLocally (enterQuantified tv (zip formalNames domainTypes)) formalNames actuals M.empty (evalSub expr)
 
 {- Preprocessing -}
 
