@@ -17,7 +17,6 @@
   
 - Interpreter
   - Check function and map constraints lazily
-    - Check name constraints in an appropriate context (global vs local)
     - In value constraints relace variable names with reference literals
     - Currently function definitions written as bodies are not added as constraints (this e.g. leads to unsoundness in LinkedListTraversal without acyclicity constraints). Checking these constraints is costly (or non-terminating?) in case of resursive function, since their values are not cached.
     - Currently forall constraints for constants are ignored

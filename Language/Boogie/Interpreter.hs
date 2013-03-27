@@ -162,7 +162,7 @@ restoreOld callerMem = do
   envMemory.memOld .= (callerMem^.memOld) `M.union` cleanOlds
   mapM_ decRefCountValue (M.elems dirtyOlds) -- Dirty old values go out of scope
   envMemory.memModified %= ((callerMem^.memModified) `S.union`)
-    
+  
 -- | Execute computation in a local context
 executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> AbstractStore -> s a -> s a
 executeLocally localTC formals actuals localConstraints computation = do
@@ -195,6 +195,21 @@ executeNested inst locals computation = do
       envTypeContext .= oldEnv^.envTypeContext
       mapM_ (unsetVar memLocals) localNames
       envMemory.memLocals %= (`M.union` (oldEnv^.envMemory.memLocals)) . deleteAll localNames
+     
+-- | Execute computation in a global context     
+executeGlobally :: (MonadState (Environment m) s, Finalizer s) => s a -> s a
+executeGlobally computation = do
+  oldEnv <- get
+  envTypeContext %= globalContext
+  envMemory.memLocals .= M.empty
+  envConstraints.amLocals .= M.empty
+  computation `finally` unwind oldEnv
+  where
+    -- | Restore type context and the values of local variables 
+    unwind oldEnv = do
+      envTypeContext .= oldEnv^.envTypeContext
+      envMemory.memLocals .= oldEnv^.envMemory.memLocals
+      envConstraints.amLocals .= oldEnv^.envConstraints.amLocals  
                               
 {- Runtime failures -}
 
@@ -637,9 +652,9 @@ evalVar name pos = do
         inOld <- use envInOld
         modified <- use $ envMemory.memModified
         -- Also initialize the old value of the global, unless we are evaluating and old expression (because of garbage collection) or the variable has been already modified:
-        evalVarWith t memGlobals (not inOld && S.notMember name modified)
+        executeGlobally $ evalVarWith t memGlobals (not inOld && S.notMember name modified)
       Nothing -> case M.lookup name (ctxConstants tc) of
-        Just t -> evalVarWith t memConstants False
+        Just t -> executeGlobally $ evalVarWith t memConstants False
         Nothing -> (internalError . show) (text "Encountered unknown identifier during execution:" <+> text name) 
   where  
     evalVarWith :: (Monad m, Functor m) => Type -> StoreLens -> Bool -> Execution m Value
@@ -914,7 +929,8 @@ checkDefinitions' typeGuard evalLocally myCode mCode (FDef name tv formals guard
       else return Nothing
     addFrame = addStackFrame (StackFrame pos name)
     
--- | 'checkNameDefinitions' @name t pos@ : return a value for @name@ of type @t@ mentioned at @pos@, if there is an applicable definition
+-- | 'checkNameDefinitions' @name t pos@ : return a value for @name@ of type @t@ mentioned at @pos@, if there is an applicable definition.
+-- Must be executed in the context of the definition.
 checkNameDefinitions :: (Monad m, Functor m) => Id -> Type -> SourcePos -> Execution m (Maybe Value)    
 checkNameDefinitions name t pos = do
   n <- gets $ lookupCustomCount ucTypeName
@@ -970,6 +986,7 @@ applyConstraint name evaluation guard body pos = do
     
 -- | 'checkNameConstraints' @name pos@: assume all constraints of entity @name@ mentioned at @pos@;
 -- is @name@ is of map type, attach all its forall-definitions and forall-contraints to the corresponding reference 
+-- Must be executed in the context of the constraint.
 checkNameConstraints name pos = do
   (defs, constraints) <- gets $ lookupNameConstraints name
   mapM_ checkConstraint constraints

@@ -27,6 +27,7 @@ module Language.Boogie.TypeChecker (
   setLocals,
   localContext,
   nestedContext,
+  globalContext,
   enterFunction,
   enterProcedure,
   enterQuantified
@@ -70,6 +71,9 @@ localContext inst locals c = c { ctxLocals = M.fromList (over (mapped._2) (typeS
 -- | 'nestedContext' @inst locals c@ : @c@ with local names extended by @locals@, thier types instantiated according to @inst@ and resolved
 nestedContext :: TypeBinding -> [IdType] -> Context -> Context
 nestedContext inst locals c = c { ctxLocals = M.fromList (over (mapped._2) (resolve c . typeSubst inst) locals) `M.union` ctxLocals c }
+
+globalContext :: Context -> Context
+globalContext c = c { ctxLocals = M.empty }
   
 -- | 'enterFunction' @sig formals actuals c@ :
 -- Local context of function @sig@ with formal arguments @formals@ and actual arguments @actuals@
