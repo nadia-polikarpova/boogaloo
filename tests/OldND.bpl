@@ -1,4 +1,4 @@
-var a, b, x, y: int;
+var a, b, x, y, z: int;
 
 procedure p() returns ()
   modifies x, y;
@@ -13,8 +13,10 @@ procedure q() returns ()
 }
 
 procedure Test() returns ()
-  modifies a, b, x, y;
+  modifies a, b, x, y, z;
 {
+  var res: int;
+
   assume a == 5;
   havoc a;
   b := old(a);
@@ -22,5 +24,10 @@ procedure Test() returns ()
   
   call q();
   y := old(x);
-  assert y == 2;  
+  assert y == 2;
+
+  havoc z;
+  assume old(old(z)) == 3;
+  res := old(z);
+  assert res == 3;  
 }

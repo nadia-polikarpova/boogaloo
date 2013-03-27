@@ -129,32 +129,39 @@ instance (Error e, Monad m) => Finalizer (ErrorT e m) where
 -- | Run execution in the old environment
 old :: (Monad m, Functor m) => Execution m a -> Execution m a
 old execution = do
-  oldEnv <- get
-  envMemory.memGlobals .= oldEnv^.envMemory.memOld
-  envInOld .= True            
-  res <- execution
-  env <- get
-  envMemory.memOld .= env^.envMemory.memGlobals
-  envMemory.memGlobals .= (oldEnv^.envMemory.memGlobals) `M.union` (env^.envMemory.memGlobals)   -- Include freshly initialized globals into both old and new states
-  envInOld .= oldEnv^.envInOld                      
-  return res
+  inOld <- use envInOld
+  if inOld
+    then execution
+    else do
+      outerEnv <- get
+      envMemory.memGlobals .= outerEnv^.envMemory.memOld
+      envInOld .= True            
+      res <- execution
+      innerMem <- use envMemory
+      envMemory.memOld .= innerMem^.memGlobals
+      -- Restore globals to their outer values and add feshly initialized globals
+      envMemory.memGlobals .= (outerEnv^.envMemory.memGlobals) `M.union` (removeDomain (innerMem^.memModified) (innerMem^.memGlobals))
+      envInOld .= False
+      return res
 
--- | Save current values of global variables in memOld, return the previous memory
+-- | Save current values of global variables in memOld, return the caller memory
 saveOld :: (Monad m, Functor m) => Execution m Memory 
 saveOld = do
-  mem <- use envMemory
-  let globals = mem^.memGlobals
+  callerMem <- use envMemory
+  let globals = callerMem^.memGlobals
   envMemory.memOld .= globals
   mapM_ incRefCountValue (M.elems globals) -- Each value stored in globals is now pointed by an additional (old) variable
-  return $ mem
+  envMemory.memModified .= S.empty
+  return $ callerMem
 
--- | 'restoreOld' @oldMem@ : reset 'memOld' to its value from @oldMem@
+-- | 'restoreOld' @callerMem@ : restore 'memOld' to its value from @callerMem@
 restoreOld :: (Monad m, Functor m) => Memory -> Execution m ()  
-restoreOld oldMem = do
-  mem <- use envMemory
-  let (oldOlds, newOlds) = M.partitionWithKey (\var _ -> M.member var (oldMem^.memGlobals)) (mem^.memOld)
-  envMemory.memOld .= (oldMem^.memOld) `M.union` newOlds -- Add old values for freshly initialized globals (they are valid up until the program entry point, so could be accessed until the end of the program)
-  mapM_ decRefCountValue (M.elems oldOlds) -- Old values for previously initialized varibles go out of scope
+restoreOld callerMem = do
+  -- Among the callee's old values, those that had not been modified by the caller are "clean" (should be propagated back to the caller)
+  (dirtyOlds, cleanOlds) <- uses (envMemory.memOld) $ partitionDomain (callerMem^.memModified)
+  envMemory.memOld .= (callerMem^.memOld) `M.union` cleanOlds
+  mapM_ decRefCountValue (M.elems dirtyOlds) -- Dirty old values go out of scope
+  envMemory.memModified %= ((callerMem^.memModified) `S.union`)
     
 -- | Enter local scope (apply localTC to the type context and assign actuals to formals),
 -- execute computation,
@@ -615,7 +622,9 @@ evalVar name pos = do
     Nothing -> case M.lookup name (ctxGlobals tc) of
       Just t -> do
         inOld <- use envInOld
-        evalVarWith t memGlobals (not inOld) -- Unless we are evaluating and old expression, also initialize the old value of the global
+        modified <- use $ envMemory.memModified
+        -- Also initialize the old value of the global, unless we are evaluating and old expression (because of garbage collection) or the variable has been already modified:
+        evalVarWith t memGlobals (not inOld && S.notMember name modified)
       Nothing -> case M.lookup name (ctxConstants tc) of
         Just t -> evalVarWith t memConstants False
         Nothing -> (internalError . show) (text "Encountered unknown identifier during execution:" <+> text name) 
@@ -755,24 +764,13 @@ execPredicate specClause pos = do
       throwRuntimeFailure (SpecViolation specClause lt) pos      
     
 execHavoc names pos = do
-  mapM_ havoc names 
-  where
-    havoc name = do
-      tc <- use envTypeContext
-      let t = exprType tc . gen . Var $ name
-      definedValue <- checkNameDefinitions name t pos
-      case definedValue of
-        Just val -> do
-          resetAnyVar name val
-          checkNameConstraints name pos
-        Nothing -> do
-          chosenValue <- generateValue t pos
-          resetAnyVar name chosenValue
-          checkNameConstraints name pos
+  mapM_ forgetAnyVar names
+  mapM_ (\name -> envMemory.memModified %= S.insert name) names
     
 execAssign lhss rhss = do
   rVals <- mapM eval rhss'
   zipWithM_ resetAnyVar lhss' rVals
+  mapM_ (\name -> envMemory.memModified %= S.insert name) lhss' 
   where
     lhss' = map fst (zipWith simplifyLeft lhss rhss)
     rhss' = map snd (zipWith simplifyLeft lhss rhss)

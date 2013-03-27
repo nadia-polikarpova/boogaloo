@@ -58,6 +58,7 @@ module Language.Boogie.Util (
   deleteAll,
   restrictDomain,
   removeDomain,
+  partitionDomain,
   mapItwType,
   anyM,
   changeState,
@@ -455,11 +456,15 @@ deleteAll keys m = foldr M.delete m keys
 
 -- | 'restrictDomain' @keys m@ : map @m@ restricted on the set of keys @keys@
 restrictDomain :: Ord k => Set k -> Map k a -> Map k a
-restrictDomain keys m = M.filterWithKey (\k _ -> k `S.member` keys) m
+restrictDomain keys m = fst $ partitionDomain keys m
 
 -- | 'removeDomain' @keys m@ : map @m@ with the set of keys @keys@ removed from its domain
 removeDomain :: Ord k => Set k -> Map k a -> Map k a
-removeDomain keys m = M.filterWithKey (\k _ -> k `S.notMember` keys) m
+removeDomain keys m = snd $ partitionDomain keys m
+
+-- | 'partitionDomain' @keys m@ : map @m@ partitioned into two maps, restricted to @keys@ and the rest
+partitionDomain :: Ord k => Set k -> Map k a -> (Map k a, Map k a)
+partitionDomain keys m = M.partitionWithKey (\k _ -> k `S.member` keys) m
 
 mapItwType f (IdTypeWhere i t w) = IdTypeWhere i (f t) w
 

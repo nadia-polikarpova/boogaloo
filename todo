@@ -16,8 +16,6 @@
   - Annotate AST with expr types
   
 - Interpreter
-  - Add changed state for variables
-  - Change havoc semantics
   - Refactor executeLocally, execCall and execProcedure:
     two functions for context switch enterLocal and enterNested, do type instantiations uniformly through the map type
   - Evaluation of quantification over types

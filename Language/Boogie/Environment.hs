@@ -26,6 +26,7 @@ module Language.Boogie.Environment (
   memLocals,
   memGlobals,
   memOld,
+  memModified,
   memConstants,
   memHeap,
   emptyMemory,
@@ -209,6 +210,7 @@ data Memory = Memory {
   _memLocals :: Store,      -- ^ Local variable store
   _memGlobals :: Store,     -- ^ Global variable store
   _memOld :: Store,         -- ^ Old global variable store (in two-state contexts)
+  _memModified :: Set Id,   -- ^ Set of global variables, which have been modified since the beginning of the current procedure
   _memConstants :: Store,   -- ^ Constant and function cache
   _memHeap :: Heap Value    -- ^ Heap
 } deriving Eq
@@ -223,6 +225,7 @@ emptyMemory = Memory {
   _memLocals = emptyStore,
   _memGlobals = emptyStore,
   _memOld = emptyStore,
+  _memModified = S.empty,
   _memConstants = emptyStore,
   _memHeap = emptyHeap
 }
@@ -235,7 +238,8 @@ visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (m
 memoryDoc :: Bool -> Memory -> Doc
 memoryDoc debug mem = vsep $ [text "Locals:" <+> storeDoc (storeRepr $ mem^.memLocals),
   text "Globals:" <+> storeDoc (storeRepr $ (mem^.memGlobals) `M.union` (mem^.memConstants)),
-  text "Old values:" <+> storeDoc (storeRepr $ mem^.memOld)]
+  text "Old values:" <+> storeDoc (storeRepr $ mem^.memOld),
+  text "Modified:" <+> commaSep (map text (S.toList $ mem^.memModified))]
   ++ if debug then [text "Heap:" <+> heapDoc (mem^.memHeap)] else []
   where
     storeRepr store = if debug then store else userStore (mem^.memHeap) store
