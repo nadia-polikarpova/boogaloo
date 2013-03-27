@@ -725,8 +725,9 @@ evalExists tv vars e pos = let Quantified Exists tv' vars' e' = node $ normalize
 
 evalExists' :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> Execution m Value    
 evalExists' tv vars e = do
+  when (not (null tv)) $ throwRuntimeFailure (UnsupportedConstruct $ text "quantification over types") (position e)
   localConstraints <- use $ envConstraints.amLocals
-  BoolValue <$> executeLocally (enterQuantified tv vars) (map fst vars) [] [] localConstraints evalWithDomains
+  BoolValue <$> executeLocally (enterQuantified [] vars) (map fst vars) [] [] localConstraints evalWithDomains
   where
     evalWithDomains = do
       doms <- domains e varNames
