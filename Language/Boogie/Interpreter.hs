@@ -1053,12 +1053,10 @@ checkMapConstraints r t args actuals pos = do
     checkConstraint typeGuard (FDef name tv formals guard body) = if typeGuard tv (map snd formals)
       then applyConstraint name (evalLocally (map fst formals)) guard body pos
       else return ()
-    evalLocally formalNames expr = do
-      let sig = fsigFromType t
-      let MapType tv domainTypes rangeType = t
-      -- Here: enterFunction removes all local names; instead conflicts have to be resolved?
-      -- executeLocally (enterFunction sig formalNames args) formalNames formalNames actuals M.empty (evalSub expr)
-      executeLocally (enterQuantified tv (zip formalNames domainTypes)) formalNames actuals M.empty (evalSub expr)
+    sig = fsigFromType t
+    evalLocally formals expr = if null formals
+        then evalSub expr
+        else executeLocally (enterFunction sig formals args) formals actuals M.empty (evalSub expr)      
 
 {- Preprocessing -}
 

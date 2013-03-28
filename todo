@@ -18,7 +18,6 @@
   
 - Interpreter
   - Check function and map constraints lazily
-    - No context needed when evaluating symbolic values
     - Adjust reference count when creating and collecting value constraints
     - Currently function definitions written as bodies are not added as constraints (this e.g. leads to unsoundness in LinkedListTraversal without acyclicity constraints). Checking these constraints is costly (or non-terminating?) in case of resursive function, since their values are not cached.
     - Currently forall constraints for constants are ignored
