@@ -101,6 +101,6 @@ interpreterSuccess file = do
     Right p -> case typeCheckProgram p of
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
       Right context -> case (head . filter (not . isInvalid)) (executeProgram p context (exhaustiveGenerator Nothing) Nothing entryPoint) of
-        I.TestCase _ _ (Just err) -> assertFailure (show $ pretty err)
+        I.TestCase _ _ _ (Just err) -> assertFailure (show $ pretty err)
         otherwise -> return ()
 

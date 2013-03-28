@@ -170,22 +170,35 @@ visibleVariables :: Memory -> Store
 visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (mem^.memConstants)
 
 -- | 'memoryDoc' @debug mem@ : either user or debug representation of @mem@, depending on @debug@
-memoryDoc :: Bool -> Memory -> Doc
-memoryDoc debug mem = vsep $ [text "Locals:" <+> storeDoc (storeRepr $ mem^.memLocals),
-  text "Globals:" <+> storeDoc (storeRepr $ (mem^.memGlobals) `M.union` (mem^.memConstants)),
-  text "Old values:" <+> storeDoc (storeRepr $ mem^.memOld),
-  text "Modified:" <+> commaSep (map text (S.toList $ mem^.memModified))]
-  ++ if debug then [text "Heap:" <+> heapDoc (mem^.memHeap)] else []
+memoryDoc :: Bool -> [Id] -> [Id] -> Memory -> Doc
+memoryDoc debug inNames outNames mem = vsep $ 
+  docNonEmpty (storeRepr ins) (labeledStoreDoc "Ins") ++
+  docNonEmpty (storeRepr locals) (labeledStoreDoc "Locals") ++
+  docNonEmpty (storeRepr outs) (labeledStoreDoc "Outs") ++
+  docNonEmpty (storeRepr $ (mem^.memGlobals) `M.union` (mem^.memConstants)) (labeledStoreDoc "Globals") ++
+  docNonEmpty (storeRepr $ mem^.memOld) (labeledStoreDoc "Old globals") ++
+  docWhen (not (S.null $ mem^.memModified)) (text "Modified:" <+> commaSep (map text (S.toList $ mem^.memModified))) ++
+  docWhen debug (text "Heap:" <+> align (heapDoc (mem^.memHeap)))
   where
+    allLocals = mem^.memLocals
+    ins = restrictDomain (S.fromList inNames) allLocals
+    outs = restrictDomain (S.fromList outNames) allLocals
+    locals = removeDomain (S.fromList $ inNames ++ outNames) allLocals
     storeRepr store = if debug then store else userStore (mem^.memHeap) store
+    labeledStoreDoc label store = (text label <> text ":") <+> align (storeDoc store)
+    docWhen flag doc = if flag then [doc] else [] 
+    docNonEmpty m mDoc = docWhen (not (M.null m)) (mDoc m)
     
 instance Pretty Memory where
-  pretty mem = memoryDoc True mem
+  pretty mem = memoryDoc True [] [] mem
   
 {- Symbolic memory -}
 
 -- | Symbolic heap: maps logical variables to ground constraints
 type SymbolicHeap = Map Ref ConstraintSet
+
+symbolicHeapDoc heap = vsep $ map valDoc (M.toList heap)
+  where valDoc (r, cs) = nest 2 (refDoc r <+> constraintSetDoc cs)
 
 -- | Symbolic memory: stores name and value constraints
 data SymbolicMemory = SymbolicMemory {
@@ -202,6 +215,19 @@ emptySymbolicMemory = SymbolicMemory {
   _symGlobals = M.empty,
   _symHeap = M.empty
 }
+
+symbolicMemoryDoc :: SymbolicMemory -> Doc
+symbolicMemoryDoc mem = vsep $ 
+  docNonEmpty (mem^.symLocals) (labeledStoreDoc "Symbolic locals") ++
+  docNonEmpty (mem^.symGlobals) (labeledStoreDoc "Symbolic globals") ++
+  docNonEmpty (mem^.symHeap) (\h -> text "Symbolic heap:" <+> align (symbolicHeapDoc h))
+  where
+    labeledStoreDoc label store = (text label <> text ":") <+> align (symbolicStoreDoc store)
+    docWhen flag doc = if flag then [doc] else [] 
+    docNonEmpty m mDoc = docWhen (not (M.null m)) (mDoc m)
+    
+instance Pretty SymbolicMemory where
+  pretty = symbolicMemoryDoc
 
 {- Environment -}
   

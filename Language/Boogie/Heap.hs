@@ -29,7 +29,7 @@ type Ref = Int
 
 -- | Pretty-printed reference
 refDoc :: Ref -> Doc
-refDoc r = text ("ref_" ++ show r)
+refDoc r = text "l'" <> int r
 
 -- | Heap
 data Heap a = Heap {

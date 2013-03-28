@@ -8,6 +8,7 @@
   - Optimization: e.g. better data structures instead of lists  
   - Do not throw away attributes and triggers
   - Dynamic assertion (loop invariant) inference (testing + statistical test)?
+  - Make AST foldable?
 
 - Type checker
   - Encode polymorphic map types with DeBrujn indexes?
@@ -17,7 +18,8 @@
   
 - Interpreter
   - Check function and map constraints lazily
-    - In value constraints relace variable names with reference literals
+    - No context needed when evaluating symbolic values
+    - Adjust reference count when creating and collecting value constraints
     - Currently function definitions written as bodies are not added as constraints (this e.g. leads to unsoundness in LinkedListTraversal without acyclicity constraints). Checking these constraints is costly (or non-terminating?) in case of resursive function, since their values are not cached.
     - Currently forall constraints for constants are ignored
     - Map equality with overrides

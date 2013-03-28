@@ -88,8 +88,8 @@ executeProgramGeneric p tc generator qbound entryPoint = result <$> runStateT (r
       envTypeContext %= setLocals (M.fromList $ zip (map itwId params) paramTypes)
       execCallBySig (assumePreconditions sig) (map itwId (psigRets sig)) (map (gen . Var . itwId) (psigArgs sig)) noPos
     defaultType = BoolType      
-    result (Left err, env) = TestCase sig (env^.envMemory) (Just err)
-    result (_, env)      = TestCase sig (env^.envMemory) Nothing    
+    result (Left err, env) = TestCase sig (env^.envMemory) (env^.envConstraints) (Just err)
+    result (_, env)      = TestCase sig (env^.envMemory) (env^.envConstraints) Nothing    
             
 {- Executions -}
 
@@ -324,25 +324,26 @@ throwInternalException code = throwRuntimeFailure (InternalException code) noPos
     
 -- | Description of an execution
 data TestCase = TestCase {
-  tcProcedure :: PSig,              -- ^ Root procedure (entry point) of the execution
-  tcMemory :: Memory,               -- ^ Final memory state (at the exit from the root procedure) 
-  tcFailure :: Maybe RuntimeFailure -- ^ Failure the execution eded with, or Nothing if the execution ended in a valid state
+  tcProcedure :: PSig,                -- ^ Root procedure (entry point) of the execution
+  tcMemory :: Memory,                 -- ^ Final memory state (at the exit from the root procedure) 
+  tcSymbolicMemory :: SymbolicMemory, -- ^ Final symbolic memory state (at the exit from the root procedure) 
+  tcFailure :: Maybe RuntimeFailure   -- ^ Failure the execution eded with, or Nothing if the execution ended in a valid state
 }
 
 -- | 'isPass' @tc@: Does @tc@ end in a valid state?
 isPass :: TestCase -> Bool
-isPass (TestCase _ _ Nothing) =  True
+isPass (TestCase _ _ _ Nothing) =  True
 isPass _ =          False
 
 -- | 'isInvalid' @tc@: Does @tc@ and in an unreachable state?
 isInvalid :: TestCase -> Bool 
-isInvalid (TestCase _ _ (Just err))
+isInvalid (TestCase _ _ _ (Just err))
   | failureKind err == Unreachable = True
 isInvalid _                        = False
 
 -- | 'isNonexecutable' @tc@: Does @tc@ end in a non-executable state?
 isNonexecutable :: TestCase -> Bool 
-isNonexecutable (TestCase _ _ (Just err))
+isNonexecutable (TestCase _ _ _ (Just err))
   | failureKind err == Nonexecutable  = True
 isNonexecutable _                     = False
 
@@ -363,7 +364,7 @@ testCaseDoc debug header n tc =
     Nothing -> finalStateDoc debug tc  
 
 -- | 'testCaseSummary' @debug tc@ : Summary of @tc@'s inputs and outcome
-testCaseSummary debug tc@(TestCase sig mem mErr) = (text (psigName sig) <> 
+testCaseSummary debug tc@(TestCase sig mem _ mErr) = (text (psigName sig) <> 
   parens (commaSep (map (inDoc . itwId) (psigArgs sig))) <>
   (option (not $ M.null globalInputsRepr) ((tupled . map globDoc . M.toList) globalInputsRepr))) <+>
   outcomeDoc tc
@@ -383,15 +384,11 @@ testCaseSummary debug tc@(TestCase sig mem mErr) = (text (psigName sig) <>
 -- | 'finalStateDoc' @debug tc@ : outputs of @tc@, 
 -- displayed in user or debug format depending on 'debug' 
 finalStateDoc :: Bool -> TestCase -> Doc
-finalStateDoc debug tc@(TestCase sig mem mErr) = vsep $
-    (if M.null outsRepr then [] else [text "Outs:" <+> align (storeDoc outsRepr)]) ++
-    (if M.null globalsRepr then [] else [text "Globals:" <+> align (storeDoc globalsRepr)]) ++ 
-    (if debug then [text "Heap:" <+> align (heapDoc (mem^.memHeap))] else [])
+finalStateDoc debug tc@(TestCase sig mem symMem mErr) = memoryDoc debug [] outNames finalMem $+$
+  if debug then pretty symMem else empty
   where
-    storeRepr store = if debug then store else userStore (mem^.memHeap) store
+    finalMem = over memLocals (restrictDomain (S.fromList outNames)) mem
     outNames = map itwId (psigRets sig)
-    outsRepr = storeRepr $ M.filterWithKey (\k _ -> k `elem` outNames) (mem^.memLocals)
-    globalsRepr = storeRepr $ mem^.memGlobals
     
 -- | Test cases are considered equivalent from a user perspective
 -- | if they are testing the same procedure and result in the same outcome
@@ -890,8 +887,47 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
     
 {- Constraints and symbolic execution -}
 
-symbolicEval :: (Monad m, Functor m) => FDef -> Execution m FDef
-symbolicEval def = return def
+-- | Convert a constraint into a symbolic value by evaluating all its free variables
+toSymbolicValue :: (Monad m, Functor m) => FDef -> Execution m FDef
+toSymbolicValue (FDef name tv formals guard body) = do
+  let vars = map fst formals
+  guard' <- symbolicEval vars guard
+  body' <- symbolicEval vars body
+  return $ FDef name tv formals guard' body'
+
+-- | 'symbolicEval' @vars expr@ : evaluate all free variables in @expr@
+-- (all variables except @vars@ are considered free)
+symbolicEval vars (Pos p e) = attachPos p <$> case e of
+  l@(Literal _ _) -> return l
+  var@(Var name) -> if name `elem` vars
+    then return var
+    else do
+      t <- uses (envTypeContext.to allNames) (flip (!) name)
+      val <- evalVar name p
+      return $ Literal t val 
+  Application name args -> Application name <$> mapM (symbolicEval vars) args
+  MapSelection m args -> do
+    m' <- (symbolicEval vars) m
+    args' <- mapM (symbolicEval vars) args
+    return $ MapSelection m' args'
+  MapUpdate m args new -> do
+    m' <- (symbolicEval vars) m
+    args' <- mapM (symbolicEval vars) args
+    new' <- (symbolicEval vars) new
+    return $ MapUpdate m' args' new'   
+  Old e -> node <$> old (symbolicEval vars e)
+  IfExpr cond e1 e2 -> do
+    cond' <- (symbolicEval vars) cond
+    e1' <- (symbolicEval vars) e1
+    e2' <- (symbolicEval vars) e2
+    return $ IfExpr cond' e1' e2'
+  Coercion e t -> node <$> (symbolicEval vars) e
+  UnaryExpression op e -> UnaryExpression op <$> (symbolicEval vars) e
+  BinaryExpression op e1 e2 -> do
+    e1' <- (symbolicEval vars) e1
+    e2' <- (symbolicEval vars) e2
+    return $ BinaryExpression op e1' e2'
+  Quantified qop tv bv e -> Quantified qop tv bv <$> symbolicEval (vars ++ map fst bv) e
         
 -- | 'wellDefined' @val@ : throw an exception if @val@ is under construction
 wellDefined (CustomValue t n) | t == ucTypeName = throwInternalException $ UnderConstruction n
@@ -997,12 +1033,12 @@ checkNameConstraints name pos = do
     checkConstraint (FDef _ [] [] guard body) = applyConstraint name evalSub guard body pos -- Simple constraint: assume it
     checkConstraint constr = do             -- Forall-constraint: attach to the map value
       Reference r <- evalVar name pos
-      symVal <- symbolicEval constr
+      symVal <- toSymbolicValue constr
       modify $ addValueConstraint r symVal
     attachDefinition (FDef _ [] [] _ _) = return ()  -- Simple definition: ignore
     attachDefinition def = do                     -- Forall definition: attach to the map value
       Reference r <- evalVar name pos
-      symVal <- symbolicEval def
+      symVal <- toSymbolicValue def
       modify $ addValueDefinition r symVal
       
 -- | 'checkMapConstraints' @r t args actuals pos@ : assume all constraints for the value at index @actuals@ 
@@ -1126,9 +1162,12 @@ extractConstraints' tc tv vars guards body = case (node body) of
         (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
         allArgGuards = concat argGuards
         extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
+        guardedBody = if null guards
+          then body
+          else conjunction guards |=>| body
         constraint = if null extraVars
-          then conjunction guards |=>| body
-          else attachPos (position body) $ Quantified Forall tv extraVars (conjunction guards |=>| body) -- outer guards are inserted into the body, because they might contain extraVars
+          then guardedBody
+          else attachPos (position body) $ Quantified Forall tv extraVars guardedBody -- outer guards are inserted into the body, because they might contain extraVars
       in if length formals == length args -- Only possible if all arguments are simple
         then M.singleton name ([], [FDef name tv (zip formals argTypes) (conjunction allArgGuards) constraint])
         else M.empty

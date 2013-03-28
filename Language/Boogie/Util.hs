@@ -31,6 +31,7 @@ module Language.Boogie.Util (
   sigDoc,
   FDef (..),
   ConstraintSet,
+  constraintSetDoc,
   SymbolicStore,
   asUnion,
   symbolicStoreDoc,
@@ -383,7 +384,7 @@ asUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2
 -- | Pretty-printed abstract store
 symbolicStoreDoc :: SymbolicStore -> Doc
 symbolicStoreDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (name, cs) = nest 2 (text name $+$ constraintSetDoc cs)  
+  where varDoc (name, cs) = nest 2 (text name <+> constraintSetDoc cs)  
  
 -- | Procedure signature 
 data PSig = PSig {
