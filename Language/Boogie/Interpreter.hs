@@ -623,9 +623,7 @@ eval expr = do
 
 -- | Evaluate a sub-epression (this should be called instead of eval from inside expression evaluation)  
 evalSub expr = case node expr of
-  TT -> return $ BoolValue True
-  FF -> return $ BoolValue False
-  Numeral n -> return $ IntValue n
+  Literal _ v -> return v
   Var name -> evalVar name (position expr)
   Application name args -> evalMapSelection (functionExpr name) args (position expr)
   MapSelection m args -> evalMapSelection m args (position expr)
@@ -893,7 +891,7 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
 {- Constraints and symbolic execution -}
 
 symbolicEval :: (Monad m, Functor m) => FDef -> Execution m FDef
-symbolicEval = undefined
+symbolicEval def = return def
         
 -- | 'wellDefined' @val@ : throw an exception if @val@ is under construction
 wellDefined (CustomValue t n) | t == ucTypeName = throwInternalException $ UnderConstruction n
@@ -925,7 +923,7 @@ checkDefinitions' typeGuard evalLocally myCode mCode (FDef name tv formals guard
     applyDefinition evaluation guard body = if typeGuard tv (map snd formals)
       then do
         applicable <- case guard of
-          Pos _ TT -> return $ BoolValue True -- optimization for trivial guards
+          Pos _ (Literal BoolType (BoolValue True)) -> return $ BoolValue True -- optimization for trivial guards
           _ -> evaluation guard `catchError` addFrame
         case applicable of
           BoolValue False -> return Nothing
@@ -974,7 +972,7 @@ checkMapDefinitions r t args actuals pos = do
 -- (@pos@ is the position of the constraint invocation)      
 applyConstraint name evaluation guard body pos = do
   applicable <- case guard of
-    Pos _ TT -> return $ BoolValue True -- optimization for trivial guards
+    Pos _ (Literal BoolType (BoolValue True)) -> return $ BoolValue True -- optimization for trivial guards
     _ -> evaluation guard `catchError` addFrame
   case applicable of
     BoolValue True -> do
@@ -1217,7 +1215,7 @@ inferConstraints boolExpr constraints = do
 -- boolExpr has to be in negation-prenex normal form.
 inferInterval :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Id -> Execution m Interval
 inferInterval boolExpr constraints x = (case node boolExpr of
-  FF -> return bot
+  Literal BoolType (BoolValue False) -> return bot
   BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 constraints x) (inferInterval be2 constraints x)
   BinaryExpression Or be1 be2 -> liftM2 join (inferInterval be1 constraints x) (inferInterval be2 constraints x)
   BinaryExpression Eq ae1 ae2 -> do
@@ -1254,7 +1252,7 @@ type LinearForm = (Interval, Interval)
 -- assuming all other quantified variables satisfy constraints.
 toLinearForm :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Id -> Execution m LinearForm
 toLinearForm aExpr constraints x = case node aExpr of
-  Numeral n -> return (0, fromInteger n)
+  Literal IntType (IntValue n) -> return (0, fromInteger n)
   Var y -> if x == y
     then return (1, 0)
     else case M.lookup y constraints of

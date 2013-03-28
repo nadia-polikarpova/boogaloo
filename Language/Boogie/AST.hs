@@ -2,7 +2,9 @@
 module Language.Boogie.AST where
 
 import Language.Boogie.Position
+import Language.Boogie.Heap
 import Data.Map (Map)
+import qualified Data.Map as M
 
 {- Basic -}
 
@@ -43,9 +45,8 @@ data QOp = Forall | Exists | Lambda
 type Expression = Pos BareExpression
   
 -- | Expression
-data BareExpression = FF |                        -- ^ false
-  TT |                                            -- ^ true
-  Numeral Integer |                               -- ^ 'Numeral' @value@
+data BareExpression = 
+  Literal Type Value |
   Var Id |                                        -- ^ 'Var' @name@
   Application Id [Expression] |                   -- ^ 'Application' @f args@
   MapSelection Expression [Expression] |          -- ^ 'MapSelection' @map indexes@
@@ -60,6 +61,10 @@ data BareExpression = FF |                        -- ^ false
   
 -- | 'mapSelectExpr' @m args@ : map selection expression with position of @m@ attached
 mapSelectExpr m args = attachPos (position m) (MapSelection m args)  
+
+ff = Literal BoolType (BoolValue False)
+tt = Literal BoolType (BoolValue True)
+numeral n = Literal IntType (IntValue n)
   
 -- | Wildcard or expression  
 data WildcardExpression = Wildcard | Expr Expression
@@ -144,6 +149,41 @@ data BareDecl =
   ImplementationDecl Id [Id] [IdType] [IdType] [Body]                          -- ^ 'ImplementationDecl' @name type_args formals rets body@
   deriving Eq
   
+{- Values -}
+
+-- | Representation of a map value
+data MapRepr = 
+  Source (Map [Value] Value) |    -- ^ Map that comes directly from a non-deterministic choice, possibly with some key-value pairs defined
+  Derived Ref (Map [Value] Value) -- ^ Map that is derived from another map by redefining values at some keys
+  deriving (Eq, Ord)
+  
+-- | Representation of an empty map  
+emptyMap = Source M.empty
+
+-- | Key-value pairs stored explicitly in a map representation
+stored :: MapRepr -> Map [Value] Value
+stored (Source vals) = vals
+stored (Derived _ override) = override
+  
+-- | Run-time value
+data Value = IntValue Integer |  -- ^ Integer value
+  BoolValue Bool |               -- ^ Boolean value
+  CustomValue Id Int |           -- ^ Value of a user-defined type
+  MapValue MapRepr |             -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
+  Reference Ref                  -- ^ Logical variable: reference to a symbolic value stored in the heap (currently only maps)
+  deriving (Eq, Ord)
+  
+-- | 'valueFromInteger' @t n@: value of type @t@ with an integer code @n@
+valueFromInteger :: Type -> Integer -> Value  
+valueFromInteger IntType n        = IntValue n
+valueFromInteger (IdType id _) n  = CustomValue id (fromInteger n)
+valueFromInteger _ _              = error "cannot create a boolean or map value from integer" 
+  
+unValueBool (BoolValue b) = b  
+vnot (BoolValue b) = BoolValue (not b)
+
+unValueMap (MapValue repr) = repr  
+    
 {- Misc -}
 
 -- | Identifier

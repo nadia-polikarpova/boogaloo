@@ -2,14 +2,6 @@
 
 -- | Execution state for the interpreter
 module Language.Boogie.Environment ( 
-  MapRepr (..),
-  emptyMap,
-  stored,
-  Value (..),
-  valueFromInteger,
-  vnot,
-  unValueBool,
-  unValueMap,
   flattenMap,
   mapSource,
   mapValues,
@@ -72,63 +64,6 @@ import qualified Data.Map as M
 import Data.Set (Set)
 import qualified Data.Set as S
 import Control.Lens hiding (Context, at)
-
-{- Values -}
-
--- | Representation of a map value
-data MapRepr = 
-  Source (Map [Value] Value) |    -- ^ Map that comes directly from a non-deterministic choice, possibly with some key-value pairs defined
-  Derived Ref (Map [Value] Value) -- ^ Map that is derived from another map by redefining values at some keys
-  deriving (Eq, Ord)
-  
--- | Representation of an empty map  
-emptyMap = Source M.empty
-
--- | Key-value pairs stored explicitly in a map representation
-stored :: MapRepr -> Map [Value] Value
-stored (Source vals) = vals
-stored (Derived _ override) = override
-  
--- | Pretty-printed map representation  
-mapReprDoc :: MapRepr -> Doc
-mapReprDoc repr = case repr of
-  Source vals -> brackets (commaSep (map itemDoc (M.toList vals)))
-  Derived base override -> refDoc base <> 
-    brackets (commaSep (map itemDoc (M.toList override))) 
-  where
-    keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
-    itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> pretty v
-    
-instance Pretty MapRepr where
-  pretty repr = mapReprDoc repr
-
--- | Run-time value
-data Value = IntValue Integer |  -- ^ Integer value
-  BoolValue Bool |               -- ^ Boolean value
-  CustomValue Id Int |           -- ^ Value of a user-defined type
-  MapValue MapRepr |             -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
-  Reference Ref                  -- ^ Logical variable: reference to a symbolic value stored in the heap (currently only maps)
-  deriving (Eq, Ord)
-  
--- | 'valueFromInteger' @t n@: value of type @t@ with an integer code @n@
-valueFromInteger :: Type -> Integer -> Value  
-valueFromInteger IntType n        = IntValue n
-valueFromInteger (IdType id _) n  = CustomValue id (fromInteger n)
-valueFromInteger _ _              = error "cannot create a boolean or map value from integer" 
-  
-unValueBool (BoolValue b) = b  
-vnot (BoolValue b) = BoolValue (not b)
-
-unValueMap (MapValue repr) = repr
-
--- | Pretty-printed value
-instance Pretty Value where
-  pretty (IntValue n) = integer n
-  pretty (BoolValue False) = text "false"
-  pretty (BoolValue True) = text "true"
-  pretty (MapValue repr) = pretty repr
-  pretty (CustomValue t n) = text t <+> int n
-  pretty (Reference r) = refDoc r
   
 {- Map operations -}
 

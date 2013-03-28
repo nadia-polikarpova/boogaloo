@@ -332,9 +332,7 @@ checkExpression :: Expression -> Typing Type
 checkExpression (Pos pos e) = do
   modify $ setPos pos
   case e of
-    TT -> return BoolType
-    FF -> return BoolType
-    Numeral n -> return IntType
+    Literal t _ -> return t
     Var id -> checkVar id
     Application id args -> checkApplication id args
     MapSelection m args -> checkMapSelection m args

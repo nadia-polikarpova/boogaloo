@@ -128,9 +128,9 @@ qop = (reserved "forall" >> return Forall) <|> (reserved "exists" >> return Exis
   
 atom :: Parser BareExpression
 atom = choice [
-  reserved "false" >> return FF,
-  reserved "true" >> return TT,
-  Numeral <$> natural,
+  reserved "false" >> return ff,
+  reserved "true" >> return tt,
+  numeral <$> natural,
   varOrCall,
   old,
   ifThenElse,
@@ -488,7 +488,7 @@ idsTypeWhere :: Parser ([Id], Type, Expression)
 idsTypeWhere = do
   ids <- idsType
   pos <- getPosition
-  e <- option (attachPos pos TT) (reserved "where" >> expression)
+  e <- option (attachPos pos tt) (reserved "where" >> expression)
   return ((fst ids), (snd ids), e)
 
 ungroupWhere :: [([Id], Type, Expression)] -> [IdTypeWhere]

@@ -190,9 +190,7 @@ forallUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= len
 freeVarsTwoState :: Expression -> ([Id], [Id])
 freeVarsTwoState e = freeVarsTwoState' (node e)
 
-freeVarsTwoState' FF = ([], [])
-freeVarsTwoState' TT = ([], [])
-freeVarsTwoState' (Numeral _) = ([], [])
+freeVarsTwoState' (Literal _ _) = ([], [])
 freeVarsTwoState' (Var x) = ([x], [])
 freeVarsTwoState' (Application name args) = over both (nub . concat) (unzip (map freeVarsTwoState args))
 freeVarsTwoState' (MapSelection m args) =  over both (nub . concat) (unzip (map freeVarsTwoState (m : args)))
@@ -253,9 +251,7 @@ paramSubst sig def = if not (pdefParamsRenamed def)
 freeSelections :: Expression -> [(Id, [Expression])]
 freeSelections expr = freeSelections' $ node expr
 
-freeSelections' FF = []
-freeSelections' TT = []
-freeSelections' (Numeral _) = []
+freeSelections' (Literal _ _) = []
 freeSelections' (Var x) = []
 freeSelections' (Application name args) = nub . concat $ map freeSelections args
 freeSelections' (MapSelection m args) = case node m of 
@@ -274,9 +270,7 @@ freeSelections' (Quantified _ _ boundVars e) = let boundVarNames = map fst bound
 applications :: Expression -> [(Id, [Expression])]
 applications expr = applications' $ node expr
 
-applications' FF = []
-applications' TT = []
-applications' (Numeral _) = []
+applications' (Literal _ _) = []
 applications' (Var x) = []
 applications' (Application name args) = (name, args) : (nub . concat $ map applications args)
 applications' (MapSelection m args) = nub . concat $ map applications (m : args)
@@ -365,7 +359,7 @@ fdefDoc isDef (FDef name tv formals guard expr) =
   text name <>
   option (not (null tv)) (angles (commaSep (map text tv))) <+> 
   option (not (null formals)) (parens (commaSep (map idpretty formals))) <+> 
-  option (node guard /= TT) (brackets (pretty guard)) <+> 
+  option (node guard /= tt) (brackets (pretty guard)) <+> 
   (if isDef then text "=" else text ":") <+>
   pretty expr
   
@@ -434,7 +428,7 @@ pdefLocals def = pdefIns def ++ pdefOuts def ++ map itwId (fst (pdefBody def))
 
 {- Code generation -}
 
-num i = gen $ Numeral i
+num i = gen $ Literal IntType (IntValue i)
 eneg e = inheritPos (UnaryExpression Neg) e
 enot e = inheritPos (UnaryExpression Not) e
 e1 |+|    e2 = inheritPos2 (BinaryExpression Plus) e1 e2
@@ -454,7 +448,7 @@ e1 |=>|   e2 = inheritPos2 (BinaryExpression Implies) e1 e2
 e1 |<=>|  e2 = inheritPos2 (BinaryExpression Equiv) e1 e2
 assume e = attachPos (position e) (Predicate (SpecClause Inline True e))
 
-conjunction [] = gen TT
+conjunction [] = gen tt
 conjunction es = foldl1 (|&|) es
 
 {- Special names -}

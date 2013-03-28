@@ -5,14 +5,17 @@ module Language.Boogie.PrettyAST (
 
 import Language.Boogie.Pretty
 import Language.Boogie.AST
+import Language.Boogie.Heap
 import Language.Boogie.Position
 import Language.Boogie.Tokens
--- import Language.Boogie.Util
 import Data.Maybe
--- import Data.Map (Map, (!))
--- import qualified Data.Map as M
--- import Text.PrettyPrint.ANSI.Leijen hiding ((<+>), (<$>), hsep, vsep)
--- import qualified Text.PrettyPrint.ANSI.Leijen as L
+import qualified Data.Map as M
+
+{- Interface -}
+
+-- | Pretty-printed program
+instance Pretty Program where 
+  pretty (Program decls) = (vsep . punctuate linebreak . map pretty) decls
       
 {- Types -}
 
@@ -29,9 +32,7 @@ instance Pretty Type where
 
 -- | Binding power of an expression
 power :: BareExpression -> Int
-power TT = 10
-power FF = 10
-power (Numeral _) = 10
+power (Literal _ _) = 10
 power (Var _) = 10
 power (Application _ _) = 10
 power (Old _) = 10
@@ -57,9 +58,7 @@ exprDoc e = exprDocAt (-1) e
 exprDocAt :: Int -> Expression -> Doc
 exprDocAt n (Pos _ e) = condParens (n' <= n) (
   case e of
-    FF -> text "false"
-    TT -> text "true"
-    Numeral n -> integer n
+    Literal _ v -> pretty v
     Var id -> text id
     Application id args -> text id <> parens (commaSep (map exprDoc args))
     MapSelection m args -> exprDocAt n' m <> brackets (commaSep (map exprDoc args))
@@ -226,6 +225,30 @@ implementationDoc name fv args rets bodies =
   parens (commaSep (map idpretty rets)) $+$
   vsep (map bodyDoc bodies)
   
+{- Values -}
+
+-- | Pretty-printed map representation  
+mapReprDoc :: MapRepr -> Doc
+mapReprDoc repr = case repr of
+  Source vals -> brackets (commaSep (map itemDoc (M.toList vals)))
+  Derived base override -> refDoc base <> 
+    brackets (commaSep (map itemDoc (M.toList override))) 
+  where
+    keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
+    itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> pretty v
+    
+instance Pretty MapRepr where
+  pretty repr = mapReprDoc repr
+
+-- | Pretty-printed value
+instance Pretty Value where
+  pretty (IntValue n) = integer n
+  pretty (BoolValue False) = text "false"
+  pretty (BoolValue True) = text "true"
+  pretty (MapValue repr) = pretty repr
+  pretty (CustomValue t n) = text t <+> int n
+  pretty (Reference r) = refDoc r  
+  
 {- Misc -}
 
 defaultIndent = 4
@@ -240,7 +263,7 @@ idpretty (id, t) = text id <> text ":" <+> pretty t
 
 -- | Pretty-printed name declaration with a where clause
 idTypeWhereDoc (IdTypeWhere id t w) = idpretty (id, t) <+> case w of
-  (Pos _ TT) -> empty
+  (Pos _ (Literal BoolType (BoolValue True))) -> empty
   e -> text "where" <+> pretty e
 
 instance Pretty a => Pretty (Pos a) where
