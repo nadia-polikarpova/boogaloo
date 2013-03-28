@@ -387,7 +387,9 @@ finalStateDoc :: Bool -> TestCase -> Doc
 finalStateDoc debug tc@(TestCase sig mem symMem mErr) = memoryDoc debug [] outNames finalMem $+$
   if debug then pretty symMem else empty
   where
-    finalMem = over memLocals (restrictDomain (S.fromList outNames)) mem
+    finalMem =  over memLocals (restrictDomain (S.fromList outNames)) $ 
+                over memOld (const M.empty) 
+                mem
     outNames = map itwId (psigRets sig)
     
 -- | Test cases are considered equivalent from a user perspective
@@ -788,12 +790,12 @@ execPredicate specClause pos = do
     
 execHavoc names pos = do
   mapM_ forgetAnyVar names
-  mapM_ (\name -> envMemory.memModified %= S.insert name) names
+  mapM_ (modify . markModified) names
     
 execAssign lhss rhss = do
   rVals <- mapM eval rhss'
   zipWithM_ resetAnyVar lhss' rVals
-  mapM_ (\name -> envMemory.memModified %= S.insert name) lhss' 
+  mapM_ (modify . markModified) lhss' 
   where
     lhss' = map fst (zipWith simplifyLeft lhss rhss)
     rhss' = map snd (zipWith simplifyLeft lhss rhss)

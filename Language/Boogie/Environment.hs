@@ -50,6 +50,7 @@ module Language.Boogie.Environment (
   addValueConstraint,
   setCustomCount,
   withHeap,
+  markModified
 ) where
 
 import Language.Boogie.Util
@@ -57,7 +58,7 @@ import Language.Boogie.Position
 import Language.Boogie.AST
 import Language.Boogie.Heap
 import Language.Boogie.Generator
-import Language.Boogie.TypeChecker (Context)
+import Language.Boogie.TypeChecker (Context, ctxGlobals)
 import Language.Boogie.Pretty
 import Data.Map (Map, (!))
 import qualified Data.Map as M
@@ -177,7 +178,7 @@ memoryDoc debug inNames outNames mem = vsep $
   docNonEmpty (storeRepr outs) (labeledStoreDoc "Outs") ++
   docNonEmpty (storeRepr $ (mem^.memGlobals) `M.union` (mem^.memConstants)) (labeledStoreDoc "Globals") ++
   docNonEmpty (storeRepr $ mem^.memOld) (labeledStoreDoc "Old globals") ++
-  docWhen (not (S.null $ mem^.memModified)) (text "Modified:" <+> commaSep (map text (S.toList $ mem^.memModified))) ++
+  docWhen (debug && not (S.null $ mem^.memModified)) (text "Modified:" <+> commaSep (map text (S.toList $ mem^.memModified))) ++
   docWhen debug (text "Heap:" <+> align (heapDoc (mem^.memHeap)))
   where
     allLocals = mem^.memLocals
@@ -282,4 +283,7 @@ addValueDefinition r def env = over (envConstraints.symHeap) (M.insert r (over _
 addValueConstraint r constraint env = over (envConstraints.symHeap) (M.insert r (over _2 (++ [constraint]) (lookupValueConstraints r env))) env
 setCustomCount t n = over envCustomCount (M.insert t n)
 withHeap f env = let (res, h') = f (env^.envMemory.memHeap) 
-  in (res, set (envMemory.memHeap) h' env )  
+  in (res, set (envMemory.memHeap) h' env )
+markModified name env = if M.member name (env^.envTypeContext.to ctxGlobals) 
+  then over (envMemory.memModified) (S.insert name) env
+  else env
