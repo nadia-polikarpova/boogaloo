@@ -7,7 +7,7 @@ import Language.Boogie.Util
 import Language.Boogie.Position
 import qualified Language.Boogie.Parser as Parser (program)
 import Language.Boogie.TypeChecker
-import Language.Boogie.PrettyPrinter
+import Language.Boogie.Pretty
 import Language.Boogie.Heap
 import Language.Boogie.Environment
 import Language.Boogie.Interpreter
@@ -204,4 +204,4 @@ harness file = runOnFile printOutcome file defaultFormat
     printOutcome p context = do
       let env = head (toList (execStateT (preprocess p) (initEnv context (exhaustiveGenerator (Just defaultBranch)) (Just defaultBranch))))
       -- print $ memoryDoc True (env^.envMemory)
-      print $ abstractStoreDoc (env ^. envConstraints . amGlobals)
+      print $ symbolicStoreDoc (env ^. envConstraints . symGlobals)

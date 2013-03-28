@@ -32,10 +32,10 @@ module Language.Boogie.Environment (
   emptyMemory,
   visibleVariables,
   memoryDoc,
-  AbstractMemory,
-  amLocals,
-  amGlobals,
-  amHeap,
+  SymbolicMemory,
+  symLocals,
+  symGlobals,
+  symHeap,
   Environment,
   envMemory,
   envProcedures,
@@ -49,13 +49,13 @@ module Language.Boogie.Environment (
   initEnv,
   lookupProcedure,
   lookupNameConstraints,
-  lookupMapConstraints,
+  lookupValueConstraints,
   lookupCustomCount,
   addProcedureImpl,
   addGlobalDefinition,
   addGlobalConstraint,
-  addMapDefinition,
-  addMapConstraint,
+  addValueDefinition,
+  addValueConstraint,
   setCustomCount,
   withHeap,
 ) where
@@ -66,7 +66,7 @@ import Language.Boogie.AST
 import Language.Boogie.Heap
 import Language.Boogie.Generator
 import Language.Boogie.TypeChecker (Context)
-import Language.Boogie.PrettyPrinter
+import Language.Boogie.Pretty
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Data.Set (Set)
@@ -107,7 +107,7 @@ data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
   CustomValue Id Int |           -- ^ Value of a user-defined type
   MapValue MapRepr |             -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
-  Reference Ref                  -- ^ Reference to a map stored in the heap
+  Reference Ref                  -- ^ Logical variable: reference to a symbolic value stored in the heap (currently only maps)
   deriving (Eq, Ord)
   
 -- | 'valueFromInteger' @t n@: value of type @t@ with an integer code @n@
@@ -151,7 +151,7 @@ deepDeref h v = deepDeref' v
   where
     deepDeref' (Reference r) = let vals = mapValues h r
       in MapValue . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref') . M.filter (not . isAux)) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
-    deepDeref' (MapValue _) = internalError "Attempt to dereference a map directly"
+    deepDeref' (MapValue _) = internalError $ text "Attempt to dereference a map directly"
     deepDeref' v = v
     isAux (CustomValue id _) | id == refIdTypeName = True
     isAux _ = False
@@ -168,7 +168,7 @@ objectEq h (Reference r1) (Reference r2) = if r1 == r2
       else if s1 == s2 && mustAgree h vals1 vals2
         then Just True
         else Nothing
-objectEq _ (MapValue _) (MapValue _) = internalError "Attempt to compare two maps"
+objectEq _ (MapValue _) (MapValue _) = internalError $ text "Attempt to compare two maps"
 objectEq _ v1 v2 = Just $ v1 == v2
 
 mustEq h v1 v2 = case objectEq h v1 v2 of
@@ -247,22 +247,25 @@ memoryDoc debug mem = vsep $ [text "Locals:" <+> storeDoc (storeRepr $ mem^.memL
 instance Pretty Memory where
   pretty mem = memoryDoc True mem
   
-{- Abstract memory -}
+{- Symbolic memory -}
 
--- | Abstract memory: stores constraints associated with names and references
-data AbstractMemory = AbstractMemory {
-  _amLocals :: AbstractStore,       -- ^ Local name constraints
-  _amGlobals :: AbstractStore,      -- ^ Global name constraints
-  _amHeap :: Map Ref ConstraintSet  -- ^ Reference constraints
+-- | Symbolic heap: maps logical variables to ground constraints
+type SymbolicHeap = Map Ref ConstraintSet
+
+-- | Symbolic memory: stores name and value constraints
+data SymbolicMemory = SymbolicMemory {
+  _symLocals :: SymbolicStore,       -- ^ Local name constraints
+  _symGlobals :: SymbolicStore,      -- ^ Global name constraints
+  _symHeap :: SymbolicHeap           -- ^ Value constraints
 }
 
-makeLenses ''AbstractMemory
+makeLenses ''SymbolicMemory
 
 -- | Empty abstract memory
-emptyAbstractMemory = AbstractMemory {
-  _amLocals = M.empty,
-  _amGlobals = M.empty,
-  _amHeap = M.empty
+emptySymbolicMemory = SymbolicMemory {
+  _symLocals = M.empty,
+  _symGlobals = M.empty,
+  _symHeap = M.empty
 }
 
 {- Environment -}
@@ -271,7 +274,7 @@ emptyAbstractMemory = AbstractMemory {
 data Environment m = Environment
   {
     _envMemory :: Memory,                   -- ^ Concrete values
-    _envConstraints :: AbstractMemory,      -- ^ Abstract values
+    _envConstraints :: SymbolicMemory,      -- ^ Abstract values
     _envProcedures :: Map Id [PDef],        -- ^ Procedure implementations
     _envTypeContext :: Context,             -- ^ Type context
     _envGenerator :: Generator m,           -- ^ Input generator (used for non-deterministic choices)
@@ -287,7 +290,7 @@ makeLenses ''Environment
 initEnv tc gen qbound = Environment
   {
     _envMemory = emptyMemory,
-    _envConstraints = emptyAbstractMemory,
+    _envConstraints = emptySymbolicMemory,
     _envProcedures = M.empty,
     _envTypeContext = tc,
     _envGenerator = gen,
@@ -306,16 +309,16 @@ combineGetters f g1 g2 = to $ \env -> (env ^. g1) `f` (env ^. g2)
   
 -- Environment queries  
 lookupProcedure = lookupGetter envProcedures []  
-lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.amLocals) (envConstraints.amGlobals)) ([], [])
-lookupMapConstraints = lookupGetter (envConstraints.amHeap) ([], [])
+lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.symLocals) (envConstraints.symGlobals)) ([], [])
+lookupValueConstraints = lookupGetter (envConstraints.symHeap) ([], [])
 lookupCustomCount = lookupGetter envCustomCount 0
 
 -- Environment modifications  
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
-addGlobalDefinition name def env = over (envConstraints.amGlobals) (M.insert name (over _1 (++ [def]) (lookupGetter (envConstraints.amGlobals) ([], []) name env))) env
-addGlobalConstraint name def env = over (envConstraints.amGlobals) (M.insert name (over _2 (++ [def]) (lookupGetter (envConstraints.amGlobals) ([], []) name env))) env
-addMapDefinition r def env = over (envConstraints.amHeap) (M.insert r (over _1 (++ [def]) (lookupMapConstraints r env))) env
-addMapConstraint r constraint env = over (envConstraints.amHeap) (M.insert r (over _2 (++ [constraint]) (lookupMapConstraints r env))) env
+addGlobalDefinition name def env = over (envConstraints.symGlobals) (M.insert name (over _1 (++ [def]) (lookupGetter (envConstraints.symGlobals) ([], []) name env))) env
+addGlobalConstraint name def env = over (envConstraints.symGlobals) (M.insert name (over _2 (++ [def]) (lookupGetter (envConstraints.symGlobals) ([], []) name env))) env
+addValueDefinition r def env = over (envConstraints.symHeap) (M.insert r (over _1 (++ [def]) (lookupValueConstraints r env))) env
+addValueConstraint r constraint env = over (envConstraints.symHeap) (M.insert r (over _2 (++ [constraint]) (lookupValueConstraints r env))) env
 setCustomCount t n = over envCustomCount (M.insert t n)
 withHeap f env = let (res, h') = f (env^.envMemory.memHeap) 
   in (res, set (envMemory.memHeap) h' env )  

@@ -12,6 +12,7 @@ import Language.Boogie.Util
 import Language.Boogie.Position
 import Language.Boogie.Tokens
 import Data.List
+import Data.Map ((!), elems)
 import Text.ParserCombinators.Parsec hiding (token, label)
 import qualified Text.ParserCombinators.Parsec.Token as P
 import Text.ParserCombinators.Parsec.Expr
@@ -31,7 +32,7 @@ program = do
 {- Lexical analysis -}
 
 opNames :: [String]
-opNames = map snd unOpTokens ++ (map snd binOpTokens \\ keywords) ++ otherOps
+opNames = elems unOpTokens ++ (elems binOpTokens \\ keywords) ++ otherOps
 
 opStart :: [Char]
 opStart = nub (map head opNames)
@@ -203,10 +204,10 @@ table = [[unOp Neg, unOp Not],
      [binOp Implies AssocRight, binOp Explies AssocLeft], -- Mixing is prevented by different associativities
      [binOp Equiv AssocRight]]
   where
-    binOp op assoc = Infix (reservedOp (opName op binOpTokens) >> return (\e1 e2 -> attachPos (position e1) (BinaryExpression op e1 e2))) assoc
+    binOp op assoc = Infix (reservedOp (binOpTokens ! op) >> return (\e1 e2 -> attachPos (position e1) (BinaryExpression op e1 e2))) assoc
     unOp op = Prefix (do
       pos <- getPosition
-      reservedOp (opName op unOpTokens)
+      reservedOp (unOpTokens ! op)
       return (\e -> attachPos pos (UnaryExpression op e)))
     
 wildcardExpression :: Parser WildcardExpression

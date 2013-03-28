@@ -1,7 +1,7 @@
 module Main where
 
 import Language.Boogie.Parser
-import Language.Boogie.PrettyPrinter
+import Language.Boogie.Pretty
 import Language.Boogie.TypeChecker
 import Language.Boogie.Interpreter hiding (TestCase)
 import qualified Language.Boogie.Interpreter as I

@@ -2,7 +2,8 @@
 module Language.Boogie.Tokens where
 
 import Language.Boogie.AST
-import Data.Maybe
+import Language.Boogie.Pretty
+import Data.Map (Map, (!), fromList)
 
 -- | Keywords
 keywords :: [String]
@@ -12,39 +13,48 @@ keywords = ["assert", "assume", "axiom", "bool", "break", "call", "complete", "c
     "old", "procedure", "requires", "return", "returns", "then", "true", "type", "unique",
     "var", "where", "while"]
 
--- | 'opName' @op table@ : lookup operator name in @table@
-opName op table = fromJust (lookup op table)
-    
 -- | Names of unary operators    
-unOpTokens :: [(UnOp, String)]
-unOpTokens = [(Neg, "-"),
-              (Not, "!")]
+unOpTokens :: Map UnOp String
+unOpTokens = fromList [(Neg, "-")
+                      ,(Not, "!")]
+              
+-- | Pretty-printed unary operator
+instance Pretty UnOp where 
+  pretty op = text (unOpTokens ! op)
              
 -- | Names of binary operators             
-binOpTokens :: [(BinOp, String)]
-binOpTokens = [(Plus,    "+"),
-               (Minus,   "-"),
-               (Times,   "*"),
-               (Div,     "div"),
-               (Mod,     "mod"),
-               (And,     "&&"),
-               (Or,      "||"),
-               (Implies, "==>"),
-               (Explies, "<=="),
-               (Equiv,   "<==>"),
-               (Eq,      "=="),
-               (Neq,     "!="),
-               (Lc,      "<:"),
-               (Ls,      "<"),
-               (Leq,     "<="),
-               (Gt,      ">"),
-               (Geq,     ">=")]
+binOpTokens :: Map BinOp String
+binOpTokens = fromList [(Plus,    "+")
+                       ,(Minus,   "-")
+                       ,(Times,   "*")
+                       ,(Div,     "div")
+                       ,(Mod,     "mod")
+                       ,(And,     "&&")
+                       ,(Or,      "||")
+                       ,(Implies, "==>")
+                       ,(Explies, "<==")
+                       ,(Equiv,   "<==>")
+                       ,(Eq,      "==")
+                       ,(Neq,     "!=")
+                       ,(Lc,      "<:")
+                       ,(Ls,      "<")
+                       ,(Leq,     "<=")
+                       ,(Gt,      ">")
+                       ,(Geq,     ">=")]
+               
+-- | Pretty-printed binary operator
+instance Pretty BinOp where 
+  pretty op = text (binOpTokens ! op)
     
 -- | Names of quantifiers    
-qOpTokens :: [(QOp, String)]
-qOpTokens = [ (Forall, "forall"),
-              (Exists, "exists"),
-              (Lambda, "lambda") ]         
+qOpTokens :: Map QOp String
+qOpTokens = fromList [(Forall, "forall")
+                     ,(Exists, "exists")
+                     ,(Lambda, "lambda")]
+
+-- | Pretty-printed quantifier
+instance Pretty QOp where 
+  pretty op = text (qOpTokens ! op)
          
 -- | Other operators         
 otherOps :: [String]

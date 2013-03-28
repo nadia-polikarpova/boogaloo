@@ -38,8 +38,7 @@ import Language.Boogie.Generator
 import Language.Boogie.Intervals
 import Language.Boogie.Position
 import Language.Boogie.Tokens (nonIdChar)
-import Language.Boogie.PrettyPrinter hiding ((<$>))
-import qualified Language.Boogie.PrettyPrinter as PP
+import Language.Boogie.Pretty
 import Language.Boogie.TypeChecker
 import Language.Boogie.NormalForm
 import Language.Boogie.BasicBlocks
@@ -164,13 +163,13 @@ restoreOld callerMem = do
   envMemory.memModified %= ((callerMem^.memModified) `S.union`)
   
 -- | Execute computation in a local context
-executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> AbstractStore -> s a -> s a
+executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> SymbolicStore -> s a -> s a
 executeLocally localTC formals actuals localConstraints computation = do
   oldEnv <- get
   envTypeContext %= localTC
   envMemory.memLocals .= M.empty
   zipWithM_ (setVar memLocals) formals actuals
-  envConstraints.amLocals .= localConstraints  
+  envConstraints.symLocals .= localConstraints  
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
@@ -179,7 +178,7 @@ executeLocally localTC formals actuals localConstraints computation = do
       mapM_ decRefCountValue (M.elems locals)
       envTypeContext .= oldEnv^.envTypeContext
       envMemory.memLocals .= oldEnv^.envMemory.memLocals
-      envConstraints.amLocals .= oldEnv^.envConstraints.amLocals
+      envConstraints.symLocals .= oldEnv^.envConstraints.symLocals
       
 -- | Exucute computation in a nested context      
 executeNested :: (MonadState (Environment m) s, Finalizer s) => TypeBinding -> [IdType] -> s a -> s a
@@ -202,14 +201,14 @@ executeGlobally computation = do
   oldEnv <- get
   envTypeContext %= globalContext
   envMemory.memLocals .= M.empty
-  envConstraints.amLocals .= M.empty
+  envConstraints.symLocals .= M.empty
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
     unwind oldEnv = do
       envTypeContext .= oldEnv^.envTypeContext
       envMemory.memLocals .= oldEnv^.envMemory.memLocals
-      envConstraints.amLocals .= oldEnv^.envConstraints.amLocals  
+      envConstraints.symLocals .= oldEnv^.envConstraints.symLocals  
                               
 {- Runtime failures -}
 
@@ -268,7 +267,7 @@ runtimeFailureDoc debug err =
   let store = (if debug then id else userStore ((rtfMemory err)^.memHeap)) (M.filterWithKey (\k _ -> isRelevant k) (visibleVariables (rtfMemory err)))
       sDoc = storeDoc store 
   in failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) <+> 
-    (nest 2 $ option (not (isEmpty sDoc)) (text "with") PP.<$> sDoc) PP.<$>
+    (nest 2 $ option (not (isEmpty sDoc)) (text "with") $+$ sDoc) $+$
     vsep (map stackFrameDoc (reverse (rtfTrace err)))
   where
     failureSourceDoc (SpecViolation (SpecClause specType isFree e) lt) = text (clauseName specType isFree) <+> dquotes (pretty e) <+> defPosition specType e <+>
@@ -357,9 +356,9 @@ isFail tc = not (isPass tc || isInvalid tc || isNonexecutable tc)
 testCaseDoc :: Bool -> String -> Integer -> TestCase -> Doc
 testCaseDoc debug header n tc = 
   auxDoc (text header <+> integer n <> text ":") <+> 
-  testCaseSummary debug tc PP.<$>
+  testCaseSummary debug tc $+$
   case tcFailure tc of
-    Just err -> errorDoc (runtimeFailureDoc debug err) PP.<$>
+    Just err -> errorDoc (runtimeFailureDoc debug err) $+$
       option debug (linebreak <> finalStateDoc True tc)
     Nothing -> finalStateDoc debug tc  
 
@@ -412,10 +411,10 @@ totalCount s = sPassCount s + sFailCount s + sInvalidCount s + sNonExecutableCou
 -- | Pretty-printed test session summary
 instance Pretty Summary where 
   pretty summary =
-    text "Test cases:" <+> int (totalCount summary) PP.<$>
-    text "Passed:" <+> int (sPassCount summary) PP.<$>
-    text "Invalid:" <+> int (sInvalidCount summary) PP.<$>
-    text "Non executable:" <+> int (sNonExecutableCount summary) PP.<$>
+    text "Test cases:" <+> int (totalCount summary) $+$
+    text "Passed:" <+> int (sPassCount summary) $+$
+    text "Invalid:" <+> int (sInvalidCount summary) $+$
+    text "Non executable:" <+> int (sNonExecutableCount summary) $+$
     text "Failed:" <+> int (sFailCount summary) <+> parens (int (length (sUniqueFailures summary)) <+> text "unique")
 
 -- | Summary of a set of test cases   
@@ -469,7 +468,7 @@ generateValueLike (BoolValue _) = generateValue BoolType noPos
 generateValueLike (IntValue _) = generateValue IntType noPos
 generateValueLike (CustomValue t _) = generateValue (IdType t []) noPos
 generateValueLike (Reference _) = allocate $ MapValue emptyMap
-generateValueLike (MapValue _) = internalError "Attempt to generateValueLike a map value directly"
+generateValueLike (MapValue _) = internalError $ text "Attempt to generateValueLike a map value directly"
         
 -- | 'incRefCountValue' @val@ : if @val@ is a reference, increase its count
 incRefCountValue val = case val of
@@ -561,7 +560,7 @@ collectGarbage = do
       Source _ -> return ()
       Derived base _ -> envMemory.memHeap %= decRefCount base
     mapM_ decRefCountValue (M.elems $ stored repr)
-    envConstraints.amHeap %= M.delete r
+    envConstraints.symHeap %= M.delete r
     collectGarbage)
 
 {- Expressions -}
@@ -655,7 +654,7 @@ evalVar name pos = do
         executeGlobally $ evalVarWith t memGlobals (not inOld && S.notMember name modified)
       Nothing -> case M.lookup name (ctxConstants tc) of
         Just t -> executeGlobally $ evalVarWith t memConstants False
-        Nothing -> (internalError . show) (text "Encountered unknown identifier during execution:" <+> text name) 
+        Nothing -> internalError $ text "Encountered unknown identifier during execution:" <+> text name
   where  
     evalVarWith :: (Monad m, Functor m) => Type -> StoreLens -> Bool -> Execution m Value
     evalVarWith t lens initOld = do
@@ -754,7 +753,7 @@ evalExists tv vars e pos = let Quantified Exists tv' vars' e' = node $ normalize
 evalExists' :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> Execution m Value    
 evalExists' tv vars e = do
   when (not (null tv)) $ throwRuntimeFailure (UnsupportedConstruct $ text "quantification over types") (position e)
-  localConstraints <- use $ envConstraints.amLocals
+  localConstraints <- use $ envConstraints.symLocals
   BoolValue <$> executeNested M.empty vars evalWithDomains
   where
     evalWithDomains = do
@@ -890,6 +889,11 @@ checkPreconditions sig def callPos = mapM_ (exec . attachPos callPos . Predicate
 checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predicate . subst sig) (psigEnsures sig)
   where 
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
+    
+{- Constraints and symbolic execution -}
+
+symbolicEval :: (Monad m, Functor m) => FDef -> Execution m FDef
+symbolicEval = undefined
         
 -- | 'wellDefined' @val@ : throw an exception if @val@ is under construction
 wellDefined (CustomValue t n) | t == ucTypeName = throwInternalException $ UnderConstruction n
@@ -951,7 +955,7 @@ checkMapDefinitions r t args actuals pos = do
   n <- gets $ lookupCustomCount ucTypeName
   setMapValue r actuals $ CustomValue ucTypeName n  
   modify $ setCustomCount ucTypeName (n + 1)  
-  defs <- fst <$> gets (lookupMapConstraints r)
+  defs <- fst <$> gets (lookupValueConstraints r)
   tc <- use envTypeContext
   let argTypes = map (exprType tc) args
   checkDefinitions (typeGuard argTypes) evalLocally n defs pos `finally` cleanup n
@@ -995,16 +999,18 @@ checkNameConstraints name pos = do
     checkConstraint (FDef _ [] [] guard body) = applyConstraint name evalSub guard body pos -- Simple constraint: assume it
     checkConstraint constr = do             -- Forall-constraint: attach to the map value
       Reference r <- evalVar name pos
-      modify $ addMapConstraint r constr
+      symVal <- symbolicEval constr
+      modify $ addValueConstraint r symVal
     attachDefinition (FDef _ [] [] _ _) = return ()  -- Simple definition: ignore
     attachDefinition def = do                     -- Forall definition: attach to the map value
       Reference r <- evalVar name pos
-      modify $ addMapDefinition r def
+      symVal <- symbolicEval def
+      modify $ addValueDefinition r symVal
       
 -- | 'checkMapConstraints' @r t args actuals pos@ : assume all constraints for the value at index @actuals@ 
 -- in the map of type @t@ referenced by @r@ mentioned at @pos@
 checkMapConstraints r t args actuals pos = do
-  constraints <- snd <$> gets (lookupMapConstraints r)
+  constraints <- snd <$> gets (lookupValueConstraints r)
   tc <- use envTypeContext
   let argTypes = map (exprType tc) args
   let typeGuard tv formalTypes = isJust $ unifier tv formalTypes argTypes
@@ -1063,17 +1069,17 @@ processProcedureBody name pos args rets body = do
 
 processAxiom expr = do
   tc <- use envTypeContext
-  envConstraints.amGlobals %= (`asUnion` extractConstraints tc expr)
+  envConstraints.symGlobals %= (`asUnion` extractConstraints tc expr)
   
 {- Constant and function constraints -}
 
 -- | 'extractConstraints' @tc bExpr@ : extract definitions and constraints from @bExpr@ in type context @tc@
-extractConstraints :: Context -> Expression -> AbstractStore
+extractConstraints :: Context -> Expression -> SymbolicStore
 extractConstraints tc bExpr = extractConstraints' tc [] [] [] (negationNF bExpr)
 
 -- | 'extractConstraints'' @tc tv vars guards body@ : extract definitions and constraints from expression @guards@ ==> @body@
 -- bound type variables @tv@ and bound variables @vars@ in type context @tc@
-extractConstraints' :: Context -> [Id] -> [IdType] -> [Expression] -> Expression -> AbstractStore
+extractConstraints' :: Context -> [Id] -> [IdType] -> [Expression] -> Expression -> SymbolicStore
 extractConstraints' tc tv vars guards body = case (node body) of
   Quantified Forall tv' vars' bExpr -> extractConstraints' tc (tv ++ tv') (vars ++ vars') guards bExpr
   Quantified Exists _ _ _ -> M.empty -- ToDo: treat as atomic
@@ -1375,8 +1381,8 @@ makeEq (Reference r1) (Reference r2) = do
       incRefCountValue newVal
       return $ M.insert key newVal vals
     mergeConstraints s1 s2 newSource = do
-      (defs1, constraints1) <- gets $ lookupMapConstraints s1
-      (defs2, constraints2) <- gets $ lookupMapConstraints s2
-      envConstraints.amHeap %= M.insert newSource (defs1 ++ defs2, constraints1 ++ constraints2)
-makeEq (MapValue _) (MapValue _) = internalError "Attempt to call makeEq on maps directly" 
+      (defs1, constraints1) <- gets $ lookupValueConstraints s1
+      (defs2, constraints2) <- gets $ lookupValueConstraints s2
+      envConstraints.symHeap %= M.insert newSource (defs1 ++ defs2, constraints1 ++ constraints2)
+makeEq (MapValue _) (MapValue _) = internalError $ text "Attempt to call makeEq on maps directly" 
 makeEq _ _ = return ()  

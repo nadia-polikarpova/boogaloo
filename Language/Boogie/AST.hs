@@ -29,15 +29,15 @@ noType = nullaryType "NoType"
 
 -- | Unary operators
 data UnOp = Neg | Not
-  deriving Eq
+  deriving (Eq, Ord)
 
 -- | Binary operators  
 data BinOp = Plus | Minus | Times | Div | Mod | And | Or | Implies | Explies | Equiv | Eq | Neq | Lc | Ls | Leq | Gt | Geq
-  deriving Eq
+  deriving (Eq, Ord)
 
 -- | Quantifiers
 data QOp = Forall | Exists | Lambda
-  deriving Eq
+  deriving (Eq, Ord)
   
 -- | Expression with a source position attached  
 type Expression = Pos BareExpression

@@ -37,14 +37,13 @@ import Language.Boogie.AST
 import Language.Boogie.Util
 import Language.Boogie.ErrorAccum
 import Language.Boogie.Position
-import Language.Boogie.PrettyPrinter hiding ((<$>), empty)
-import qualified Language.Boogie.PrettyPrinter as PP
+import Language.Boogie.Pretty
 import Data.List
 import Data.Maybe
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Trans.Error
-import Control.Applicative
+import Control.Applicative hiding (empty)
 import Control.Monad.State
 import Control.Lens hiding (Context)
 
@@ -213,7 +212,7 @@ instance ErrorList TypeError where
   listMsg s = [TypeError noPos (text s)]
 
 -- | Pretty-printed type error  
-typeErrorDoc (TypeError pos msgDoc) = text "Type error in" <+> text (show pos) PP.<$> msgDoc  
+typeErrorDoc (TypeError pos msgDoc) = text "Type error in" <+> text (show pos) $+$ msgDoc  
   
 -- | Pretty-printed list of type errors
 typeErrorsDoc errs = (vsep . punctuate linebreak . map typeErrorDoc) errs
@@ -765,7 +764,7 @@ checkParentInfo ids t parents = if length parents /= length (nub parents)
       case M.lookup p cconst of
         Nothing -> throwTypeError (text "Not in scope: constant" <+> text p)
         Just t' -> case unifier [] [t] [t'] of
-          Nothing -> typeMismatch (text "type of parent" <+> text p) [t'] (text "constant type") [t] PP.empty
+          Nothing -> typeMismatch (text "type of parent" <+> text p) [t'] (text "constant type") [t] empty
           Just _ -> if p `elem` ids
             then throwTypeError (text "Constant" <+> text p <+> text "is decalred to be its own parent")
             else return ()    
@@ -862,7 +861,7 @@ checkMatch :: Doc -> Type -> Expression -> Typing ()
 checkMatch edoc t e = do
   t' <- locally $ checkExpression e
   case unifier [] [t] [t'] of
-    Nothing -> typeMismatch (text "type of" <+> edoc) [t'] (text "expected type") [t] PP.empty
+    Nothing -> typeMismatch (text "type of" <+> edoc) [t'] (text "expected type") [t] empty
     Just u -> return ()
     
 -- 'checkLefts' @ids n@ : 

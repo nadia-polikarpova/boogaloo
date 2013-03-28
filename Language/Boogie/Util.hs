@@ -28,10 +28,12 @@ module Language.Boogie.Util (
   FSig (..),
   fsigType,
   fsigFromType,
+  sigDoc,
   FDef (..),
   ConstraintSet,
-  AbstractStore,
+  SymbolicStore,
   asUnion,
+  symbolicStoreDoc,
   PSig (..),
   psigParams,
   psigArgTypes,
@@ -62,13 +64,14 @@ module Language.Boogie.Util (
   mapItwType,
   anyM,
   changeState,
-  withLocalState,
-  internalError
+  withLocalState
 ) where
 
 import Language.Boogie.AST
 import Language.Boogie.Position
 import Language.Boogie.Tokens
+import Language.Boogie.Pretty
+import Language.Boogie.PrettyAST
 import Data.Maybe
 import Data.List
 import Data.Map (Map, (!))
@@ -259,7 +262,7 @@ freeSelections' (MapSelection m args) = case node m of
  Var name -> (name, args) : (nub . concat $ map freeSelections args)
  _ -> nub . concat $ map freeSelections (m : args)
 freeSelections' (MapUpdate m args val) =  nub . concat $ map freeSelections (val : m : args)
-freeSelections' (Old e) = internalError "freeSelections should only be applied in single-state context"
+freeSelections' (Old e) = internalError $ text "freeSelections should only be applied in single-state context"
 freeSelections' (IfExpr cond e1 e2) = nub . concat $ [freeSelections cond, freeSelections e1, freeSelections e2]
 freeSelections' (Coercion e _) = freeSelections e
 freeSelections' (UnaryExpression _ e) = freeSelections e
@@ -278,7 +281,7 @@ applications' (Var x) = []
 applications' (Application name args) = (name, args) : (nub . concat $ map applications args)
 applications' (MapSelection m args) = nub . concat $ map applications (m : args)
 applications' (MapUpdate m args val) =  nub . concat $ map applications (val : m : args)
-applications' (Old e) = internalError "applications should only be applied in single-state context"
+applications' (Old e) = internalError $ text "applications should only be applied in single-state context"
 applications' (IfExpr cond e1 e2) = nub . concat $ [applications cond, applications e1, applications e2]
 applications' (Coercion e _) = applications e
 applications' (UnaryExpression _ e) = applications e
@@ -341,6 +344,12 @@ fsigFromType (MapType tv domainTypes rangeType) = FSig "" tv domainTypes rangeTy
 instance Eq FSig where
   s1 == s2 = fsigName s1 == fsigName s2
   
+-- | Pretty-printed function or procedure signature
+sigDoc :: [Type] -> [Type] -> Doc
+sigDoc argTypes retTypes = parens (commaSep (map pretty argTypes)) <+> 
+  text "returns" <+> 
+  parens (commaSep (map pretty retTypes))  
+  
 -- | Function definition
 data FDef = FDef {
     fdefName  :: Id,            -- ^ Entity to which the definition belongs
@@ -349,16 +358,38 @@ data FDef = FDef {
     fdefGuard :: Expression,    -- ^ Condition under which the definition applies
     fdefBody  :: Expression     -- ^ Body 
   }
+  
+-- | 'fdefDoc' @isDef fdef@ : @fdef@ pretty-printed as definition if @isDef@ and as constraint otherwise
+fdefDoc :: Bool -> FDef -> Doc
+fdefDoc isDef (FDef name tv formals guard expr) = 
+  text name <>
+  option (not (null tv)) (angles (commaSep (map text tv))) <+> 
+  option (not (null formals)) (parens (commaSep (map idpretty formals))) <+> 
+  option (node guard /= TT) (brackets (pretty guard)) <+> 
+  (if isDef then text "=" else text ":") <+>
+  pretty expr
+  
+instance Pretty FDef where
+  pretty def = fdefDoc True def  
 
 -- | Constraint set: contains a list of definitions and a list of constraints
 type ConstraintSet = ([FDef], [FDef])
 
--- | Abstract store: maps names to their constraints
-type AbstractStore = Map Id ConstraintSet
+-- | Pretty-printed constraint set  
+constraintSetDoc :: ConstraintSet -> Doc   
+constraintSetDoc cs = vsep (map (fdefDoc True) (fst cs)) $+$ vsep (map (fdefDoc False) (snd cs))
 
--- | Union of abstract stores (values at the same key are concatenated)
-asUnion :: AbstractStore -> AbstractStore -> AbstractStore
+-- | Symbolic store: maps names to their constraints
+type SymbolicStore = Map Id ConstraintSet
+
+-- | Union of symbolic stores (values at the same key are concatenated)
+asUnion :: SymbolicStore -> SymbolicStore -> SymbolicStore
 asUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2
+
+-- | Pretty-printed abstract store
+symbolicStoreDoc :: SymbolicStore -> Doc
+symbolicStoreDoc vars = vsep $ map varDoc (M.toList vars)
+  where varDoc (name, cs) = nest 2 (text name $+$ constraintSetDoc cs)  
  
 -- | Procedure signature 
 data PSig = PSig {
@@ -394,7 +425,7 @@ data PDef = PDef {
     pdefOuts :: [Id],                 -- ^ Out-parameter names (in the same order as 'psigRets' in the corresponding signature)
     pdefParamsRenamed :: Bool,        -- ^ Are any parameter names in this definition different for the procedure signature? (used for optimizing parameter renaming, True is a safe default)
     pdefBody :: BasicBody,            -- ^ Body
-    pdefConstraints :: AbstractStore, -- ^ Constraints on local names
+    pdefConstraints :: SymbolicStore, -- ^ Constraints on local names
     pdefPos :: SourcePos              -- ^ Location of the (first line of the) procedure definition in the source
   }
   
@@ -494,5 +525,3 @@ changeState getter modifier e = do
 -- Execute @e@ in current state modified by @localState@, and then restore current state
 withLocalState :: Monad m => (s -> t) -> StateT t m a -> StateT s m a
 withLocalState localState e = changeState localState (flip const) e
-      
-internalError msg = error $ "Internal interpreter error (consider submitting a bug report):\n" ++ msg      

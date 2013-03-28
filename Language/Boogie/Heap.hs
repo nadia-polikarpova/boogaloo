@@ -17,9 +17,7 @@ module Language.Boogie.Heap (
   heapDoc
 ) where
 
-import Language.Boogie.AST
-import Language.Boogie.PrettyPrinter
-import Language.Boogie.Util
+import Language.Boogie.Pretty
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Data.Set (Set)
@@ -58,7 +56,7 @@ emptyHeap = Heap {
 -- | 'at' @h r@: value of @r@ in heap @h@
 at :: Pretty a => Heap a -> Ref -> a
 at h r = case M.lookup r (h^.hValCounts) of
-  Nothing -> internalError . show $ text "Cannot find reference" <+> refDoc r <+> text "in heap" <$> heapDoc h
+  Nothing -> internalError $ text "Cannot find reference" <+> refDoc r <+> text "in heap" $+$ heapDoc h
   Just (v, c) -> v
   
 -- | Does the heap have any garbage?
@@ -109,8 +107,8 @@ decRefCount r h = let (v, c) = (h^.hValCounts) ! r
 
 -- | Pretty-printed heap
 heapDoc :: Pretty a => Heap a -> Doc
-heapDoc h = (vsep $ map entryDoc (M.toList (h^.hValCounts))) <$>
-  text "Garbage" <+> braces (commaSep (map refDoc (S.toList (h^.hGarbage)))) <$>
+heapDoc h = (vsep $ map entryDoc (M.toList (h^.hValCounts))) $+$
+  text "Garbage" <+> braces (commaSep (map refDoc (S.toList (h^.hGarbage)))) $+$
   text "Free" <+> braces (commaSep (map refDoc (S.toList (h^.hFree))))
   where entryDoc (ref, (val, count)) = refDoc ref <> braces (int count) <+> text "->" <+> pretty val
   
