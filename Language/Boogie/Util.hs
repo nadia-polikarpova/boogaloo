@@ -18,6 +18,7 @@ module Language.Boogie.Util (
   paramSubst,
   freeSelections,
   applications,
+  logicalVars,
   -- * Specs
   preconditions,
   postconditions,
@@ -69,6 +70,7 @@ module Language.Boogie.Util (
 ) where
 
 import Language.Boogie.AST
+import Language.Boogie.Heap (Ref)
 import Language.Boogie.Position
 import Language.Boogie.Tokens
 import Language.Boogie.Pretty
@@ -283,6 +285,23 @@ applications' (UnaryExpression _ e) = applications e
 applications' (BinaryExpression _ e1 e2) = nub . concat $ [applications e1, applications e2]
 applications' (Quantified _ _ _ e) = applications e  
 
+-- | 'logicalVars' @expr@ : all logical variables that occur in @expr@
+logicalVars :: Expression -> [Ref]
+logicalVars expr = logicalVars' $ node expr
+
+logicalVars' (Literal _ (Reference r)) = [r]
+logicalVars' (Literal _ _) = []
+logicalVars' (Var x) = []
+logicalVars' (Application name args) = nub . concat $ map logicalVars args
+logicalVars' (MapSelection m args) = nub . concat $ map logicalVars (m : args)
+logicalVars' (MapUpdate m args val) =  nub . concat $ map logicalVars (val : m : args)
+logicalVars' (Old e) = internalError $ text "logicalVars should only be applied in single-state context"
+logicalVars' (IfExpr cond e1 e2) = nub . concat $ [logicalVars cond, logicalVars e1, logicalVars e2]
+logicalVars' (Coercion e _) = logicalVars e
+logicalVars' (UnaryExpression _ e) = logicalVars e
+logicalVars' (BinaryExpression _ e1 e2) = nub . concat $ [logicalVars e1, logicalVars e2]
+logicalVars' (Quantified _ _ _ e) = logicalVars e  
+
 {- Specs -}
 
 -- | 'preconditions' @specs@ : all precondition clauses in @specs@  
@@ -353,7 +372,7 @@ data FDef = FDef {
     fdefGuard :: Expression,    -- ^ Condition under which the definition applies
     fdefBody  :: Expression     -- ^ Body 
   }
-  
+    
 -- | 'fdefDoc' @isDef fdef@ : @fdef@ pretty-printed as definition if @isDef@ and as constraint otherwise
 fdefDoc :: Bool -> FDef -> Doc
 fdefDoc isDef (FDef name tv formals guard expr) = 

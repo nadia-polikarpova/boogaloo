@@ -551,7 +551,7 @@ allocate v = Reference <$> (state . withHeap . alloc) v
 -- | Remove all unused references from the heap  
 collectGarbage :: (Monad m, Functor m) => Execution m ()  
 collectGarbage = do
-  h <- use (envMemory.memHeap)
+  h <- use $ envMemory.memHeap
   when (hasGarbage h) (do
     r <- state $ withHeap dealloc
     let MapValue repr = h `at` r
@@ -559,9 +559,24 @@ collectGarbage = do
       Source _ -> return ()
       Derived base _ -> envMemory.memHeap %= decRefCount base
     mapM_ decRefCountValue (M.elems $ stored repr)
+    cs <- gets $ lookupValueConstraints r
+    let usedRefs = nub . concatMap logicalVars . concatMap (\c -> [fdefGuard c, fdefBody c]) $ fst cs ++ snd cs 
+    mapM_ (\r -> envMemory.memHeap %= decRefCount r) usedRefs    
     envConstraints.symHeap %= M.delete r
     collectGarbage)
+    
+-- | 'extendValueDefinition' @r def@ : add @def@ to the definiton of the logical variable @r@
+extendValueDefinition r def = do
+  modify $ addValueDefinition r def
+  let usedRefs = nub . concatMap logicalVars $ [fdefGuard def, fdefBody def]
+  mapM_ (\r -> envMemory.memHeap %= incRefCount r) usedRefs    
 
+-- | 'extendValueConstraint' @r c@ : add @c@ to the consraints of the logical variable @r@  
+extendValueConstraint r c = do
+  modify $ addValueConstraint r c
+  let usedRefs = nub . concatMap logicalVars $ [fdefGuard c, fdefBody c]
+  mapM_ (\r -> envMemory.memHeap %= incRefCount r) usedRefs    
+    
 {- Expressions -}
 
 -- | Semantics of unary operators
@@ -1036,12 +1051,12 @@ checkNameConstraints name pos = do
     checkConstraint constr = do             -- Forall-constraint: attach to the map value
       Reference r <- evalVar name pos
       symVal <- toSymbolicValue constr
-      modify $ addValueConstraint r symVal
+      extendValueConstraint r symVal
     attachDefinition (FDef _ [] [] _ _) = return ()  -- Simple definition: ignore
     attachDefinition def = do                     -- Forall definition: attach to the map value
       Reference r <- evalVar name pos
       symVal <- toSymbolicValue def
-      modify $ addValueDefinition r symVal
+      extendValueDefinition r symVal
       
 -- | 'checkMapConstraints' @r t args actuals pos@ : assume all constraints for the value at index @actuals@ 
 -- in the map of type @t@ referenced by @r@ mentioned at @pos@
@@ -1420,6 +1435,7 @@ makeEq (Reference r1) (Reference r2) = do
     mergeConstraints s1 s2 newSource = do
       (defs1, constraints1) <- gets $ lookupValueConstraints s1
       (defs2, constraints2) <- gets $ lookupValueConstraints s2
-      envConstraints.symHeap %= M.insert newSource (defs1 ++ defs2, constraints1 ++ constraints2)
+      mapM_ (extendValueDefinition newSource) (defs1 ++ defs2)
+      mapM_ (extendValueConstraint newSource) (constraints1 ++ constraints2)
 makeEq (MapValue _) (MapValue _) = internalError $ text "Attempt to call makeEq on maps directly" 
 makeEq _ _ = return ()  
