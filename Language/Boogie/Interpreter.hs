@@ -1430,6 +1430,7 @@ makeEq (Reference r1) (Reference r2) = do
           envMemory.memHeap %= decRefCount base
     addMissing vals (key, oldVal) = do
       newVal <- generateValueLike oldVal
+      -- ToDo: checkMapConstraints needed here, but the arg types are missing
       incRefCountValue newVal
       return $ M.insert key newVal vals
     mergeConstraints s1 s2 newSource = do
