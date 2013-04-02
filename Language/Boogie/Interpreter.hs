@@ -706,19 +706,18 @@ evalMapSelection m args pos = do
           let mapType = exprType tc m    
           definedValue <- checkMapDefinitions s mapType args argsV pos
           case definedValue of
-            Just val -> do
-              setMapValue s argsV val
-              checkMapConstraints s mapType args argsV pos
-              forgetMapValue s argsV
-              return val
+            Just val -> cache mapType s argsV val
             Nothing -> do                       -- If not found, choose a value non-deterministically
               mapM_ (rejectMapIndex pos) argsV
               let rangeType = exprType tc (gen $ MapSelection m args)
               chosenValue <- generateValue rangeType pos
-              setMapValue s argsV chosenValue
-              checkMapConstraints s mapType args argsV pos
-              return chosenValue
+              cache mapType s argsV chosenValue
     _ -> return mV -- function without arguments (ToDo: is this how it should be handled?)
+  where
+    cache mapType s argsV val = do              
+      setMapValue s argsV val
+      checkMapConstraints s mapType args argsV pos
+      return val
         
 evalMapUpdate m args new pos = do
   Reference r <- evalSub m
@@ -1097,8 +1096,8 @@ processFunction name args mBody = do
     Nothing -> return ()
     Just body -> do
       modify $ addGlobalDefinition constName (FDef constName (fsigTypeVars sig) formals (conjunction []) body)
-      -- let constExpr = attachPos (position body) $ Var constName -- ToDo: think about this
-      -- modify $ addGlobalConstraint constName (FDef constName (fsigTypeVars sig) formals (conjunction []) (constExpr |=| body))
+      let app = attachPos (position body) $ Application name (map (attachPos (position body) . Var . fst) formals)
+      modify $ addGlobalConstraint constName (FDef constName (fsigTypeVars sig) formals (conjunction []) (app |=| body))
   where    
     formals = over (mapped._1) formalName args
     formalName Nothing = dummyFArg 

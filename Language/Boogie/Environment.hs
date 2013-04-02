@@ -219,9 +219,9 @@ emptySymbolicMemory = SymbolicMemory {
 
 symbolicMemoryDoc :: SymbolicMemory -> Doc
 symbolicMemoryDoc mem = vsep $ 
-  docNonEmpty (mem^.symLocals) (labeledStoreDoc "Symbolic locals") ++
-  docNonEmpty (mem^.symGlobals) (labeledStoreDoc "Symbolic globals") ++
-  docNonEmpty (mem^.symHeap) (\h -> text "Symbolic heap:" <+> align (symbolicHeapDoc h))
+  docNonEmpty (mem^.symLocals) (labeledStoreDoc "SLocals") ++
+  docNonEmpty (mem^.symGlobals) (labeledStoreDoc "SGlobals") ++
+  docNonEmpty (mem^.symHeap) (\h -> text "SHeap:" <+> align (symbolicHeapDoc h))
   where
     labeledStoreDoc label store = (text label <> text ":") <+> align (symbolicStoreDoc store)
     docWhen flag doc = if flag then [doc] else [] 

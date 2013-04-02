@@ -16,8 +16,10 @@
   - Annotate AST with expr types
   
 - Interpreter
+  - Add types to values
+  - Remove defined map values from the output
+  - Should violation of a definitional axiom be considered an error?
   - Constraint extraction:    
-    - Currently function definitions written as bodies are not added as constraints (this e.g. leads to unsoundness in LinkedListTraversal without acyclicity constraints). Checking these constraints is costly (or non-terminating?) in case of resursive function, since their values are not cached.    
     - Do not ignore forall constraints with non-simple arguments
     - Skolemize existentials
     - Move definitions/constraints without guards to the front    
