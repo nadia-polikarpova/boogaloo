@@ -32,6 +32,7 @@ module Language.Boogie.Util (
   sigDoc,
   FDef (..),
   ConstraintSet,
+  definitionalConstraint,
   constraintSetDoc,
   SymbolicStore,
   asUnion,
@@ -56,6 +57,7 @@ module Language.Boogie.Util (
   refIdTypeName,
   ucTypeName,  
   functionConst,
+  functionFromConst,
   -- * Misc
   interval,
   fromRight,
@@ -371,7 +373,7 @@ data FDef = FDef {
     fdefArgs  :: [IdType],      -- ^ Arguments (types may be less general than in the corresponding signature)
     fdefGuard :: Expression,    -- ^ Condition under which the definition applies
     fdefBody  :: Expression     -- ^ Body 
-  }
+  } deriving Eq
     
 -- | 'fdefDoc' @isDef fdef@ : @fdef@ pretty-printed as definition if @isDef@ and as constraint otherwise
 fdefDoc :: Bool -> FDef -> Doc
@@ -388,6 +390,13 @@ instance Pretty FDef where
 
 -- | Constraint set: contains a list of definitions and a list of constraints
 type ConstraintSet = ([FDef], [FDef])
+
+-- | 'definitionalConstraint' @def@ : constraint that function is equal to its definition.
+definitionalConstraint (FDef name tv vars guard body) =
+  let app = attachPos (position body) $ case functionFromConst name of
+                                          Nothing -> Var name
+                                          (Just f) -> Application f (map (attachPos (position body) . Var . fst) vars)
+  in FDef name tv vars guard (app |=| body) 
 
 -- | Pretty-printed constraint set  
 constraintSetDoc :: ConstraintSet -> Doc   
@@ -482,9 +491,17 @@ refIdTypeName = nonIdChar : "RefId"
 -- | Dummy user-defined type used to mark entities whose definitions are currently being evaluated
 ucTypeName = nonIdChar : "UC"
 
+functionFrefix = "function "
+
 -- | 'functionConst' @name@ : name of a map constant that corresponds function @name@
 -- (must be distinct from all global names)
-functionConst name = "function " ++ name
+functionConst name = functionFrefix ++ name
+
+-- | 'functionFromConst' @name@ : reverse of 'functionConst', returns Nothing if @name@ does not have the right form
+functionFromConst name = let (prefix, suffix) = splitAt (length functionFrefix) name
+  in if prefix == functionFrefix
+      then Just suffix
+      else Nothing
   
 {- Misc -}
 

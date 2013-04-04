@@ -1095,9 +1095,9 @@ processFunction name args mBody = do
   case mBody of
     Nothing -> return ()
     Just body -> do
-      modify $ addGlobalDefinition constName (FDef constName (fsigTypeVars sig) formals (conjunction []) body)
-      let app = attachPos (position body) $ Application name (map (attachPos (position body) . Var . fst) formals)
-      modify $ addGlobalConstraint constName (FDef constName (fsigTypeVars sig) formals (conjunction []) (app |=| body))
+      let def = FDef constName (fsigTypeVars sig) formals (conjunction []) body
+      modify $ addGlobalDefinition constName def
+      modify $ addGlobalConstraint constName (definitionalConstraint def)    
   where    
     formals = over (mapped._1) formalName args
     formalName Nothing = dummyFArg 
