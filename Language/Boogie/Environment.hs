@@ -23,7 +23,9 @@ module Language.Boogie.Environment (
   memHeap,
   emptyMemory,
   visibleVariables,
+  userMemory,
   memoryDoc,
+  SymbolicHeap,
   SymbolicMemory,
   symLocals,
   symGlobals,
@@ -134,10 +136,10 @@ emptyStore = M.empty
 storeDoc :: Store -> Doc
 storeDoc vars = vsep $ map varDoc (M.toList vars)
   where varDoc (id, val) = text id <+> text "=" <+> pretty val
-  
--- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@, and all auxiliary values removed
+    
+-- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@
 userStore :: Heap Value -> Store -> Store
-userStore heap store = M.map (deepDeref heap) store
+userStore heap store = M.map (deepDeref heap) store    
 
 {- Memory -}
 
@@ -170,28 +172,46 @@ emptyMemory = Memory {
 visibleVariables :: Memory -> Store
 visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (mem^.memConstants)
 
--- | 'memoryDoc' @debug mem@ : either user or debug representation of @mem@, depending on @debug@
-memoryDoc :: Bool -> [Id] -> [Id] -> Memory -> Doc
-memoryDoc debug inNames outNames mem = vsep $ 
-  docNonEmpty (storeRepr ins) (labeledStoreDoc "Ins") ++
-  docNonEmpty (storeRepr locals) (labeledStoreDoc "Locals") ++
-  docNonEmpty (storeRepr outs) (labeledStoreDoc "Outs") ++
-  docNonEmpty (storeRepr $ (mem^.memGlobals) `M.union` (mem^.memConstants)) (labeledStoreDoc "Globals") ++
-  docNonEmpty (storeRepr $ mem^.memOld) (labeledStoreDoc "Old globals") ++
-  docWhen (debug && not (S.null $ mem^.memModified)) (text "Modified:" <+> commaSep (map text (S.toList $ mem^.memModified))) ++
-  docWhen debug (text "Heap:" <+> align (heapDoc (mem^.memHeap)))
+-- | Clear cached values if maps that have guard-less definitions
+clearDefinedCache :: SymbolicHeap -> Heap Value -> Heap Value
+clearDefinedCache symHeap heap = foldr (\r -> update r (MapValue emptyMap)) heap definedRefs
+  where
+    definedRefs = [r | (r, (defs, _)) <- M.toList symHeap, any (\def -> node (fdefGuard def) == tt) defs]
+
+-- | 'userStore' @symMem mem@ : @mem@ with all reference values completely dereferenced and cache of defined maps removed 
+userMemory :: SymbolicMemory -> Memory -> Memory
+userMemory symMem mem = let heap' = clearDefinedCache (_symHeap symMem) (mem^.memHeap)
+  in over memLocals (userStore heap') $
+     over memGlobals (userStore heap') $
+     over memOld (userStore heap') $
+     over memModified (const S.empty) $
+     over memConstants (userStore heap') $
+     over memHeap (const emptyHeap)
+     mem
+
+-- | 'memoryDoc' @inNames outNames mem@ : pretty-printed @mem@ where
+-- locals in @inNames@ will be printed as input variables
+-- and locals in @outNames@ will be printed as output variables
+memoryDoc :: [Id] -> [Id] -> Memory -> Doc
+memoryDoc inNames outNames mem = vsep $ 
+  docNonEmpty ins (labeledStoreDoc "Ins") ++
+  docNonEmpty locals (labeledStoreDoc "Locals") ++
+  docNonEmpty outs (labeledStoreDoc "Outs") ++
+  docNonEmpty ((mem^.memGlobals) `M.union` (mem^.memConstants)) (labeledStoreDoc "Globals") ++
+  docNonEmpty (mem^.memOld) (labeledStoreDoc "Old globals") ++
+  docWhen (not (S.null $ mem^.memModified)) (text "Modified:" <+> commaSep (map text (S.toList $ mem^.memModified))) ++
+  docWhen (mem^.memHeap /= emptyHeap) (text "Heap:" <+> align (heapDoc (mem^.memHeap)))
   where
     allLocals = mem^.memLocals
     ins = restrictDomain (S.fromList inNames) allLocals
     outs = restrictDomain (S.fromList outNames) allLocals
     locals = removeDomain (S.fromList $ inNames ++ outNames) allLocals
-    storeRepr store = if debug then store else userStore (mem^.memHeap) store
     labeledStoreDoc label store = (text label <> text ":") <+> align (storeDoc store)
     docWhen flag doc = if flag then [doc] else [] 
     docNonEmpty m mDoc = docWhen (not (M.null m)) (mDoc m)
     
 instance Pretty Memory where
-  pretty mem = memoryDoc True [] [] mem
+  pretty mem = memoryDoc [] [] mem
   
 {- Symbolic memory -}
 

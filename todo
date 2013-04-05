@@ -17,8 +17,6 @@
   
 - Interpreter
   - Add types to values
-  - Remove defined map values from the non-debug output
-  - Should violation of a definitional axiom be considered an error?
   - Constraint extraction:    
     - Do not ignore forall constraints with non-simple arguments
     - Skolemize existentials

@@ -351,6 +351,9 @@ isNonexecutable _                     = False
 isFail :: TestCase -> Bool
 isFail tc = not (isPass tc || isInvalid tc || isNonexecutable tc)
 
+-- | Remove empty maps from a store
+removeEmptyMaps = M.filter (/= MapValue emptyMap)      
+
 -- | 'testCaseDoc' @debug header n tc@ : Pretty printed @tc@',
 -- displayed in user or debug format depending on 'debug'
 -- with a header "'header' 'n':".
@@ -364,16 +367,14 @@ testCaseDoc debug header n tc =
     Nothing -> finalStateDoc debug tc  
 
 -- | 'testCaseSummary' @debug tc@ : Summary of @tc@'s inputs and outcome
-testCaseSummary debug tc@(TestCase sig mem _ mErr) = (text (psigName sig) <> 
+testCaseSummary debug tc@(TestCase sig mem symMem mErr) = (text (psigName sig) <> 
   parens (commaSep (map (inDoc . itwId) (psigArgs sig))) <>
-  (option (not $ M.null globalInputsRepr) ((tupled . map globDoc . M.toList) globalInputsRepr))) <+>
+  (option (not $ M.null globalInputs) ((tupled . map globDoc . M.toList) globalInputs))) <+>
   outcomeDoc tc
   where
-    storeRepr store = if debug then store else userStore (mem^.memHeap) store
-    removeEmptyMaps store = M.filter (\val -> val /= MapValue emptyMap) store
-    localsRepr = storeRepr $ mem^.memLocals
-    globalInputsRepr = removeEmptyMaps . storeRepr $ (mem^.memOld) `M.union` (mem^.memConstants)
-    inDoc name = pretty $ localsRepr ! name    
+    mem' = if debug then mem else userMemory symMem mem
+    globalInputs = removeEmptyMaps $ (mem'^.memOld) `M.union` (mem'^.memConstants)
+    inDoc name = pretty $ (mem'^.memLocals) ! name
     globDoc (name, val) = text name <+> text "=" <+> pretty val
     outcomeDoc tc 
       | isPass tc = text "passed"
@@ -384,12 +385,14 @@ testCaseSummary debug tc@(TestCase sig mem _ mErr) = (text (psigName sig) <>
 -- | 'finalStateDoc' @debug tc@ : outputs of @tc@, 
 -- displayed in user or debug format depending on 'debug' 
 finalStateDoc :: Bool -> TestCase -> Doc
-finalStateDoc debug tc@(TestCase sig mem symMem mErr) = memoryDoc debug [] outNames finalMem $+$
+finalStateDoc debug tc@(TestCase sig mem symMem mErr) = memoryDoc [] outNames finalMem $+$
   if debug then pretty symMem else empty
   where
-    finalMem =  over memLocals (restrictDomain (S.fromList outNames)) $ 
-                over memOld (const M.empty) 
-                mem
+    finalMem =  over memLocals (removeEmptyMaps . restrictDomain (S.fromList outNames)) $ 
+                over memOld (const M.empty) $
+                over memGlobals removeEmptyMaps $
+                over memConstants removeEmptyMaps $
+                if debug then mem else userMemory symMem mem
     outNames = map itwId (psigRets sig)
     
 -- | Test cases are considered equivalent from a user perspective
@@ -540,7 +543,7 @@ forgetMapValue r index = do
     Just val -> do
       decRefCountValue val
       envMemory.memHeap %= update r (MapValue (Source (M.delete index baseVals)))
-        
+      
 -- | 'readHeap' @r@: current value of reference @r@ in the heap
 readHeap r = flip at r <$> use (envMemory.memHeap)
     
@@ -575,8 +578,8 @@ extendValueDefinition r def = do
 extendValueConstraint r c = do
   modify $ addValueConstraint r c
   let usedRefs = nub . concatMap logicalVars $ [fdefGuard c, fdefBody c]
-  mapM_ (\r -> envMemory.memHeap %= incRefCount r) usedRefs    
-    
+  mapM_ (\r -> envMemory.memHeap %= incRefCount r) usedRefs
+  
 {- Expressions -}
 
 -- | Semantics of unary operators
