@@ -255,8 +255,7 @@ checkType (MapType tv domains range) = do
     else return ()
   where
     missingTV = filter (not . freeInComponents) tv    
-    freeInComponents v = any (v `isFreeIn`) (range : domains)      
-  
+    freeInComponents v = any (v `isFreeIn`) (range : domains)
 checkType (IdType name args) = do
   tv <- gets ctxTypeVars
   tc <- gets ctxTypeConstructors
@@ -332,7 +331,7 @@ checkExpression :: Expression -> Typing Type
 checkExpression (Pos pos e) = do
   modify $ setPos pos
   case e of
-    Literal t _ -> return t
+    Literal val -> return $ valueType val
     Var id -> checkVar id
     Application id args -> checkApplication id args
     MapSelection m args -> checkMapSelection m args
@@ -445,9 +444,9 @@ checkBinaryExpression op e1 e2
   | op == Lc = do 
     t1 <- locally $ checkExpression e1; 
     t2 <- locally $ checkExpression e2;
-    case unifier [] [t1] [t2] of
-      Nothing -> typeMismatch (text "type of left operand") [t1] (text "type of right operand") [t2] (text "to" <+> pretty op)
-      Just _ -> return BoolType
+    if isJust $ unifier [] [t1] [t2]
+      then return BoolType
+      else typeMismatch (text "type of left operand") [t1] (text "type of right operand") [t2] (text "to" <+> pretty op)      
   where 
     matchOperands t1 t2 ret = do
       locally $ checkMatch (msgLeft op) t1 e1
@@ -761,11 +760,11 @@ checkParentInfo ids t parents = if length parents /= length (nub parents)
       cconst <- gets ctxConstants
       case M.lookup p cconst of
         Nothing -> throwTypeError (text "Not in scope: constant" <+> text p)
-        Just t' -> case unifier [] [t] [t'] of
-          Nothing -> typeMismatch (text "type of parent" <+> text p) [t'] (text "constant type") [t] empty
-          Just _ -> if p `elem` ids
+        Just t' -> if isJust $ unifier [] [t] [t']
+          then if p `elem` ids
             then throwTypeError (text "Constant" <+> text p <+> text "is decalred to be its own parent")
-            else return ()    
+            else return ()            
+          else typeMismatch (text "type of parent" <+> text p) [t'] (text "constant type") [t] empty
 
 -- | Check that axiom is a valid boolean expression    
 checkAxiom :: Expression -> Typing ()
@@ -823,7 +822,7 @@ checkImplementation name tv args rets bodies = do
     Just sig -> do
       argTypes <- gets $ \c -> map (resolve c . snd) args
       retTypes <- gets $ \c -> map (resolve c . snd) rets        
-      case unifier [] [psigType sig] [MapType tv argTypes (IdType tupleTypeName retTypes)] of
+      case unifier [] [psigType sig] [MapType tv argTypes (tupleType retTypes)] of
         Nothing -> throwTypeError (text "Could not match procedure signature" <+> 
           dquotes (sigDoc (psigArgTypes sig) (psigRetTypes sig)) <+>
           text "against implementation signature" <+>
@@ -858,9 +857,9 @@ checkProgram (Program decls) = do
 checkMatch :: Doc -> Type -> Expression -> Typing ()
 checkMatch edoc t e = do
   t' <- locally $ checkExpression e
-  case unifier [] [t] [t'] of
-    Nothing -> typeMismatch (text "type of" <+> edoc) [t'] (text "expected type") [t] empty
-    Just u -> return ()
+  if isJust $ unifier [] [t] [t']
+    then return ()
+    else typeMismatch (text "type of" <+> edoc) [t'] (text "expected type") [t] empty    
     
 -- 'checkLefts' @ids n@ : 
 -- Check that there are @n@ @ids@, all @ids@ are unique and denote mutable variables

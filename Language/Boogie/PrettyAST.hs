@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances, TypeSynonymInstances #-}
+
 -- | Pretty printing of AST nodes
 module Language.Boogie.PrettyAST (
   idpretty
@@ -32,7 +34,7 @@ instance Pretty Type where
 
 -- | Binding power of an expression
 power :: BareExpression -> Int
-power (Literal _ _) = 10
+power (Literal _) = 10
 power (Var _) = 10
 power (Application _ _) = 10
 power (Old _) = 10
@@ -58,7 +60,7 @@ exprDoc e = exprDocAt (-1) e
 exprDocAt :: Int -> Expression -> Doc
 exprDocAt n (Pos _ e) = condParens (n' <= n) (
   case e of
-    Literal _ v -> pretty v
+    Literal v -> pretty v
     Var id -> text id
     Application id args -> text id <> parens (commaSep (map exprDoc args))
     MapSelection m args -> exprDocAt n' m <> brackets (commaSep (map exprDoc args))
@@ -245,9 +247,9 @@ instance Pretty Value where
   pretty (IntValue n) = integer n
   pretty (BoolValue False) = text "false"
   pretty (BoolValue True) = text "true"
-  pretty (MapValue repr) = pretty repr
-  pretty (CustomValue t n) = text t <+> int n
-  pretty (Reference r) = refDoc r  
+  pretty (MapValue _ repr) = pretty repr
+  pretty (CustomValue t n) = pretty t <+> int n
+  pretty (Reference _ r) = refDoc r  
   
 {- Misc -}
 
@@ -263,7 +265,7 @@ idpretty (id, t) = text id <> text ":" <+> pretty t
 
 -- | Pretty-printed name declaration with a where clause
 idTypeWhereDoc (IdTypeWhere id t w) = idpretty (id, t) <+> case w of
-  (Pos _ (Literal BoolType (BoolValue True))) -> empty
+  (Pos _ (Literal (BoolValue True))) -> empty
   e -> text "where" <+> pretty e
 
 instance Pretty a => Pretty (Pos a) where

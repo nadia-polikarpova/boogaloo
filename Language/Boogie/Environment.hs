@@ -72,9 +72,9 @@ import Control.Lens hiding (Context, at)
 
 -- | Source reference and key-value pairs of a reference in a heap
 flattenMap :: Heap Value -> Ref -> (Ref, (Map [Value] Value))
-flattenMap h r = case unValueMap $ h `at` r of
-  Source vals -> (r, vals)
-  Derived base override -> let (s, v) = flattenMap h base
+flattenMap h r = case h `at` r of
+  MapValue _ (Source vals) -> (r, vals)
+  MapValue _ (Derived base override) -> let (s, v) = flattenMap h base
     in (s, override `M.union` v)
     
 -- | First component of 'flattenMap'
@@ -87,26 +87,28 @@ mapValues h r = flattenMap h r ^. _2
 deepDeref :: Heap Value -> Value -> Value
 deepDeref h v = deepDeref' v
   where
-    deepDeref' (Reference r) = let vals = mapValues h r
-      in MapValue . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref') . M.filter (not . isAux)) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
-    deepDeref' (MapValue _) = internalError $ text "Attempt to dereference a map directly"
+    deepDeref' (Reference t r) = let vals = mapValues h r
+      in MapValue t . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref') . M.filter (not . isAux)) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
+    deepDeref' (MapValue _ _) = internalError $ text "Attempt to dereference a map directly"
     deepDeref' v = v
-    isAux (CustomValue id _) | id == refIdTypeName = True
+    isAux (CustomValue t _) | t == refIdType = True
     isAux _ = False
 
 -- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
 objectEq :: Heap Value -> Value -> Value -> Maybe Bool
-objectEq h (Reference r1) (Reference r2) = if r1 == r2
+objectEq h (Reference t1 r1) (Reference t2 r2) = if r1 == r2
   then Just True -- Equal references point to equal maps
-  else let 
-    (s1, vals1) = flattenMap h r1
-    (s2, vals2) = flattenMap h r2
-    in if mustDisagree h vals1 vals2
-      then Just False
-      else if s1 == s2 && mustAgree h vals1 vals2
-        then Just True
-        else Nothing
-objectEq _ (MapValue _) (MapValue _) = internalError $ text "Attempt to compare two maps"
+  else if t1 /= t2 -- Different types can occur in a generic context
+    then Just False
+    else let 
+      (s1, vals1) = flattenMap h r1
+      (s2, vals2) = flattenMap h r2
+      in if mustDisagree h vals1 vals2
+          then Just False
+          else if s1 == s2 && mustAgree h vals1 vals2
+            then Just True
+            else Nothing
+objectEq _ (MapValue _ _) (MapValue _ _) = internalError $ text "Attempt to compare two maps"
 objectEq _ v1 v2 = Just $ v1 == v2
 
 mustEq h v1 v2 = case objectEq h v1 v2 of
@@ -174,7 +176,7 @@ visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (m
 
 -- | Clear cached values if maps that have guard-less definitions
 clearDefinedCache :: SymbolicHeap -> Heap Value -> Heap Value
-clearDefinedCache symHeap heap = foldr (\r -> update r (MapValue emptyMap)) heap definedRefs
+clearDefinedCache symHeap heap = foldr (\r -> update r (MapValue (valueType (heap `at` r)) emptyMap)) heap definedRefs
   where
     definedRefs = [r | (r, (defs, _)) <- M.toList symHeap, any (\def -> node (fdefGuard def) == tt) defs]
 
@@ -260,7 +262,7 @@ data Environment m = Environment
     _envProcedures :: Map Id [PDef],        -- ^ Procedure implementations
     _envTypeContext :: Context,             -- ^ Type context
     _envGenerator :: Generator m,           -- ^ Input generator (used for non-deterministic choices)
-    _envCustomCount :: Map Id Int,          -- ^ For each user-defined type, number of distinct values of this type already generated
+    _envCustomCount :: Map Type Int,        -- ^ For each user-defined type, number of distinct values of this type already generated
     _envQBound :: Maybe Integer,            -- ^ Maximum number of values to try for a quantified variable (unbounded if Nothing)
     _envInOld :: Bool,                      -- ^ Is an old expression currently being evaluated?
     _envLastTerm :: Maybe Expression        -- ^ Last evaluated term (used to determine which part of short-circuit expression determined its result)

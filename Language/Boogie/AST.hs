@@ -1,3 +1,5 @@
+{-# LANGUAGE StandaloneDeriving, FlexibleInstances, TypeSynonymInstances #-}
+
 -- | Abstract syntax tree for Boogie 2
 module Language.Boogie.AST where
 
@@ -5,6 +7,7 @@ import Language.Boogie.Position
 import Language.Boogie.Heap
 import Data.Map (Map)
 import qualified Data.Map as M
+import Data.List
 
 {- Basic -}
 
@@ -14,19 +17,41 @@ newtype Program = Program [Decl]
 
 {- Types -}
 
--- | Type
-data Type = BoolType |        -- ^ bool 
-  IntType |                   -- ^ int
-  MapType [Id] [Type] Type |  -- 'MapType' @type_vars domains range@ : arrow type (used for maps, function and procedure signatures)
-  IdType Id [Type]            -- 'IdType' @name args@: type denoted by an identifier (either type constructor, possibly with arguments, or a type variable)
-  deriving Eq -- syntactic equality
+-- | Types parametrized by the representation of free type variables
+data GenType fv = 
+  BoolType |                                -- ^ bool 
+  IntType |                                 -- ^ int
+  MapType [fv] [GenType fv] (GenType fv) |  -- 'MapType' @type_vars domains range@ : arrow type (used for maps, function and procedure signatures)
+  IdType Id [GenType fv]                    -- 'IdType' @name args@: type denoted by an identifier (either type constructor, possibly with arguments, or a type variable)
+  
+-- | Regular types with free variables represented as identifiers 
+type Type = GenType Id
+  
+-- | Type representation with nameless dummies
+-- (using DeBrujn indexes).
+-- This representation is invariant with respect to alpha-conversion and is used to derive instances of Eq and Ord.
+deBrujn :: GenType Id -> GenType ()
+deBrujn t = deBrujn' [] t
+  where
+    deBrujn' fv (MapType fv' domains range) = let newTv = fv ++ fv'
+      in MapType [] (map (deBrujn' newTv) domains) (deBrujn' newTv range)
+    deBrujn' fv (IdType name []) = case elemIndex name fv of
+      Nothing -> IdType name []
+      Just i -> dbIndex (length fv - i - 1)
+    deBrujn' fv (IdType name args) = IdType name (map (deBrujn' fv) args)
+    deBrujn' _ BoolType = BoolType
+    deBrujn' _ IntType = IntType
+    dbIndex i = IdType ("DB " ++ show i) []
+    
+deriving instance Eq (GenType ())
+deriving instance Ord (GenType ())
 
--- | 'nullaryType' @id@ : type denoted by @id@ without arguments
-nullaryType id = IdType id []
-
--- | Dummy type used during type checking to denote error
-noType = nullaryType "NoType"
-
+instance Eq Type where
+  t1 == t2 = deBrujn t1 == deBrujn t2  
+  
+instance Ord Type where
+  compare t1 t2 = compare (deBrujn t1) (deBrujn t2)    
+    
 {- Expressions -}
 
 -- | Unary operators
@@ -46,7 +71,7 @@ type Expression = Pos BareExpression
   
 -- | Expression
 data BareExpression = 
-  Literal Type Value |
+  Literal Value |
   Var Id |                                        -- ^ 'Var' @name@
   Application Id [Expression] |                   -- ^ 'Application' @f args@
   MapSelection Expression [Expression] |          -- ^ 'MapSelection' @map indexes@
@@ -62,9 +87,9 @@ data BareExpression =
 -- | 'mapSelectExpr' @m args@ : map selection expression with position of @m@ attached
 mapSelectExpr m args = attachPos (position m) (MapSelection m args)  
 
-ff = Literal BoolType (BoolValue False)
-tt = Literal BoolType (BoolValue True)
-numeral n = Literal IntType (IntValue n)
+ff = Literal (BoolValue False)
+tt = Literal (BoolValue True)
+numeral n = Literal (IntValue n)
   
 -- | Wildcard or expression  
 data WildcardExpression = Wildcard | Expr Expression
@@ -168,21 +193,30 @@ stored (Derived _ override) = override
 -- | Run-time value
 data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
-  CustomValue Id Int |           -- ^ Value of a user-defined type
-  MapValue MapRepr |             -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
-  Reference Ref                  -- ^ Logical variable: reference to a symbolic value stored in the heap (currently only maps)
+  CustomValue Type Int |         -- ^ Value of a user-defined type
+  MapValue Type MapRepr |        -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
+  Reference Type Ref             -- ^ Logical variable: reference to a symbolic value stored in the heap (currently only maps)
   deriving (Eq, Ord)
+  
+-- | Type of a value
+valueType :: Value -> Type
+valueType (IntValue _) = IntType
+valueType (BoolValue _) = BoolType
+valueType (CustomValue t _) = t
+valueType (MapValue t _) = t
+valueType (Reference t _) = t
   
 -- | 'valueFromInteger' @t n@: value of type @t@ with an integer code @n@
 valueFromInteger :: Type -> Integer -> Value  
 valueFromInteger IntType n        = IntValue n
-valueFromInteger (IdType id _) n  = CustomValue id (fromInteger n)
+valueFromInteger t@(IdType _ _) n = CustomValue t (fromInteger n)
 valueFromInteger _ _              = error "cannot create a boolean or map value from integer" 
   
 unValueBool (BoolValue b) = b  
 vnot (BoolValue b) = BoolValue (not b)
 
-unValueMap (MapValue repr) = repr  
+isEmptyMap (MapValue _ repr) = repr == emptyMap
+isEmptyMap _ = False  
     
 {- Misc -}
 

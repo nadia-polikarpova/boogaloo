@@ -53,9 +53,11 @@ module Language.Boogie.Util (
   conjunction,
   assume,
   -- * Special names
-  tupleTypeName,
-  refIdTypeName,
-  ucTypeName,  
+  nullaryType,
+  noType,
+  tupleType,
+  refIdType,
+  ucType,  
   functionConst,
   functionFromConst,
   -- * Misc
@@ -195,7 +197,7 @@ forallUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= len
 freeVarsTwoState :: Expression -> ([Id], [Id])
 freeVarsTwoState e = freeVarsTwoState' (node e)
 
-freeVarsTwoState' (Literal _ _) = ([], [])
+freeVarsTwoState' (Literal _) = ([], [])
 freeVarsTwoState' (Var x) = ([x], [])
 freeVarsTwoState' (Application name args) = over both (nub . concat) (unzip (map freeVarsTwoState args))
 freeVarsTwoState' (MapSelection m args) =  over both (nub . concat) (unzip (map freeVarsTwoState (m : args)))
@@ -256,7 +258,7 @@ paramSubst sig def = if not (pdefParamsRenamed def)
 freeSelections :: Expression -> [(Id, [Expression])]
 freeSelections expr = freeSelections' $ node expr
 
-freeSelections' (Literal _ _) = []
+freeSelections' (Literal _) = []
 freeSelections' (Var x) = []
 freeSelections' (Application name args) = nub . concat $ map freeSelections args
 freeSelections' (MapSelection m args) = case node m of 
@@ -275,7 +277,7 @@ freeSelections' (Quantified _ _ boundVars e) = let boundVarNames = map fst bound
 applications :: Expression -> [(Id, [Expression])]
 applications expr = applications' $ node expr
 
-applications' (Literal _ _) = []
+applications' (Literal _) = []
 applications' (Var x) = []
 applications' (Application name args) = (name, args) : (nub . concat $ map applications args)
 applications' (MapSelection m args) = nub . concat $ map applications (m : args)
@@ -291,8 +293,8 @@ applications' (Quantified _ _ _ e) = applications e
 logicalVars :: Expression -> [Ref]
 logicalVars expr = logicalVars' $ node expr
 
-logicalVars' (Literal _ (Reference r)) = [r]
-logicalVars' (Literal _ _) = []
+logicalVars' (Literal (Reference _ r)) = [r]
+logicalVars' (Literal _) = []
 logicalVars' (Var x) = []
 logicalVars' (Application name args) = nub . concat $ map logicalVars args
 logicalVars' (MapSelection m args) = nub . concat $ map logicalVars (m : args)
@@ -433,7 +435,7 @@ psigArgTypes = (map itwType) . psigArgs
 -- | Types of out-parameters of a procedure signature
 psigRetTypes = (map itwType) . psigRets
 -- | Procedure signature as a map type
-psigType sig = MapType (psigTypeVars sig) (psigArgTypes sig) (IdType tupleTypeName $ psigRetTypes sig) 
+psigType sig = MapType (psigTypeVars sig) (psigArgTypes sig) (tupleType $ psigRetTypes sig) 
 -- | Modifies clauses of a procedure signature
 psigModifies = modifies . psigContracts
 -- | Preconditions of a procedure signature
@@ -457,7 +459,7 @@ pdefLocals def = pdefIns def ++ pdefOuts def ++ map itwId (fst (pdefBody def))
 
 {- Code generation -}
 
-num i = gen $ Literal IntType (IntValue i)
+num i = gen $ Literal (IntValue i)
 eneg e = inheritPos (UnaryExpression Neg) e
 enot e = inheritPos (UnaryExpression Not) e
 e1 |+|    e2 = inheritPos2 (BinaryExpression Plus) e1 e2
@@ -482,14 +484,20 @@ conjunction es = foldl1 (|&|) es
 
 {- Special names -}
 
+-- | 'nullaryType' @id@ : type denoted by @id@ without arguments
+nullaryType id = IdType id []
+
+-- | Dummy type used during type checking to denote error
+noType = nullaryType (nonIdChar : "NoType")
+
 -- | Dummy user-defined type used to represent procedure returns as a single type
-tupleTypeName = nonIdChar : "Tuple"
+tupleType = IdType (nonIdChar : "Tuple")
 
 -- | Dummy user-defined type used to differentiate map values
-refIdTypeName = nonIdChar : "RefId"
+refIdType = nullaryType (nonIdChar : "RefId")
 
 -- | Dummy user-defined type used to mark entities whose definitions are currently being evaluated
-ucTypeName = nonIdChar : "UC"
+ucType = nullaryType (nonIdChar : "UC")
 
 functionFrefix = "function "
 

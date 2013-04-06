@@ -352,7 +352,7 @@ isFail :: TestCase -> Bool
 isFail tc = not (isPass tc || isInvalid tc || isNonexecutable tc)
 
 -- | Remove empty maps from a store
-removeEmptyMaps = M.filter (/= MapValue emptyMap)      
+removeEmptyMaps = M.filter $ not . isEmptyMap
 
 -- | 'testCaseDoc' @debug header n tc@ : Pretty printed @tc@',
 -- displayed in user or debug format depending on 'debug'
@@ -455,38 +455,30 @@ generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
 generateValue t pos = case t of
   IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct (text "choice of a value from unknown type" <+> pretty t)) pos
   -- Maps are initializaed lazily, allocate an empty map on the heap:
-  MapType _ _ _ -> allocate $ MapValue emptyMap
+  t@(MapType _ _ _) -> allocate $ MapValue t emptyMap
   BoolType -> BoolValue <$> generate genBool
   IntType -> IntValue <$> generate genInteger
-  IdType id _ -> do
-    n <- gets $ lookupCustomCount id
+  t@(IdType _ _) -> do
+    n <- gets $ lookupCustomCount t
     i <- generate (`genIndex` (n + 1))
-    when (i == n) $ modify (setCustomCount id (n + 1))
-    return $ CustomValue id i
-  
--- | 'generateValueLike' @v@ : choose a value of the same type as @v@
-generateValueLike :: (Monad m, Functor m) => Value -> Execution m Value
-generateValueLike (BoolValue _) = generateValue BoolType noPos
-generateValueLike (IntValue _) = generateValue IntType noPos
-generateValueLike (CustomValue t _) = generateValue (IdType t []) noPos
-generateValueLike (Reference _) = allocate $ MapValue emptyMap
-generateValueLike (MapValue _) = internalError $ text "Attempt to generateValueLike a map value directly"
-        
+    when (i == n) $ modify (setCustomCount t (n + 1))
+    return $ CustomValue t i
+          
 -- | 'incRefCountValue' @val@ : if @val@ is a reference, increase its count
 incRefCountValue val = case val of
-  Reference r -> envMemory.memHeap %= incRefCount r
+  Reference _ r -> envMemory.memHeap %= incRefCount r
   _ -> return ()    
 
 -- | 'decRefCountValue' @val@ : if @val@ is a reference, decrease its count  
 decRefCountValue val = case val of
-  Reference r -> envMemory.memHeap %= decRefCount r
+  Reference _ r -> envMemory.memHeap %= decRefCount r
   _ -> return ()     
     
 -- | 'unsetVar' @getter name@ : if @name@ was associated with a reference in @getter@, decrease its reference count
 unsetVar getter name = do
   store <- use $ envMemory.getter
   case M.lookup name store of    
-    Just (Reference r) -> do          
+    Just (Reference _ r) -> do          
       envMemory.memHeap %= decRefCount r
     _ -> return ()
 
@@ -530,26 +522,26 @@ forgetAnyVar name = do
 -- | 'setMapValue' @r index val@ : map @index@ to @val@ in the map referenced by @r@
 -- (@r@ has to be a source map)
 setMapValue r index val = do
-  MapValue (Source baseVals) <- readHeap r
-  envMemory.memHeap %= update r (MapValue (Source (M.insert index val baseVals)))
+  MapValue t (Source baseVals) <- readHeap r
+  envMemory.memHeap %= update r (MapValue t (Source (M.insert index val baseVals)))
   incRefCountValue val
   
 -- | 'forgetMapValue' @r index@ : forget value at @index@ in the map referenced by @r@  
 -- (@r@ has to be a source map)
 forgetMapValue r index = do
-  MapValue (Source baseVals) <- readHeap r
+  MapValue t (Source baseVals) <- readHeap r
   case M.lookup index baseVals of
     Nothing -> return ()
     Just val -> do
       decRefCountValue val
-      envMemory.memHeap %= update r (MapValue (Source (M.delete index baseVals)))
+      envMemory.memHeap %= update r (MapValue t (Source (M.delete index baseVals)))
       
 -- | 'readHeap' @r@: current value of reference @r@ in the heap
 readHeap r = flip at r <$> use (envMemory.memHeap)
     
 -- | 'allocate' @v@: store @v@ at a fresh location in the heap and return that location
 allocate :: (Monad m, Functor m) => Value -> Execution m Value
-allocate v = Reference <$> (state . withHeap . alloc) v
+allocate v = Reference (valueType v) <$> (state . withHeap . alloc) v
   
 -- | Remove all unused references from the heap  
 collectGarbage :: (Monad m, Functor m) => Execution m ()  
@@ -557,7 +549,7 @@ collectGarbage = do
   h <- use $ envMemory.memHeap
   when (hasGarbage h) (do
     r <- state $ withHeap dealloc
-    let MapValue repr = h `at` r
+    let MapValue _ repr = h `at` r
     case repr of
       Source _ -> return ()
       Derived base _ -> envMemory.memHeap %= decRefCount base
@@ -640,7 +632,7 @@ eval expr = do
 
 -- | Evaluate a sub-epression (this should be called instead of eval from inside expression evaluation)  
 evalSub expr = case node expr of
-  Literal _ v -> return v
+  Literal v -> return v
   Var name -> evalVar name (position expr)
   Application name args -> evalMapSelection (functionExpr name) args (position expr)
   MapSelection m args -> evalMapSelection m args (position expr)
@@ -692,13 +684,13 @@ evalVar name pos = do
               return chosenValue
         
 rejectMapIndex pos idx = case idx of
-  Reference r -> throwRuntimeFailure (UnsupportedConstruct $ text "map as an index") pos
+  Reference _ r -> throwRuntimeFailure (UnsupportedConstruct $ text "map as an index") pos
   _ -> return ()
       
 evalMapSelection m args pos = do
   mV <- evalSub m
   case mV of
-    Reference r -> do
+    Reference mapType r -> do
       argsV <- mapM evalSub args
       h <- use $ envMemory.memHeap
       let (s, vals) = flattenMap h r
@@ -706,7 +698,6 @@ evalMapSelection m args pos = do
         Just val -> wellDefined val
         Nothing -> do                           -- If not found, look for an applicable definition
           tc <- use envTypeContext
-          let mapType = exprType tc m    
           definedValue <- checkMapDefinitions s mapType args argsV pos
           case definedValue of
             Just val -> cache mapType s argsV val
@@ -723,18 +714,18 @@ evalMapSelection m args pos = do
       return val
         
 evalMapUpdate m args new pos = do
-  Reference r <- evalSub m
+  Reference _ r <- evalSub m
   argsV <- mapM evalSub args
   mapM_ (rejectMapIndex pos) argsV
   newV <- evalSub new
-  MapValue repr <- readHeap r
+  MapValue t repr <- readHeap r
   let 
     (newSource, newRepr) = case repr of 
       Source _ -> (r, Derived r (M.singleton argsV newV))
       Derived base override -> (base, Derived base (M.insert argsV newV override))
   mapM_ incRefCountValue (M.elems $ stored newRepr)
   envMemory.memHeap %= incRefCount newSource
-  allocate $ MapValue newRepr
+  allocate $ MapValue t newRepr
   
 evalIf cond e1 e2 = do
   v <- evalSub cond
@@ -917,13 +908,10 @@ toSymbolicValue (FDef name tv formals guard body) = do
 -- | 'symbolicEval' @vars expr@ : evaluate all free variables in @expr@
 -- (all variables except @vars@ are considered free)
 symbolicEval vars (Pos p e) = attachPos p <$> case e of
-  l@(Literal _ _) -> return l
+  l@(Literal _) -> return l
   var@(Var name) -> if name `elem` vars
     then return var
-    else do
-      t <- uses (envTypeContext.to allNames) (flip (!) name)
-      val <- evalVar name p
-      return $ Literal t val 
+    else Literal <$> evalVar name p
   Application name args -> Application name <$> mapM (symbolicEval vars) args
   MapSelection m args -> do
     m' <- (symbolicEval vars) m
@@ -949,7 +937,7 @@ symbolicEval vars (Pos p e) = attachPos p <$> case e of
   Quantified qop tv bv e -> Quantified qop tv bv <$> symbolicEval (vars ++ map fst bv) e
         
 -- | 'wellDefined' @val@ : throw an exception if @val@ is under construction
-wellDefined (CustomValue t n) | t == ucTypeName = throwInternalException $ UnderConstruction n
+wellDefined (CustomValue t n) | t == ucType = throwInternalException $ UnderConstruction n
 wellDefined val = return val
   
 -- | 'checkDefinitions' @typeGuard evalLocally myCode defs pos@ : return the result of the first applicable definition from @defs@;
@@ -978,7 +966,7 @@ checkDefinitions' typeGuard evalLocally myCode mCode (FDef name tv formals guard
     applyDefinition evaluation guard body = if typeGuard tv (map snd formals)
       then do
         applicable <- case guard of
-          Pos _ (Literal BoolType (BoolValue True)) -> return $ BoolValue True -- optimization for trivial guards
+          Pos _ (Literal (BoolValue True)) -> return $ BoolValue True -- optimization for trivial guards
           _ -> evaluation guard `catchError` addFrame
         case applicable of
           BoolValue False -> return Nothing
@@ -990,24 +978,24 @@ checkDefinitions' typeGuard evalLocally myCode mCode (FDef name tv formals guard
 -- Must be executed in the context of the definition.
 checkNameDefinitions :: (Monad m, Functor m) => Id -> Type -> SourcePos -> Execution m (Maybe Value)    
 checkNameDefinitions name t pos = do
-  n <- gets $ lookupCustomCount ucTypeName
-  resetAnyVar name $ CustomValue ucTypeName n  
-  modify $ setCustomCount ucTypeName (n + 1)
+  n <- gets $ lookupCustomCount ucType
+  resetAnyVar name $ CustomValue ucType n  
+  modify $ setCustomCount ucType (n + 1)
   defs <- fst <$> gets (lookupNameConstraints name)
   let simpleDefs = [simpleDef | simpleDef <- defs, null $ fdefArgs simpleDef] -- Ignore forall-definition, they will be attached to the map value by checkNameConstraints
   checkDefinitions (\_ _ -> True) (\_ -> evalSub) n simpleDefs pos `finally` cleanup n
   where  
     cleanup n = do
       forgetAnyVar name
-      modify $ setCustomCount ucTypeName n
+      modify $ setCustomCount ucType n
         
 -- | 'checkMapDefinitions' @r t args actuals pos@ : return a value at index @actuals@ 
 -- in the map of type @t@ referenced by @r@ mentioned at @pos@, if there is an applicable definition 
 checkMapDefinitions :: (Monad m, Functor m) => Ref -> Type -> [Expression] -> [Value] -> SourcePos -> Execution m (Maybe Value)    
 checkMapDefinitions r t args actuals pos = do
-  n <- gets $ lookupCustomCount ucTypeName
-  setMapValue r actuals $ CustomValue ucTypeName n  
-  modify $ setCustomCount ucTypeName (n + 1)  
+  n <- gets $ lookupCustomCount ucType
+  setMapValue r actuals $ CustomValue ucType n  
+  modify $ setCustomCount ucType (n + 1)  
   defs <- fst <$> gets (lookupValueConstraints r)
   tc <- use envTypeContext
   let argTypes = map (exprType tc) args
@@ -1020,14 +1008,14 @@ checkMapDefinitions r t args actuals pos = do
         else executeLocally (enterFunction sig formals args) formals actuals M.empty (evalSub expr)
     cleanup n = do
       forgetMapValue r actuals
-      modify $ setCustomCount ucTypeName n      
+      modify $ setCustomCount ucType n      
 
 -- | 'applyConstraint' @name evaluation guard body pos@ : 
 -- check for an entity @name@ that @guard@ ==> @body@, using @evaluation@ to evaluate both @guard@ and @body@;
 -- (@pos@ is the position of the constraint invocation)      
 applyConstraint name evaluation guard body pos = do
   applicable <- case guard of
-    Pos _ (Literal BoolType (BoolValue True)) -> return $ BoolValue True -- optimization for trivial guards
+    Pos _ (Literal (BoolValue True)) -> return $ BoolValue True -- optimization for trivial guards
     _ -> evaluation guard `catchError` addFrame
   case applicable of
     BoolValue True -> do
@@ -1051,12 +1039,12 @@ checkNameConstraints name pos = do
   where
     checkConstraint (FDef _ [] [] guard body) = applyConstraint name evalSub guard body pos -- Simple constraint: assume it
     checkConstraint constr = do             -- Forall-constraint: attach to the map value
-      Reference r <- evalVar name pos
+      Reference _ r <- evalVar name pos
       symVal <- toSymbolicValue constr
       extendValueConstraint r symVal
     attachDefinition (FDef _ [] [] _ _) = return ()  -- Simple definition: ignore
     attachDefinition def = do                     -- Forall definition: attach to the map value
-      Reference r <- evalVar name pos
+      Reference _ r <- evalVar name pos
       symVal <- toSymbolicValue def
       extendValueDefinition r symVal
       
@@ -1271,7 +1259,7 @@ inferConstraints boolExpr constraints = do
 -- boolExpr has to be in negation-prenex normal form.
 inferInterval :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Id -> Execution m Interval
 inferInterval boolExpr constraints x = (case node boolExpr of
-  Literal BoolType (BoolValue False) -> return bot
+  Literal (BoolValue False) -> return bot
   BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 constraints x) (inferInterval be2 constraints x)
   BinaryExpression Or be1 be2 -> liftM2 join (inferInterval be1 constraints x) (inferInterval be2 constraints x)
   BinaryExpression Eq ae1 ae2 -> do
@@ -1308,7 +1296,7 @@ type LinearForm = (Interval, Interval)
 -- assuming all other quantified variables satisfy constraints.
 toLinearForm :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Id -> Execution m LinearForm
 toLinearForm aExpr constraints x = case node aExpr of
-  Literal IntType (IntValue n) -> return (0, fromInteger n)
+  Literal (IntValue n) -> return (0, fromInteger n)
   Var y -> if x == y
     then return (1, 0)
     else case M.lookup y constraints of
@@ -1349,7 +1337,7 @@ evalEquality v1 v2 = do
     Just b -> return $ BoolValue b
     Nothing -> decideEquality v1 v2  -- No evidence yet if two maps are equal or not, make a non-deterministic choice
   where
-    decideEquality (Reference r1) (Reference r2) = do
+    decideEquality (Reference _ r1) (Reference _ r2) = do
       h <- use $ envMemory.memHeap
       let (s1, vals1) = flattenMap h r1
       let (s2, vals2) = flattenMap h r2
@@ -1379,7 +1367,7 @@ evalEquality v1 v2 = do
     hasMapValues m
       | M.null m  = False
       | otherwise = case M.findMin m of
-        (_, Reference _) -> True
+        (_, Reference _ _) -> True
         _ -> False      
     lookupStored r i template = do
       h <- use $ envMemory.memHeap
@@ -1387,17 +1375,17 @@ evalEquality v1 v2 = do
       case M.lookup i vals of
         Just v -> return v
         Nothing -> do
-          v <- generateValueLike template
+          v <- generateValue (valueType template) noPos
           setMapValue s i v
           return v
     makeSourceNeq s1 s2 = do
       setMapValue s1 [special s1, special s2] (special s1)
       setMapValue s2 [special s1, special s2] (special s2)
-    special r = CustomValue refIdTypeName $ fromIntegral r
+    special r = CustomValue refIdType $ fromIntegral r
           
 -- | Ensure that two compatible values are equal
 makeEq :: (Monad m, Functor m) => Value -> Value -> Execution m ()
-makeEq (Reference r1) (Reference r2) = do
+makeEq (Reference t r1) (Reference _ r2) = do
   h <- use $ envMemory.memHeap
   let (s1, vals1) = flattenMap h r1
   let (s2, vals2) = flattenMap h r2
@@ -1407,7 +1395,7 @@ makeEq (Reference r1) (Reference r2) = do
       mapM_ (uncurry $ setMapValue s1) (M.toList $ vals2 `M.difference` vals1) -- Store values only defined in r2 in the source
       mapM_ (uncurry $ setMapValue s1) (M.toList $ vals1 `M.difference` vals2) -- Store values only defined in r1 in the source
     else do -- Different sources
-      Reference newSource <- allocate . MapValue . Source $ vals1 `M.union` vals2
+      Reference _ newSource <- allocate . MapValue t . Source $ vals1 `M.union` vals2
       mapM_ decRefCountValue (M.elems (vals2 `M.intersection` vals1)) -- Take care of references from vals2 that are no longer used
       derive r1 newSource
       derive r2 newSource
@@ -1415,10 +1403,10 @@ makeEq (Reference r1) (Reference r2) = do
   where
     derive r newSource = do
       deriveBaseOf r newSource M.empty
-      envMemory.memHeap %= update r (MapValue (Derived newSource M.empty))      
+      envMemory.memHeap %= update r (MapValue t (Derived newSource M.empty))      
       envMemory.memHeap %= incRefCount newSource      
     deriveBaseOf r newSource diffR = do
-      MapValue repr <- readHeap r
+      MapValue t repr <- readHeap r
       case repr of
         Source _ -> return ()
         Derived base override -> do
@@ -1427,11 +1415,11 @@ makeEq (Reference r1) (Reference r2) = do
           let vals = mapValues h base
           deriveBaseOf base newSource diffBase
           newVals <- foldM addMissing (vals `M.intersection` diffBase) (M.toList $ diffBase `M.difference` vals) -- Choose arbitrary values for all keys in diffBase that are not defined for base
-          envMemory.memHeap %= update base (MapValue (Derived newSource newVals))
+          envMemory.memHeap %= update base (MapValue t (Derived newSource newVals))
           envMemory.memHeap %= incRefCount newSource
           envMemory.memHeap %= decRefCount base
     addMissing vals (key, oldVal) = do
-      newVal <- generateValueLike oldVal
+      newVal <- generateValue (valueType oldVal) noPos
       -- ToDo: checkMapConstraints needed here, but the arg types are missing
       incRefCountValue newVal
       return $ M.insert key newVal vals
@@ -1440,5 +1428,5 @@ makeEq (Reference r1) (Reference r2) = do
       (defs2, constraints2) <- gets $ lookupValueConstraints s2
       mapM_ (extendValueDefinition newSource) (defs1 ++ defs2)
       mapM_ (extendValueConstraint newSource) (constraints1 ++ constraints2)
-makeEq (MapValue _) (MapValue _) = internalError $ text "Attempt to call makeEq on maps directly" 
+makeEq (MapValue _ _) (MapValue _ _) = internalError $ text "Attempt to call makeEq on maps directly" 
 makeEq _ _ = return ()  
