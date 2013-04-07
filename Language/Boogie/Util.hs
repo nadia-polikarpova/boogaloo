@@ -26,10 +26,9 @@ module Language.Boogie.Util (
   assumePreconditions,
   assumePostconditions,
   -- * Functions and procedures
-  FSig (..),
-  fsigType,
-  fsigFromType,
-  sigDoc,
+  -- FSig (..),
+  -- fsigType,
+  -- fsigFromType,
   FDef (..),
   ConstraintSet,
   definitionalConstraint,
@@ -344,30 +343,7 @@ assumePostconditions sig = sig { psigContracts = map assumePostcondition (psigCo
     assumePostcondition c = c    
 
 {- Functions and procedures -}
-
--- | Function signature
-data FSig = FSig {
-    fsigName :: Id,         -- ^ Function name
-    fsigTypeVars :: [Id],   -- ^ Type variables
-    fsigArgTypes :: [Type], -- ^ Argument types
-    fsigRetType :: Type     -- ^ Return type
-  }
-  
--- | Function signature as a map type  
-fsigType sig = MapType (fsigTypeVars sig) (fsigArgTypes sig) (fsigRetType sig)
-
--- | Map type as a function signature 
-fsigFromType (MapType tv domainTypes rangeType) = FSig "" tv domainTypes rangeType 
-
-instance Eq FSig where
-  s1 == s2 = fsigName s1 == fsigName s2
-  
--- | Pretty-printed function or procedure signature
-sigDoc :: [Type] -> [Type] -> Doc
-sigDoc argTypes retTypes = parens (commaSep (map pretty argTypes)) <+> 
-  text "returns" <+> 
-  parens (commaSep (map pretty retTypes))  
-  
+    
 -- | Function definition
 data FDef = FDef {
     fdefName  :: Id,            -- ^ Entity to which the definition belongs

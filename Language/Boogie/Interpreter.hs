@@ -26,7 +26,6 @@ module Language.Boogie.Interpreter (
   -- * Executing parts of programs
   eval,
   exec,
-  execProcedure,
   preprocess
   ) where
 
@@ -669,7 +668,7 @@ evalVar name pos = do
       case M.lookup name s of         -- Lookup a cached value
         Just val -> wellDefined val
         Nothing -> do                 -- If not found, look for an applicable definition
-          definedValue <- checkNameDefinitions name t pos
+          definedValue <- checkNameDefinitions name pos
           case definedValue of
             Just val -> do
               setVar lens name val
@@ -690,7 +689,7 @@ rejectMapIndex pos idx = case idx of
 evalMapSelection m args pos = do
   mV <- evalSub m
   case mV of
-    Reference mapType r -> do
+    Reference _ r -> do
       argsV <- mapM evalSub args
       h <- use $ envMemory.memHeap
       let (s, vals) = flattenMap h r
@@ -698,19 +697,19 @@ evalMapSelection m args pos = do
         Just val -> wellDefined val
         Nothing -> do                           -- If not found, look for an applicable definition
           tc <- use envTypeContext
-          definedValue <- checkMapDefinitions s mapType args argsV pos
+          definedValue <- checkMapDefinitions s argsV pos
           case definedValue of
-            Just val -> cache mapType s argsV val
+            Just val -> cache s argsV val
             Nothing -> do                       -- If not found, choose a value non-deterministically
               mapM_ (rejectMapIndex pos) argsV
               let rangeType = exprType tc (gen $ MapSelection m args)
               chosenValue <- generateValue rangeType pos
-              cache mapType s argsV chosenValue
+              cache s argsV chosenValue
     _ -> return mV -- function without arguments (ToDo: is this how it should be handled?)
   where
-    cache mapType s argsV val = do              
+    cache s argsV val = do              
       setMapValue s argsV val
-      checkMapConstraints s mapType args argsV pos
+      checkMapConstraints s argsV pos
       return val
         
 evalMapUpdate m args new pos = do
@@ -940,94 +939,104 @@ symbolicEval vars (Pos p e) = attachPos p <$> case e of
 wellDefined (CustomValue t n) | t == ucType = throwInternalException $ UnderConstruction n
 wellDefined val = return val
   
--- | 'checkDefinitions' @typeGuard evalLocally myCode defs pos@ : return the result of the first applicable definition from @defs@;
+-- | 'checkDefinitions' @myCode defs actuals pos@ : return the result of the first definition from @defs@ applicable to @actuals@;
 -- if none are applicable return 'Nothing', 
 -- unless an under construction value different from @myCode@ has been evaluated, in which case rethrow the UnderConstruction exception;
--- use @typeGuard tv formalTypes@ to decide if a definition with type variables @tv@ and types of formals @formalTypes@ is applicable to the current invocation; 
--- use @evalLocally formals@ to evaluate expressions inside a definition with arguments @formals@;
 -- @pos@ is the position of the definition invocation
-checkDefinitions :: (Monad m, Functor m) => ([Id] -> [Type] -> Bool) -> ([Id] -> Expression -> Execution m Value) -> Int -> [FDef] -> SourcePos -> Execution m (Maybe Value)
-checkDefinitions typeGuard evalLocally myCode defs pos = checkDefinitions' typeGuard evalLocally myCode Nothing defs pos 
+checkDefinitions :: (Monad m, Functor m) => Int -> [FDef] -> [Value] -> SourcePos -> Execution m (Maybe Value)
+checkDefinitions myCode defs actuals pos = checkDefinitions' myCode Nothing defs actuals pos
 
-checkDefinitions' _ _ _ Nothing [] _ = return Nothing
-checkDefinitions' _ _ _ (Just code) [] _ = throwInternalException (UnderConstruction code)
-checkDefinitions' typeGuard evalLocally myCode mCode (FDef name tv formals guard body : defs) pos = tryDefinitions `catchError` ucHandler
+checkDefinitions' _ Nothing     [] _ _ = return Nothing
+checkDefinitions' _ (Just code) [] _ _ = throwInternalException (UnderConstruction code)
+checkDefinitions' myCode mCode (def : defs) actuals pos = tryDefinitions `catchError` ucHandler
   where
     tryDefinitions = do      
-      mVal <- applyDefinition (evalLocally (map fst formals)) guard body
+      mVal <- applyDefinition def actuals pos
       case mVal of
         Just val -> return mVal
-        Nothing -> checkDefinitions' typeGuard evalLocally myCode mCode defs pos 
+        Nothing -> checkDefinitions' myCode mCode defs actuals pos 
     ucHandler err = case rtfSource err of
       InternalException (UnderConstruction code) -> if code == myCode
-        then checkDefinitions' typeGuard evalLocally myCode mCode defs pos
-        else checkDefinitions' typeGuard evalLocally myCode (Just code) defs pos
-      _ -> throwError err
-    applyDefinition evaluation guard body = if typeGuard tv (map snd formals)
-      then do
-        applicable <- case guard of
-          Pos _ (Literal (BoolValue True)) -> return $ BoolValue True -- optimization for trivial guards
-          _ -> evaluation guard `catchError` addFrame
-        case applicable of
-          BoolValue False -> return Nothing
-          BoolValue True -> (Just <$> evaluation body) `catchError` addFrame
-      else return Nothing
-    addFrame = addStackFrame (StackFrame pos name)
+        then checkDefinitions' myCode mCode defs actuals pos
+        else checkDefinitions' myCode (Just code) defs actuals pos
+      _ -> throwError err      
+      
+-- | 'applyDefinition' @def actuals pos@ : 
+-- if @guard (actuals)@ return the result of @body (actuals)@,
+-- otherwise return 'Nothing'
+-- (@pos@ is the position of the definition invocation)      
+applyDefinition (FDef name tv formals guard body) actuals pos =
+  if isNothing $ unifier tv formalTypes actualTypes -- Is the definition applicable to these types?
+    then return Nothing
+    else do
+      applicable <- unValueBool <$> locally (evalSub guard) `catchError` addFrame -- Is the definition applicable to these values?
+      if not applicable
+        then return Nothing
+        else (Just <$> locally (evalSub body)) `catchError` addFrame
+  where
+    formalNames = map fst formals
+    formalTypes = map snd formals
+    actualTypes = map valueType actuals
+    locally = if null formals
+        then id
+        else executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty
+    addFrame = addStackFrame (StackFrame pos name)    
     
--- | 'checkNameDefinitions' @name t pos@ : return a value for @name@ of type @t@ mentioned at @pos@, if there is an applicable definition.
+-- | 'checkNameDefinitions' @name pos@ : return a value for @name@ mentioned at @pos@, if there is an applicable definition.
 -- Must be executed in the context of the definition.
-checkNameDefinitions :: (Monad m, Functor m) => Id -> Type -> SourcePos -> Execution m (Maybe Value)    
-checkNameDefinitions name t pos = do
+checkNameDefinitions :: (Monad m, Functor m) => Id -> SourcePos -> Execution m (Maybe Value)    
+checkNameDefinitions name pos = do
   n <- gets $ lookupCustomCount ucType
   resetAnyVar name $ CustomValue ucType n  
   modify $ setCustomCount ucType (n + 1)
   defs <- fst <$> gets (lookupNameConstraints name)
   let simpleDefs = [simpleDef | simpleDef <- defs, null $ fdefArgs simpleDef] -- Ignore forall-definition, they will be attached to the map value by checkNameConstraints
-  checkDefinitions (\_ _ -> True) (\_ -> evalSub) n simpleDefs pos `finally` cleanup n
+  checkDefinitions n simpleDefs [] pos `finally` cleanup n
   where  
     cleanup n = do
       forgetAnyVar name
       modify $ setCustomCount ucType n
         
--- | 'checkMapDefinitions' @r t args actuals pos@ : return a value at index @actuals@ 
--- in the map of type @t@ referenced by @r@ mentioned at @pos@, if there is an applicable definition 
-checkMapDefinitions :: (Monad m, Functor m) => Ref -> Type -> [Expression] -> [Value] -> SourcePos -> Execution m (Maybe Value)    
-checkMapDefinitions r t args actuals pos = do
+-- | 'checkMapDefinitions' @r actuals pos@ : return a value at index @actuals@ 
+-- in the map referenced by @r@ mentioned at @pos@, if there is an applicable definition 
+checkMapDefinitions :: (Monad m, Functor m) => Ref -> [Value] -> SourcePos -> Execution m (Maybe Value)    
+checkMapDefinitions r actuals pos = do
   n <- gets $ lookupCustomCount ucType
   setMapValue r actuals $ CustomValue ucType n  
   modify $ setCustomCount ucType (n + 1)  
   defs <- fst <$> gets (lookupValueConstraints r)
-  tc <- use envTypeContext
-  let argTypes = map (exprType tc) args
-  checkDefinitions (typeGuard argTypes) evalLocally n defs pos `finally` cleanup n
+  checkDefinitions n defs actuals pos `finally` cleanup n
   where  
-    sig = fsigFromType t
-    typeGuard argTypes tv formalTypes = isJust $ unifier tv formalTypes argTypes
-    evalLocally formals expr = if null formals
-        then evalSub expr
-        else executeLocally (enterFunction sig formals args) formals actuals M.empty (evalSub expr)
     cleanup n = do
       forgetMapValue r actuals
       modify $ setCustomCount ucType n      
 
--- | 'applyConstraint' @name evaluation guard body pos@ : 
--- check for an entity @name@ that @guard@ ==> @body@, using @evaluation@ to evaluate both @guard@ and @body@;
+-- | 'applyConstraint' @c actuals pos@ : 
+-- check that @guard (actuals)@ ==> @body (actuals)@,
+-- otherwise throw an axiom violation
 -- (@pos@ is the position of the constraint invocation)      
-applyConstraint name evaluation guard body pos = do
-  applicable <- case guard of
-    Pos _ (Literal (BoolValue True)) -> return $ BoolValue True -- optimization for trivial guards
-    _ -> evaluation guard `catchError` addFrame
-  case applicable of
-    BoolValue True -> do
-      satisfied <- evaluation body `catchError` addFrame
-      case satisfied of 
-        BoolValue True -> return ()
-        BoolValue False -> do
-          lt <- use envLastTerm
-          throwRuntimeFailure (SpecViolation (SpecClause Axiom True body) lt) pos
-    BoolValue False -> return ()
+applyConstraint (FDef name tv formals guard body) actuals pos =
+  if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
+    then return ()
+    else do
+      applicable <- (unValueBool <$> locally (evalSub guard)) `catchError` addFrame -- Is the constraint applicable to these values?
+      if not applicable
+        then return ()
+        else do
+          satisfied <- (unValueBool <$> locally (evalSub body)) `catchError` addFrame -- Is the constraint satisfied?
+          if satisfied
+            then return ()
+            else do
+              lt <- use envLastTerm
+              throwRuntimeFailure (SpecViolation (SpecClause Axiom True body) lt) pos        
   where
-    addFrame = addStackFrame (StackFrame pos name)
+    formalNames = map fst formals
+    formalTypes = map snd formals
+    actualTypes = map valueType actuals
+    locally = if null formals
+        then id
+        else executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty
+    addFrame = addStackFrame (StackFrame pos name)    
     
 -- | 'checkNameConstraints' @name pos@: assume all constraints of entity @name@ mentioned at @pos@;
 -- is @name@ is of map type, attach all its forall-definitions and forall-contraints to the corresponding reference 
@@ -1037,33 +1046,22 @@ checkNameConstraints name pos = do
   mapM_ checkConstraint constraints
   mapM_ attachDefinition defs
   where
-    checkConstraint (FDef _ [] [] guard body) = applyConstraint name evalSub guard body pos -- Simple constraint: assume it
-    checkConstraint constr = do             -- Forall-constraint: attach to the map value
+    checkConstraint c@(FDef _ [] [] _ _) = applyConstraint c [] pos -- Simple constraint: assume it
+    checkConstraint constr = do                                     -- Forall-constraint: attach to the map value
       Reference _ r <- evalVar name pos
       symVal <- toSymbolicValue constr
       extendValueConstraint r symVal
-    attachDefinition (FDef _ [] [] _ _) = return ()  -- Simple definition: ignore
-    attachDefinition def = do                     -- Forall definition: attach to the map value
+    attachDefinition (FDef _ [] [] _ _) = return ()   -- Simple definition: ignore
+    attachDefinition def = do                         -- Forall definition: attach to the map value
       Reference _ r <- evalVar name pos
       symVal <- toSymbolicValue def
       extendValueDefinition r symVal
       
--- | 'checkMapConstraints' @r t args actuals pos@ : assume all constraints for the value at index @actuals@ 
--- in the map of type @t@ referenced by @r@ mentioned at @pos@
-checkMapConstraints r t args actuals pos = do
+-- | 'checkMapConstraints' @r actuals pos@ : assume all constraints for the value at index @actuals@ 
+-- in the map referenced by @r@ mentioned at @pos@
+checkMapConstraints r actuals pos = do
   constraints <- snd <$> gets (lookupValueConstraints r)
-  tc <- use envTypeContext
-  let argTypes = map (exprType tc) args
-  let typeGuard tv formalTypes = isJust $ unifier tv formalTypes argTypes
-  mapM_ (checkConstraint typeGuard) constraints        
-  where
-    checkConstraint typeGuard (FDef name tv formals guard body) = if typeGuard tv (map snd formals)
-      then applyConstraint name (evalLocally (map fst formals)) guard body pos
-      else return ()
-    sig = fsigFromType t
-    evalLocally formals expr = if null formals
-        then evalSub expr
-        else executeLocally (enterFunction sig formals args) formals actuals M.empty (evalSub expr)      
+  mapM_ (\c -> applyConstraint c actuals pos) constraints        
 
 {- Preprocessing -}
 
@@ -1072,25 +1070,25 @@ preprocess :: (Monad m, Functor m) => Program -> SafeExecution m ()
 preprocess (Program decls) = mapM_ processDecl decls
   where
     processDecl decl = case node decl of
-      FunctionDecl name _ args _ mBody -> processFunction name args mBody
+      FunctionDecl name _ args _ mBody -> processFunction name (map fst args) mBody
       ProcedureDecl name _ args rets _ (Just body) -> processProcedureBody name (position decl) (map noWhere args) (map noWhere rets) body
       ImplementationDecl name _ args rets bodies -> mapM_ (processProcedureBody name (position decl) args rets) bodies
       AxiomDecl expr -> processAxiom expr
       VarDecl vars -> mapM_ processAxiom (map itwWhere vars)
       _ -> return ()
   
-processFunction name args mBody = do
-  sig <- funSig name <$> use envTypeContext
-  envTypeContext %= \tc -> tc { ctxConstants = M.insert (functionConst name) (fsigType sig) (ctxConstants tc) }  
+processFunction name argNames mBody = do
+  sig@(MapType tv argTypes retType) <- funSig name <$> use envTypeContext
   let constName = functionConst name  
+  envTypeContext %= \tc -> tc { ctxConstants = M.insert constName sig (ctxConstants tc) }    
   case mBody of
     Nothing -> return ()
     Just body -> do
-      let def = FDef constName (fsigTypeVars sig) formals (conjunction []) body
+      let formals = zip (map formalName argNames) argTypes
+      let def = FDef constName tv formals (conjunction []) body
       modify $ addGlobalDefinition constName def
       modify $ addGlobalConstraint constName (definitionalConstraint def)    
-  where    
-    formals = over (mapped._1) formalName args
+  where        
     formalName Nothing = dummyFArg 
     formalName (Just n) = n
     

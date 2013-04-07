@@ -40,6 +40,7 @@
   - Mark executions in which a definitional axiom is violated as suspicious? (It is usually a sign of ill-defined recursive definition)?
   
   - Evaluation of quantification over types: is it worth to do it with brute force?
+  - Remove division by zero (in Boogie all expressions are total)
   - Refactor executeLocally, execCall and execProcedure (and saveOld/restoreOld?)
   - Refactor evalVar, setAnyVar and so on, so that there is a unified meachism to lookup a name in the type context
   - Lazy initialization of arguments (in execLocally only copy those args that are already initialized, at the end propage the initizlization back with assume)
