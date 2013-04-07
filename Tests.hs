@@ -46,6 +46,7 @@ interpreterTests = TestLabel "Interpreter" $ TestList [
   testCase interpreterSuccess "OldND",
   testCase interpreterSuccess "OldMaps",
   testCase interpreterSuccess "MapEquality",
+  testCase interpreterSuccess "LambdaExec",
   testCase interpreterSuccess "ConstraintContext",
   testCase interpreterSuccess "Constraints"
   ]

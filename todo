@@ -19,10 +19,10 @@
   - Constraint extraction:    
     - Do not ignore forall constraints with non-simple arguments
     - Skolemize existentials
-    - Move definitions/constraints without guards to the front    
     - Infer constraints from axioms that mention a map update (using not-equals guard?)
     - Do not ignore forall constraints for constants
-    - Check if we need to normalize expressions before extracting constraints
+    - Check if we need to normalize expressions before extracting constraints    
+    - Move definitions/constraints without guards to the front    
   - Map representation  
     - Map equality with overrides
       - check that values chosen for old sources conform to constraints (problem that we don't have types when choosing a value)
@@ -36,7 +36,6 @@
     - Add symbolic values not just for maps
     - Make some or all operations (e.g. assume) symbolic
   - Constraint solving  
-  - Lambda expressions
   - Mark executions in which a definitional axiom is violated as suspicious? (It is usually a sign of ill-defined recursive definition)?
   
   - Evaluation of quantification over types: is it worth to do it with brute force?

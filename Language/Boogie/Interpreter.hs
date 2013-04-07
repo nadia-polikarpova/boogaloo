@@ -641,7 +641,7 @@ evalSub expr = case node expr of
   Coercion e t -> evalSub e
   UnaryExpression op e -> unOp op <$> evalSub e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
-  Quantified Lambda _ _ _ -> throwRuntimeFailure (UnsupportedConstruct $ text "lambda expressions") (position expr)
+  Quantified Lambda tv vars e -> evalLambda tv vars e (position expr)
   Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e) (position expr)
   Quantified Exists tv vars e -> evalExists tv vars e (position expr)
   where
@@ -746,6 +746,18 @@ evalBinary op e1 e2 = if op `elem` shortCircuitOps
     left <- evalSub e1
     right <- evalSub e2
     binOp (position e1) op left right
+    
+evalLambda tv vars e pos = do
+  tc <- use envTypeContext
+  let t = exprType tc (attachPos pos $ Quantified Lambda tv vars e)
+  val@(Reference _ r) <- generateValue t pos
+  symVal@(FDef _ _ _ _ body) <- toSymbolicValue $ fdef e
+  extendValueDefinition r symVal
+  let app = attachPos pos $ MapSelection (attachPos pos $ Literal val) (map (attachPos pos . Var . fst) vars)
+  extendValueConstraint r (fdef $ app |=| body)
+  return val
+  where
+    fdef = FDef "lambda" tv vars (conjunction [])
 
 -- | Finite domain      
 type Domain = [Value]      
@@ -773,7 +785,7 @@ evalExists' tv vars e = do
       resetVar memLocals var val
       evalForEach vars doms
     varNames = map fst vars
-      
+          
 {- Statements -}
 
 -- | Execute a basic statement
@@ -1087,7 +1099,9 @@ processFunction name argNames mBody = do
       let formals = zip (map formalName argNames) argTypes
       let def = FDef constName tv formals (conjunction []) body
       modify $ addGlobalDefinition constName def
-      modify $ addGlobalConstraint constName (definitionalConstraint def)    
+      let app = attachPos (position body) $ Application name (map (attachPos (position body) . Var . fst) formals)
+      let c = FDef constName tv formals (conjunction []) (app |=| body)
+      modify $ addGlobalConstraint constName c
   where        
     formalName Nothing = dummyFArg 
     formalName (Just n) = n

@@ -31,7 +31,6 @@ module Language.Boogie.Util (
   -- fsigFromType,
   FDef (..),
   ConstraintSet,
-  definitionalConstraint,
   constraintSetDoc,
   SymbolicStore,
   asUnion,
@@ -368,13 +367,6 @@ instance Pretty FDef where
 
 -- | Constraint set: contains a list of definitions and a list of constraints
 type ConstraintSet = ([FDef], [FDef])
-
--- | 'definitionalConstraint' @def@ : constraint that function is equal to its definition.
-definitionalConstraint (FDef name tv vars guard body) =
-  let app = attachPos (position body) $ case functionFromConst name of
-                                          Nothing -> Var name
-                                          (Just f) -> Application f (map (attachPos (position body) . Var . fst) vars)
-  in FDef name tv vars guard (app |=| body) 
 
 -- | Pretty-printed constraint set  
 constraintSetDoc :: ConstraintSet -> Doc   
