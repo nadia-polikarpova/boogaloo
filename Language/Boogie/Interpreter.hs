@@ -852,7 +852,7 @@ execCallBySig sig lhss args pos = do
       }
     addFrame err = addStackFrame (StackFrame pos (psigName sig)) err
         
--- | Execute program consisting of blocks starting from the block labeled label.
+-- | 'execBlock' @blocks label@: Execute program consisting of @blocks@ starting from the block labeled @label@.
 -- Return the location of the exit point.
 execBlock :: (Monad m, Functor m) => Map Id [Statement] -> Id -> Execution m SourcePos
 execBlock blocks label = let
@@ -862,17 +862,10 @@ execBlock blocks label = let
     mapM exec statements
     case last block of
       Pos pos Return -> return pos
-      Pos _ (Goto lbs) -> tryOneOf blocks lbs
-  
--- | tryOneOf blocks labels: try executing blocks starting with each of labels,
--- until we find one that does not result in an assumption violation      
-tryOneOf :: (Monad m, Functor m) => Map Id [Statement] -> [Id] -> Execution m SourcePos        
-tryOneOf blocks (l : lbs) = execBlock blocks l `catchError` retry
-  where
-    retry err 
-      | failureKind err == Unreachable && not (null lbs) = tryOneOf blocks lbs
-      | otherwise = throwError err
-  
+      Pos _ (Goto lbs) -> do
+        i <- generate (`genIndex` length lbs)
+        execBlock blocks (lbs !! i)
+    
 -- | 'execProcedure' @sig def args lhss@ :
 -- Execute definition @def@ of procedure @sig@ with actual arguments @args@ and call left-hand sides @lhss@
 execProcedure :: (Monad m, Functor m) => PSig -> PDef -> [Expression] -> [Expression] -> SourcePos -> Execution m [Value]

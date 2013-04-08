@@ -31,7 +31,6 @@
     - Fix map inequality (currently unsound when a constraints says maps are equal)
     - Indexing by maps (so far only for functions)
   - Execution
-    - Fix control flow non-determinism (if(*) should generate two executions)
     - Change backtracking model: introduce generateSuchThat, which would not generate assumption violation      
     - Add symbolic values not just for maps
     - Make some or all operations (e.g. assume) symbolic
