@@ -554,7 +554,7 @@ collectGarbage = do
       Derived base _ -> envMemory.memHeap %= decRefCount base
     mapM_ decRefCountValue (M.elems $ stored repr)
     cs <- gets $ lookupValueConstraints r
-    let usedRefs = nub . concatMap logicalVars . concatMap (\c -> [fdefGuard c, fdefBody c]) $ fst cs ++ snd cs 
+    let usedRefs = nub . concatMap logicalVars $ concatMap (\c -> [fdefGuard c, fdefBody c]) (fst cs) ++ snd cs 
     mapM_ (\r -> envMemory.memHeap %= decRefCount r) usedRefs    
     envConstraints.symHeap %= M.delete r
     collectGarbage)
@@ -562,14 +562,13 @@ collectGarbage = do
 -- | 'extendValueDefinition' @r def@ : add @def@ to the definiton of the logical variable @r@
 extendValueDefinition r def = do
   modify $ addValueDefinition r def
-  let usedRefs = nub . concatMap logicalVars $ [fdefGuard def, fdefBody def]
+  let usedRefs = nub $ logicalVars (fdefGuard def) ++ logicalVars (fdefBody def)
   mapM_ (\r -> envMemory.memHeap %= incRefCount r) usedRefs    
 
 -- | 'extendValueConstraint' @r c@ : add @c@ to the consraints of the logical variable @r@  
 extendValueConstraint r c = do
   modify $ addValueConstraint r c
-  let usedRefs = nub . concatMap logicalVars $ [fdefGuard c, fdefBody c]
-  mapM_ (\r -> envMemory.memHeap %= incRefCount r) usedRefs
+  mapM_ (\r -> envMemory.memHeap %= incRefCount r) (logicalVars c)
   
 {- Expressions -}
 
@@ -686,7 +685,7 @@ rejectMapIndex pos idx = case idx of
   Reference _ r -> throwRuntimeFailure (UnsupportedConstruct $ text "map as an index") pos
   _ -> return ()
       
-evalMapSelection m args pos = do
+evalMapSelection m args pos = do  
   mV <- evalSub m
   case mV of
     Reference _ r -> do
@@ -695,7 +694,7 @@ evalMapSelection m args pos = do
       let (s, vals) = flattenMap h r
       case M.lookup argsV vals of    -- Lookup a cached value
         Just val -> wellDefined val
-        Nothing -> do                           -- If not found, look for an applicable definition
+        Nothing -> do                           -- If not found, look for an applicable definition          
           tc <- use envTypeContext
           definedValue <- checkMapDefinitions s argsV pos
           case definedValue of
@@ -749,15 +748,16 @@ evalBinary op e1 e2 = if op `elem` shortCircuitOps
     
 evalLambda tv vars e pos = do
   tc <- use envTypeContext
-  let t = exprType tc (attachPos pos $ Quantified Lambda tv vars e)
+  let t = exprType tc (lambda e)
   val@(Reference _ r) <- generateValue t pos
-  symVal@(FDef _ _ _ _ body) <- toSymbolicValue $ fdef e
-  extendValueDefinition r symVal
+  esym <- symbolicEval e
+  extendValueDefinition r (fdef esym)
   let app = attachPos pos $ MapSelection (attachPos pos $ Literal val) (map (attachPos pos . Var . fst) vars)
-  extendValueConstraint r (fdef $ app |=| body)
+  extendValueConstraint r (lambda $ app |=| esym)
   return val
   where
-    fdef = FDef "lambda" tv vars (conjunction [])
+    lambda = attachPos pos . Quantified Lambda tv vars
+    fdef = FDef tv vars (conjunction [])
 
 -- | Finite domain      
 type Domain = [Value]      
@@ -908,44 +908,44 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
     
 {- Constraints and symbolic execution -}
 
--- | Convert a constraint into a symbolic value by evaluating all its free variables
-toSymbolicValue :: (Monad m, Functor m) => FDef -> Execution m FDef
-toSymbolicValue (FDef name tv formals guard body) = do
-  let vars = map fst formals
-  guard' <- symbolicEval vars guard
-  body' <- symbolicEval vars body
-  return $ FDef name tv formals guard' body'
-
--- | 'symbolicEval' @vars expr@ : evaluate all free variables in @expr@
--- (all variables except @vars@ are considered free)
-symbolicEval vars (Pos p e) = attachPos p <$> case e of
-  l@(Literal _) -> return l
-  var@(Var name) -> if name `elem` vars
-    then return var
-    else Literal <$> evalVar name p
-  Application name args -> Application name <$> mapM (symbolicEval vars) args
-  MapSelection m args -> do
-    m' <- (symbolicEval vars) m
-    args' <- mapM (symbolicEval vars) args
-    return $ MapSelection m' args'
-  MapUpdate m args new -> do
-    m' <- (symbolicEval vars) m
-    args' <- mapM (symbolicEval vars) args
-    new' <- (symbolicEval vars) new
-    return $ MapUpdate m' args' new'   
-  Old e -> node <$> old (symbolicEval vars e)
-  IfExpr cond e1 e2 -> do
-    cond' <- (symbolicEval vars) cond
-    e1' <- (symbolicEval vars) e1
-    e2' <- (symbolicEval vars) e2
-    return $ IfExpr cond' e1' e2'
-  Coercion e t -> node <$> (symbolicEval vars) e
-  UnaryExpression op e -> UnaryExpression op <$> (symbolicEval vars) e
-  BinaryExpression op e1 e2 -> do
-    e1' <- (symbolicEval vars) e1
-    e2' <- (symbolicEval vars) e2
-    return $ BinaryExpression op e1' e2'
-  Quantified qop tv bv e -> Quantified qop tv bv <$> symbolicEval (vars ++ map fst bv) e
+-- | 'symbolicEval' @expr@ : evaluate all free variables in @expr@
+symbolicEval expr = symbolicEval' [] expr
+  where
+    symbolicEval' vars (Pos p e) = attachPos p <$> case e of
+      l@(Literal _) -> return l
+      var@(Var name) -> if name `elem` vars
+        then return var
+        else Literal <$> evalVar name p
+      Application name args -> Application name <$> mapM (symbolicEval' vars) args
+      MapSelection m args -> do
+        m' <- (symbolicEval' vars) m
+        args' <- mapM (symbolicEval' vars) args
+        return $ MapSelection m' args'
+      MapUpdate m args new -> do
+        m' <- (symbolicEval' vars) m
+        args' <- mapM (symbolicEval' vars) args
+        new' <- (symbolicEval' vars) new
+        return $ MapUpdate m' args' new'   
+      Old e -> node <$> old (symbolicEval' vars e)
+      IfExpr cond e1 e2 -> do
+        cond' <- (symbolicEval' vars) cond
+        e1' <- (symbolicEval' vars) e1
+        e2' <- (symbolicEval' vars) e2
+        return $ IfExpr cond' e1' e2'
+      Coercion e t -> node <$> (symbolicEval' vars) e
+      UnaryExpression op e -> UnaryExpression op <$> (symbolicEval' vars) e
+      BinaryExpression op e1 e2 -> do
+        e1' <- (symbolicEval' vars) e1
+        e2' <- (symbolicEval' vars) e2
+        return $ BinaryExpression op e1' e2'
+      Quantified qop tv bv e -> Quantified qop tv bv <$> symbolicEval' (vars ++ map fst bv) e
+      
+-- | Evaluate all free variables in a definiton
+symbolicEvalDef :: (Monad m, Functor m) => FDef -> Execution m FDef
+symbolicEvalDef def@(FDef tv formals guard body) = do
+  (Quantified Lambda _ _ guard') <- node <$> symbolicEval (fdefGuardLambda def)
+  (Quantified Lambda _ _ body') <- node <$> symbolicEval (fdefBodyLambda def)
+  return $ FDef tv formals guard' body'      
         
 -- | 'wellDefined' @val@ : throw an exception if @val@ is under construction
 wellDefined (CustomValue t n) | t == ucType = throwInternalException $ UnderConstruction n
@@ -977,22 +977,21 @@ checkDefinitions' myCode mCode (def : defs) actuals pos = tryDefinitions `catchE
 -- if @guard (actuals)@ return the result of @body (actuals)@,
 -- otherwise return 'Nothing'
 -- (@pos@ is the position of the definition invocation)      
-applyDefinition (FDef name tv formals guard body) actuals pos =
+applyDefinition (FDef tv formals guard body) actuals pos =
   if isNothing $ unifier tv formalTypes actualTypes -- Is the definition applicable to these types?
     then return Nothing
-    else do
-      applicable <- unValueBool <$> locally (evalSub guard) `catchError` addFrame -- Is the definition applicable to these values?
+    else do      
+      applicable <- unValueBool <$> locally (evalSub guard) -- Is the definition applicable to these values?
       if not applicable
         then return Nothing
-        else (Just <$> locally (evalSub body)) `catchError` addFrame
+        else Just <$> locally (evalSub body)
   where
     formalNames = map fst formals
     formalTypes = map snd formals
     actualTypes = map valueType actuals
     locally = if null formals
         then id
-        else executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty
-    addFrame = addStackFrame (StackFrame pos name)    
+        else executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty    
     
 -- | 'checkNameDefinitions' @name pos@ : return a value for @name@ mentioned at @pos@, if there is an applicable definition.
 -- Must be executed in the context of the definition.
@@ -1003,16 +1002,17 @@ checkNameDefinitions name pos = do
   modify $ setCustomCount ucType (n + 1)
   defs <- fst <$> gets (lookupNameConstraints name)
   let simpleDefs = [simpleDef | simpleDef <- defs, null $ fdefArgs simpleDef] -- Ignore forall-definition, they will be attached to the map value by checkNameConstraints
-  checkDefinitions n simpleDefs [] pos `finally` cleanup n
+  checkDefinitions n simpleDefs [] pos `finally` cleanup n `catchError` addFrame
   where  
     cleanup n = do
       forgetAnyVar name
       modify $ setCustomCount ucType n
+    addFrame = addStackFrame (StackFrame pos name)
         
 -- | 'checkMapDefinitions' @r actuals pos@ : return a value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@, if there is an applicable definition 
 checkMapDefinitions :: (Monad m, Functor m) => Ref -> [Value] -> SourcePos -> Execution m (Maybe Value)    
-checkMapDefinitions r actuals pos = do
+checkMapDefinitions r actuals pos = do  
   n <- gets $ lookupCustomCount ucType
   setMapValue r actuals $ CustomValue ucType n  
   modify $ setCustomCount ucType (n + 1)  
@@ -1024,50 +1024,52 @@ checkMapDefinitions r actuals pos = do
       modify $ setCustomCount ucType n      
 
 -- | 'applyConstraint' @c actuals pos@ : 
--- check that @guard (actuals)@ ==> @body (actuals)@,
+-- check that @c (actuals)@,
 -- otherwise throw an axiom violation
 -- (@pos@ is the position of the constraint invocation)      
-applyConstraint (FDef name tv formals guard body) actuals pos =
-  if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
-    then return ()
-    else do
-      applicable <- (unValueBool <$> locally (evalSub guard)) `catchError` addFrame -- Is the constraint applicable to these values?
-      if not applicable
-        then return ()
-        else do
-          satisfied <- (unValueBool <$> locally (evalSub body)) `catchError` addFrame -- Is the constraint satisfied?
-          if satisfied
-            then return ()
-            else do
-              lt <- use envLastTerm
-              throwRuntimeFailure (SpecViolation (SpecClause Axiom True body) lt) pos        
-  where
-    formalNames = map fst formals
-    formalTypes = map snd formals
-    actualTypes = map valueType actuals
-    locally = if null formals
-        then id
-        else executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty
-    addFrame = addStackFrame (StackFrame pos name)    
+applyConstraint c actuals pos = case node c of
+  Quantified Lambda tv formals body ->
+    let 
+      formalNames = map fst formals
+      formalTypes = map snd formals
+      actualTypes = map valueType actuals
+      locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty    
+    in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
+      then return ()
+      else do
+        satisfied <- unValueBool <$> locally (evalSub body)
+        when (not satisfied) violation
+  _ -> do
+        satisfied <- unValueBool <$> evalSub c
+        when (not satisfied) violation
+  where    
+    violation = do
+      lt <- use envLastTerm
+      throwRuntimeFailure (SpecViolation (SpecClause Axiom True c) lt) pos
+  
     
 -- | 'checkNameConstraints' @name pos@: assume all constraints of entity @name@ mentioned at @pos@;
 -- is @name@ is of map type, attach all its forall-definitions and forall-contraints to the corresponding reference 
 -- Must be executed in the context of the constraint.
-checkNameConstraints name pos = do
-  (defs, constraints) <- gets $ lookupNameConstraints name
-  mapM_ checkConstraint constraints
-  mapM_ attachDefinition defs
+checkNameConstraints name pos = (do
+    (defs, constraints) <- gets $ lookupNameConstraints name
+    mapM_ checkConstraint constraints
+    mapM_ attachDefinition defs
+  ) `catchError` addFrame
   where
-    checkConstraint c@(FDef _ [] [] _ _) = applyConstraint c [] pos -- Simple constraint: assume it
-    checkConstraint constr = do                                     -- Forall-constraint: attach to the map value
-      Reference _ r <- evalVar name pos
-      symVal <- toSymbolicValue constr
-      extendValueConstraint r symVal
-    attachDefinition (FDef _ [] [] _ _) = return ()   -- Simple definition: ignore
-    attachDefinition def = do                         -- Forall definition: attach to the map value
-      Reference _ r <- evalVar name pos
-      symVal <- toSymbolicValue def
-      extendValueDefinition r symVal
+    checkConstraint c = if isParametrized c
+      then do                                 -- Parametrized constraint: attach to the map value
+        Reference _ r <- evalVar name pos
+        symVal <- symbolicEval c
+        extendValueConstraint r symVal  
+      else applyConstraint c [] pos           -- Simple constraint: assume it
+    attachDefinition def = if isParametrizedDef def 
+      then do                                 -- Parametrized definition: attach to the map value
+        Reference _ r <- evalVar name pos
+        symVal <- symbolicEvalDef def
+        extendValueDefinition r symVal
+      else return ()                           -- Simple definition: ignore
+    addFrame = addStackFrame (StackFrame pos name)
       
 -- | 'checkMapConstraints' @r actuals pos@ : assume all constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
@@ -1097,10 +1099,10 @@ processFunction name argNames mBody = do
     Nothing -> return ()
     Just body -> do
       let formals = zip (map formalName argNames) argTypes
-      let def = FDef constName tv formals (conjunction []) body
+      let def = FDef tv formals (conjunction []) body
       modify $ addGlobalDefinition constName def
       let app = attachPos (position body) $ Application name (map (attachPos (position body) . Var . fst) formals)
-      let c = FDef constName tv formals (conjunction []) (app |=| body)
+      let c = inheritPos (Quantified Lambda tv formals) (app |=| body)
       modify $ addGlobalConstraint constName c
   where        
     formalName Nothing = dummyFArg 
@@ -1167,26 +1169,23 @@ extractConstraints' tc tv vars guards body = case (node body) of
         allGuards = concat argGuards ++ guards
         extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
       in if length formals == length args && null extraVars -- Only possible if all arguments are simple and there are no extra variables
-        then M.singleton name ([FDef name tv (zip formals argTypes) (conjunction allGuards) rhs], [])
+        then M.singleton name ([FDef tv (zip formals argTypes) (conjunction allGuards) rhs], [])
         else M.empty
     
     extractConstraintsAtomic = case usedVars of -- This is a compromise: quantified expressions constrain names they mention of any arity but zero (ToDo: think about it)
       [] -> foldr asUnion M.empty $ map addSimpleConstraintFor fvBody
       _ -> foldr asUnion M.empty $ map addForallConstraintFor (freeSelections body ++ over (mapped._1) functionConst (applications body))
-    addSimpleConstraintFor name = M.singleton name ([], [FDef name [] [] (conjunction guards) body])
+    addSimpleConstraintFor name = M.singleton name ([], [guardWith guards body])
     addForallConstraintFor (name, args) = let
         argTypes = map (exprType boundTC) args
         (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
         allArgGuards = concat argGuards
         extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
-        guardedBody = if null guards
-          then body
-          else conjunction guards |=>| body
         constraint = if null extraVars
-          then guardedBody
-          else attachPos (position body) $ Quantified Forall tv extraVars guardedBody -- outer guards are inserted into the body, because they might contain extraVars
+          then guardWith guards body
+          else inheritPos (Quantified Forall tv extraVars) (guardWith guards body) -- outer guards are inserted into the body, because they might contain extraVars
       in if length formals == length args -- Only possible if all arguments are simple
-        then M.singleton name ([], [FDef name tv (zip formals argTypes) (conjunction allArgGuards) constraint])
+        then M.singleton name ([], [inheritPos (Quantified Lambda tv (zip formals argTypes)) (guardWith allArgGuards constraint)])
         else M.empty
             
 -- | 'extractArgs' @vars args@: extract simple arguments from @args@;

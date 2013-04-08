@@ -26,11 +26,12 @@ module Language.Boogie.Util (
   assumePreconditions,
   assumePostconditions,
   -- * Functions and procedures
-  -- FSig (..),
-  -- fsigType,
-  -- fsigFromType,
   FDef (..),
+  fdefBodyLambda,
+  fdefGuardLambda,
   ConstraintSet,
+  isParametrized,
+  isParametrizedDef,
   constraintSetDoc,
   SymbolicStore,
   asUnion,
@@ -49,6 +50,7 @@ module Language.Boogie.Util (
   num, eneg, enot,
   (|+|), (|-|), (|*|), (|/|), (|%|), (|=|), (|!=|), (|<|), (|<=|), (|>|), (|>=|), (|&|), (|||), (|=>|), (|<=>|),
   conjunction,
+  guardWith,
   assume,
   -- * Special names
   nullaryType,
@@ -343,34 +345,41 @@ assumePostconditions sig = sig { psigContracts = map assumePostcondition (psigCo
 
 {- Functions and procedures -}
     
--- | Function definition
+-- | Function definition (lambda expression with a guard)
 data FDef = FDef {
-    fdefName  :: Id,            -- ^ Entity to which the definition belongs
     fdefTV    :: [Id],          -- ^ Type variables
     fdefArgs  :: [IdType],      -- ^ Arguments (types may be less general than in the corresponding signature)
     fdefGuard :: Expression,    -- ^ Condition under which the definition applies
     fdefBody  :: Expression     -- ^ Body 
   } deriving Eq
-    
--- | 'fdefDoc' @isDef fdef@ : @fdef@ pretty-printed as definition if @isDef@ and as constraint otherwise
-fdefDoc :: Bool -> FDef -> Doc
-fdefDoc isDef (FDef name tv formals guard expr) = 
-  text name <>
-  option (not (null tv)) (angles (commaSep (map text tv))) <+> 
-  option (not (null formals)) (parens (commaSep (map idpretty formals))) <+> 
-  option (node guard /= tt) (brackets (pretty guard)) <+> 
-  (if isDef then text "=" else text ":") <+>
-  pretty expr
   
+-- | Lambda expression that corresponds to function definition body  
+fdefBodyLambda (FDef tv args _ body) = attachPos (position body) $ Quantified Lambda tv args body  
+-- | Lambda expression that corresponds to function definition guard
+fdefGuardLambda (FDef tv args guard _) = attachPos (position guard) $ Quantified Lambda tv args guard
+    
 instance Pretty FDef where
-  pretty def = fdefDoc True def  
+  pretty (FDef tv formals guard expr) = 
+    text "lambda" <+>
+    option (not (null tv)) (angles (commaSep (map text tv))) <+> 
+    option (not (null formals)) (parens (commaSep (map idpretty formals))) <+> 
+    option (node guard /= tt) (text "|" <+> pretty guard) <+> 
+    text "::" <+> pretty expr
 
 -- | Constraint set: contains a list of definitions and a list of constraints
-type ConstraintSet = ([FDef], [FDef])
+type ConstraintSet = ([FDef], [Expression])
+
+-- | 'isParametrized' @expr@: is @expr@ a parametrized constraint?
+isParametrized (Pos _ (Quantified Lambda _ _ _)) = True
+isParametrized (Pos _ _) = False
+
+-- | 'isParametrizedDef' @def@: is @def@ a parametrized definition?
+isParametrizedDef (FDef[] [] _ _) = False
+isParametrizedDef _ = True
 
 -- | Pretty-printed constraint set  
 constraintSetDoc :: ConstraintSet -> Doc   
-constraintSetDoc cs = vsep (map (fdefDoc True) (fst cs)) $+$ vsep (map (fdefDoc False) (snd cs))
+constraintSetDoc cs = vsep (map pretty (fst cs)) $+$ vsep (map pretty (snd cs))
 
 -- | Symbolic store: maps names to their constraints
 type SymbolicStore = Map Id ConstraintSet
@@ -449,6 +458,9 @@ assume e = attachPos (position e) (Predicate (SpecClause Inline True e))
 
 conjunction [] = gen tt
 conjunction es = foldl1 (|&|) es
+
+guardWith [] e = e
+guardWith gs e = conjunction gs |=>| e
 
 {- Special names -}
 
