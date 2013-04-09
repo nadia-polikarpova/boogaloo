@@ -29,9 +29,14 @@ ex1 = Map.map (show . pretty) (solveConstr constrs)
                      (p0 (BinaryExpression Plus v0 v0))
                      c4)]
 
+-- | Given a set of constraint expressions produce a mapping
+-- of references to their concrete values.
+--
+-- FIXME: This is incomplete, as it does not include function maps yet.
 solveConstr :: [Expression] -> Map Ref Value
 solveConstr constrs = unsafePerformIO (evalZ3 checkConstraints)
     where
+      -- | Produce a the result in the Z3 monad, to be extracted later.
       checkConstraints :: Z3 (Map Ref Value)
       checkConstraints = 
           do (valueMap, funcMap) <- mkValueMap (valueUnion constrs)
@@ -43,14 +48,24 @@ solveConstr constrs = unsafePerformIO (evalZ3 checkConstraints)
                    --    error ("model: " ++ str)
                Nothing -> error "solveConstr.evalZ3: no model"
 
+      -- | From a model and a mapping of values to Z3 AST nodes reconstruct
+      -- a mapping from references to values. This extracts the appropriate
+      -- values from the model.
       reconstruct :: Model -> Map Value AST -> Z3 (Map Ref Value)
       reconstruct model = fmap Map.fromList . reconstruct' . Map.toList
           where
             extract :: Type -> AST -> Z3 Value
             extract IntType ast = IntValue <$> getInt ast
             extract BoolType ast = 
-                getBool ast >>= \ bMb -> case bMb of
-                                           Just b -> return $ BoolValue b
+                do bMb <- getBool ast
+                   case bMb of
+                     Just b -> return $ BoolValue b
+                     Nothing -> error "solveConstr.reconstruct.extract: not bool"
+            extract t _ = 
+                error $ concat [ "solveConstr.reconstruct.extract: can't "
+                               , "extract for type "
+                               , show t
+                               ]
 
             reconstruct' :: [(Value, AST)] -> Z3 [(Ref, Value)]
             reconstruct' [] = return []
@@ -58,14 +73,16 @@ solveConstr constrs = unsafePerformIO (evalZ3 checkConstraints)
                 case v of
                   LogicalVar t ref ->
                       do Just ast' <- eval model ast
-                         v <- extract t ast'
+                         x <- extract t ast'
                          rest' <- reconstruct' rest
-                         return ((ref, v) : rest')
+                         return ((ref, x) : rest')
                   _ -> reconstruct' rest
 
+      -- | Assert all the constraints
       assert' :: Map Value AST -> Map Value FuncDecl -> Z3 ()
       assert' m funcM = mapM_ (evalExpr m funcM >=> assertCnstr) constrs
 
+      -- | Evaluate an expression to a Z3 AST.
       evalExpr :: Map Value AST      -- ^ Map from constants/vars to AST
                -> Map Value FuncDecl -- ^ Map from function ids to function decls
                -> Expression         -- ^ Expression to evaluate
@@ -83,37 +100,38 @@ solveConstr constrs = unsafePerformIO (evalZ3 checkConstraints)
             MapUpdate _ _ _ -> 
                 error "solveConstr.evalExpr: map update not implemented"
             e -> error $ "solveConstr.evalExpr: " ++ show e
-          where go = evalExpr m funcM
+          where
+            go = evalExpr m funcM
 
-      unOp Neg = mkUnaryMinus
-      unOp Not = mkNot
+            unOp :: UnOp -> AST -> Z3 AST
+            unOp Neg = mkUnaryMinus
+            unOp Not = mkNot
 
-      binOp op =
-          case op of
-            Eq -> mkEq
-            Gt -> mkGt
-            Ls -> mkLt
-            Leq -> mkLe
-            Geq -> mkGe
-            Neq -> \ x y -> mkEq x y >>= mkNot
+            binOp :: BinOp -> AST -> AST -> Z3 AST
+            binOp op =
+                case op of
+                  Eq -> mkEq
+                  Gt -> mkGt
+                  Ls -> mkLt
+                  Leq -> mkLe
+                  Geq -> mkGe
+                  Neq -> \ x y -> mkEq x y >>= mkNot
 
-            Plus -> list2 mkAdd
-            Minus -> list2 mkSub
-            Times -> list2 mkMul
-            Div   -> mkDiv
-            Mod   -> mkMod
+                  Plus -> list2 mkAdd
+                  Minus -> list2 mkSub
+                  Times -> list2 mkMul
+                  Div   -> mkDiv
+                  Mod   -> mkMod
 
-            And   -> list2 mkAnd
-            Or    -> list2 mkOr
-            Implies -> mkImplies
-            Equiv -> mkIff
-            Explies -> flip mkImplies
-            Lc -> error "solveConstr.binOp: Lc not implemented"
-          where list2 o x y = o [x, y]
+                  And   -> list2 mkAnd
+                  Or    -> list2 mkOr
+                  Implies -> mkImplies
+                  Equiv -> mkIff
+                  Explies -> flip mkImplies
+                  Lc -> error "solveConstr.binOp: Lc not implemented"
+                where list2 o x y = o [x, y]
 
-      valueUnion :: [Expression] -> Set Value
-      valueUnion = Set.unions . map values
-
+      -- | Get the values from a single expression.
       values :: Expression -> Set Value
       values expr =
           case node expr of
@@ -127,10 +145,16 @@ solveConstr constrs = unsafePerformIO (evalZ3 checkConstraints)
             Quantified _ _ _ e       -> values e
             e -> error $ "solveConstr.values: " ++ show e
 
-      -- Function types are not `Sort`, so this won't work for them.
+      -- | Get the values of a list of expressions
+      valueUnion :: [Expression] -> Set Value
+      valueUnion = Set.unions . map values
+
+      -- | Function types are not `Sort`, so this won't work for them.
       typeToSort :: Type -> Z3 Sort
       typeToSort IntType  = mkIntSort
       typeToSort BoolType = mkBoolSort
+      typeToSort t        = 
+          error $ "typeToSort: cannot construct sort from " ++ show t
 
       -- FIXME: Functions (maps) must be declared differently, so this won't
       -- work due to the use of `typeToSort`.
@@ -149,6 +173,9 @@ solveConstr constrs = unsafePerformIO (evalZ3 checkConstraints)
              sort   <- typeToSort (valueType v)
              Left <$> mkConst symbol sort
 
+      -- | From a set of values construct the mappings from those values
+      -- to the appropriate Z3 constructs: either AST nodes or
+      -- function declarations.
       mkValueMap :: Set Value -> Z3 (Map Value AST, Map Value FuncDecl)
       mkValueMap = Fold.foldrM go (Map.empty, Map.empty)
           where
