@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances, UndecidableInstances #-}
+
 -- | Wrapper around the pretty-printing libarary
 module Language.Boogie.Pretty (
   -- * Interface
