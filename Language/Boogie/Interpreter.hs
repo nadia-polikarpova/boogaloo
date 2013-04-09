@@ -750,10 +750,10 @@ evalLambda tv vars e pos = do
   tc <- use envTypeContext
   let t = exprType tc (lambda e)
   val@(Reference _ r) <- generateValue t pos
-  esym <- symbolicEval e
-  extendValueDefinition r (fdef esym)
+  (Quantified Lambda _ _ symBody) <- node <$> symbolicEval (lambda e)
+  extendValueDefinition r (fdef symBody)
   let app = attachPos pos $ MapSelection (attachPos pos $ Literal val) (map (attachPos pos . Var . fst) vars)
-  extendValueConstraint r (lambda $ app |=| esym)
+  extendValueConstraint r (lambda $ app |=| symBody)
   return val
   where
     lambda = attachPos pos . Quantified Lambda tv vars
