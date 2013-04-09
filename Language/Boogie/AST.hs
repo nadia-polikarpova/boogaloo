@@ -3,6 +3,7 @@
 -- | Abstract syntax tree for Boogie 2
 module Language.Boogie.AST where
 
+import Language.Boogie.Pretty
 import Language.Boogie.Position
 import Language.Boogie.Heap
 import Data.Map (Map)
@@ -195,7 +196,9 @@ data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
   CustomValue Type Int |         -- ^ Value of a user-defined type
   MapValue Type MapRepr |        -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
-  Reference Type Ref             -- ^ Logical variable: reference to a symbolic value stored in the heap (currently only maps)
+  Reference Type Ref  |          -- ^ Map reference
+  LogicalVar Type Ref            -- ^ Logical variable with a type and name
+  
   deriving (Eq, Ord)
   
 -- | Type of a value
@@ -205,7 +208,14 @@ valueType (BoolValue _) = BoolType
 valueType (CustomValue t _) = t
 valueType (MapValue t _) = t
 valueType (Reference t _) = t
-  
+valueType (LogicalVar t _) = t
+
+-- | Name of a value, undefined if the value isn't a reference or
+-- logical variable.
+valueName :: Value -> String
+valueName (Reference _ r) = "map_" ++ show r
+valueName (LogicalVar _ r) = "logic_" ++ show r
+
 -- | 'valueFromInteger' @t n@: value of type @t@ with an integer code @n@
 valueFromInteger :: Type -> Integer -> Value  
 valueFromInteger IntType n        = IntValue n
@@ -256,3 +266,4 @@ type ParentEdge = (Bool, Id)
 -- | Parent information in a constant declaration
 -- (Nothing means no information, while empty list means no parents)
 type ParentInfo = Maybe [ParentEdge]
+

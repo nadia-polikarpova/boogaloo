@@ -271,4 +271,5 @@ idTypeWhereDoc (IdTypeWhere id t w) = idpretty (id, t) <+> case w of
 instance Pretty a => Pretty (Pos a) where
   pretty (Pos _ x) = pretty x
   
-  
+instance Show BareExpression where
+    show = show . pretty
