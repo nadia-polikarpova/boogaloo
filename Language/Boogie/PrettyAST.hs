@@ -273,3 +273,6 @@ instance Pretty a => Pretty (Pos a) where
   
 instance Show BareExpression where
     show = show . pretty
+
+instance Show Type where
+    show = show . pretty
