@@ -177,18 +177,10 @@ data BareDecl =
 {- Values -}
 
 -- | Representation of a map value
-data MapRepr = 
-  Source (Map [Value] Value) |    -- ^ Map that comes directly from a non-deterministic choice, possibly with some key-value pairs defined
-  Derived Ref (Map [Value] Value) -- ^ Map that is derived from another map by redefining values at some keys
-  deriving (Eq, Ord)
+type MapRepr = Map [Value] Value
   
 -- | Representation of an empty map  
-emptyMap = Source M.empty
-
--- | Key-value pairs stored explicitly in a map representation
-stored :: MapRepr -> Map [Value] Value
-stored (Source vals) = vals
-stored (Derived _ override) = override
+emptyMap = M.empty
   
 -- | Run-time value
 data Value = IntValue Integer |  -- ^ Integer value
@@ -214,7 +206,6 @@ valueFromInteger _ _              = error "cannot create a boolean or map value 
   
 unValueBool (BoolValue b) = b  
 vnot (BoolValue b) = BoolValue (not b)
-
 isEmptyMap (MapValue _ repr) = repr == emptyMap
 isEmptyMap _ = False  
     

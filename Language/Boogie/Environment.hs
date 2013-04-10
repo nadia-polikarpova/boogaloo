@@ -2,12 +2,8 @@
 
 -- | Execution state for the interpreter
 module Language.Boogie.Environment ( 
-  flattenMap,
-  mapSource,
-  mapValues,
   deepDeref,
   objectEq,
-  mustAgree,
   mustDisagree,
   Store,
   emptyStore,
@@ -69,60 +65,33 @@ import Control.Lens hiding (Context, at)
   
 {- Map operations -}
 
--- | Source reference and key-value pairs of a reference in a heap
-flattenMap :: Heap Value -> Ref -> (Ref, (Map [Value] Value))
-flattenMap h r = case h `at` r of
-  MapValue _ (Source vals) -> (r, vals)
-  MapValue _ (Derived base override) -> let (s, v) = flattenMap h base
-    in (s, override `M.union` v)
-    
--- | First component of 'flattenMap'
-mapSource h r = flattenMap h r ^. _1
-
--- | Second component of 'flattenMap'
-mapValues h r = flattenMap h r ^. _2
-
 -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
-deepDeref :: Heap Value -> Value -> Value
+deepDeref :: Heap MapRepr -> Value -> Value
 deepDeref h v = deepDeref' v
   where
-    deepDeref' (Reference t r) = let vals = mapValues h r
-      in MapValue t . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref') . M.filter (not . isAux)) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
-    deepDeref' (MapValue _ _) = internalError $ text "Attempt to dereference a map directly"
+    deepDeref' (Reference t r) = MapValue t $ M.map deepDeref' (M.mapKeys (map deepDeref') (h `at` r)) -- Dereference all keys and values
     deepDeref' v = v
-    isAux (CustomValue t _) | t == refIdType = True
-    isAux _ = False
 
 -- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
-objectEq :: Heap Value -> Value -> Value -> Maybe Bool
+objectEq :: Heap MapRepr -> Value -> Value -> Maybe Bool
 objectEq h (Reference t1 r1) (Reference t2 r2) = if r1 == r2
   then Just True -- Equal references point to equal maps
   else if t1 /= t2 -- Different types can occur in a generic context
     then Just False
     else let 
-      (s1, vals1) = flattenMap h r1
-      (s2, vals2) = flattenMap h r2
+      vals1 = h `at` r1
+      vals2 = h `at` r2
       in if mustDisagree h vals1 vals2
           then Just False
-          else if s1 == s2 && mustAgree h vals1 vals2
-            then Just True
-            else Nothing
+          else Nothing
 objectEq _ (MapValue _ _) (MapValue _ _) = internalError $ text "Attempt to compare two maps"
 objectEq _ v1 v2 = Just $ v1 == v2
 
-mustEq h v1 v2 = case objectEq h v1 v2 of
-  Just True -> True
-  _ -> False  
 mustNeq h v1 v2 = case objectEq h v1 v2 of
   Just False -> True
   _ -> False  
-mayEq h v1 v2 = not $ mustNeq h v1 v2
-mayNeq h v1 v2 = not $ mustEq h v1 v2
 
 mustDisagree h vals1 vals2 = M.foldl (||) False $ (M.intersectionWith (mustNeq h) vals1 vals2)
-
-mustAgree h vals1 vals2 = let common = M.intersectionWith (mustEq h) vals1 vals2 in
-      M.size vals1 == M.size common && M.size vals2 == M.size common && M.foldl (&&) True common
   
 {- Store -}  
 
@@ -139,7 +108,7 @@ storeDoc vars = vsep $ map varDoc (M.toList vars)
   where varDoc (id, val) = text id <+> text "=" <+> pretty val
     
 -- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@
-userStore :: Heap Value -> Store -> Store
+userStore :: Heap MapRepr -> Store -> Store
 userStore heap store = M.map (deepDeref heap) store    
 
 {- Memory -}
@@ -151,7 +120,7 @@ data Memory = Memory {
   _memOld :: Store,         -- ^ Old global variable store (in two-state contexts)
   _memModified :: Set Id,   -- ^ Set of global variables, which have been modified since the beginning of the current procedure
   _memConstants :: Store,   -- ^ Constant and function cache
-  _memHeap :: Heap Value    -- ^ Heap
+  _memHeap :: Heap MapRepr  -- ^ Heap
 } deriving Eq
 
 makeLenses ''Memory
@@ -174,8 +143,8 @@ visibleVariables :: Memory -> Store
 visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (mem^.memConstants)
 
 -- | Clear cached values if maps that have guard-less definitions
-clearDefinedCache :: MapConstraints -> Heap Value -> Heap Value
-clearDefinedCache symHeap heap = foldr (\r -> update r (MapValue (valueType (heap `at` r)) emptyMap)) heap definedRefs
+clearDefinedCache :: MapConstraints -> Heap MapRepr -> Heap MapRepr
+clearDefinedCache symHeap heap = foldr (\r -> update r emptyMap) heap definedRefs
   where
     definedRefs = [r | (r, (defs, _)) <- M.toList symHeap, any (\def -> node (defGuard def) == tt) defs]
 

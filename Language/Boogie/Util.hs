@@ -18,7 +18,7 @@ module Language.Boogie.Util (
   paramSubst,
   freeSelections,
   applications,
-  mepRefs,
+  mapRefs,
   -- * Specs
   preconditions,
   postconditions,
@@ -53,13 +53,13 @@ module Language.Boogie.Util (
   num, eneg, enot,
   (|+|), (|-|), (|*|), (|/|), (|%|), (|=|), (|!=|), (|<|), (|<=|), (|>|), (|>=|), (|&|), (|||), (|=>|), (|<=>|),
   conjunction,
+  disjunction,
   guardWith,
   assume,
   -- * Special names
   nullaryType,
   noType,
   tupleType,
-  refIdType,
   ucType,  
   functionConst,
   functionFromConst,
@@ -292,22 +292,22 @@ applications' (UnaryExpression _ e) = applications e
 applications' (BinaryExpression _ e1 e2) = nub . concat $ [applications e1, applications e2]
 applications' (Quantified _ _ _ e) = applications e  
 
--- | 'mepRefs' @expr@ : all map references that occur in @expr@
-mepRefs :: Expression -> [Ref]
-mepRefs expr = mepRefs' $ node expr
+-- | 'mapRefs' @expr@ : all map references that occur in @expr@
+mapRefs :: Expression -> [Ref]
+mapRefs expr = mapRefs' $ node expr
 
-mepRefs' (Literal (Reference _ r)) = [r]
-mepRefs' (Literal _) = []
-mepRefs' (Var x) = []
-mepRefs' (Application name args) = nub . concat $ map mepRefs args
-mepRefs' (MapSelection m args) = nub . concat $ map mepRefs (m : args)
-mepRefs' (MapUpdate m args val) =  nub . concat $ map mepRefs (val : m : args)
-mepRefs' (Old e) = internalError $ text "mepRefs should only be applied in single-state context"
-mepRefs' (IfExpr cond e1 e2) = nub . concat $ [mepRefs cond, mepRefs e1, mepRefs e2]
-mepRefs' (Coercion e _) = mepRefs e
-mepRefs' (UnaryExpression _ e) = mepRefs e
-mepRefs' (BinaryExpression _ e1 e2) = nub . concat $ [mepRefs e1, mepRefs e2]
-mepRefs' (Quantified _ _ _ e) = mepRefs e  
+mapRefs' (Literal (Reference _ r)) = [r]
+mapRefs' (Literal _) = []
+mapRefs' (Var x) = []
+mapRefs' (Application name args) = nub . concat $ map mapRefs args
+mapRefs' (MapSelection m args) = nub . concat $ map mapRefs (m : args)
+mapRefs' (MapUpdate m args val) =  nub . concat $ map mapRefs (val : m : args)
+mapRefs' (Old e) = internalError $ text "mapRefs should only be applied in single-state context"
+mapRefs' (IfExpr cond e1 e2) = nub . concat $ [mapRefs cond, mapRefs e1, mapRefs e2]
+mapRefs' (Coercion e _) = mapRefs e
+mapRefs' (UnaryExpression _ e) = mapRefs e
+mapRefs' (BinaryExpression _ e1 e2) = nub . concat $ [mapRefs e1, mapRefs e2]
+mapRefs' (Quantified _ _ _ e) = mapRefs e  
 
 {- Specs -}
 
@@ -461,16 +461,24 @@ e1 |<|    e2 = inheritPos2 (BinaryExpression Ls) e1 e2
 e1 |<=|   e2 = inheritPos2 (BinaryExpression Leq) e1 e2
 e1 |>|    e2 = inheritPos2 (BinaryExpression Gt) e1 e2
 e1 |>=|   e2 = inheritPos2 (BinaryExpression Geq) e1 e2
-e1 |&|    e2 = inheritPos2 (BinaryExpression And) e1 e2
-e1 |||    e2 = inheritPos2 (BinaryExpression Or) e1 e2
-e1 |=>|   e2 = inheritPos2 (BinaryExpression Implies) e1 e2
+e1 |&|    e2 = if node e1 == tt 
+                  then e2
+                  else if node e2 == tt
+                    then e1
+                    else inheritPos2 (BinaryExpression And) e1 e2
+e1 |||    e2 = if node e1 == ff 
+                  then e2
+                  else if node e2 == ff
+                    then e1
+                    else inheritPos2 (BinaryExpression Or) e1 e2
+e1 |=>|   e2 = if node e1 == tt 
+                  then e2
+                  else inheritPos2 (BinaryExpression Implies) e1 e2
 e1 |<=>|  e2 = inheritPos2 (BinaryExpression Equiv) e1 e2
 assume e = attachPos (position e) (Predicate (SpecClause Inline True e))
 
-conjunction [] = gen tt
-conjunction es = foldl1 (|&|) es
-
-guardWith [] e = e
+conjunction es = foldl (|&|) (gen tt) es
+disjunction es = foldl (|||) (gen ff) es
 guardWith gs e = conjunction gs |=>| e
 
 {- Special names -}
@@ -483,9 +491,6 @@ noType = nullaryType (nonIdChar : "NoType")
 
 -- | Dummy user-defined type used to represent procedure returns as a single type
 tupleType = IdType (nonIdChar : "Tuple")
-
--- | Dummy user-defined type used to differentiate map values
-refIdType = nullaryType (nonIdChar : "RefId")
 
 -- | Dummy user-defined type used to mark entities whose definitions are currently being evaluated
 ucType = nullaryType (nonIdChar : "UC")
