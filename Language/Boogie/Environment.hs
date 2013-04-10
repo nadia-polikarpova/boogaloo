@@ -25,7 +25,6 @@ module Language.Boogie.Environment (
   visibleVariables,
   userMemory,
   memoryDoc,
-  SymbolicHeap,
   SymbolicMemory,
   symLocals,
   symGlobals,
@@ -48,8 +47,8 @@ module Language.Boogie.Environment (
   addProcedureImpl,
   addGlobalDefinition,
   addGlobalConstraint,
-  addValueDefinition,
-  addValueConstraint,
+  addMapDefinition,
+  addMapConstraint,
   setCustomCount,
   withHeap,
   markModified
@@ -175,10 +174,10 @@ visibleVariables :: Memory -> Store
 visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (mem^.memConstants)
 
 -- | Clear cached values if maps that have guard-less definitions
-clearDefinedCache :: SymbolicHeap -> Heap Value -> Heap Value
+clearDefinedCache :: MapConstraints -> Heap Value -> Heap Value
 clearDefinedCache symHeap heap = foldr (\r -> update r (MapValue (valueType (heap `at` r)) emptyMap)) heap definedRefs
   where
-    definedRefs = [r | (r, (defs, _)) <- M.toList symHeap, any (\def -> node (fdefGuard def) == tt) defs]
+    definedRefs = [r | (r, (defs, _)) <- M.toList symHeap, any (\def -> node (defGuard def) == tt) defs]
 
 -- | 'userStore' @symMem mem@ : @mem@ with all reference values completely dereferenced and cache of defined maps removed 
 userMemory :: SymbolicMemory -> Memory -> Memory
@@ -215,19 +214,13 @@ memoryDoc inNames outNames mem = vsep $
 instance Pretty Memory where
   pretty mem = memoryDoc [] [] mem
   
-{- Symbolic memory -}
-
--- | Symbolic heap: maps logical variables to ground constraints
-type SymbolicHeap = Map Ref ConstraintSet
-
-symbolicHeapDoc heap = vsep $ map valDoc (M.toList heap)
-  where valDoc (r, cs) = nest 2 (refDoc r <+> constraintSetDoc cs)
+{- Constraint memory -}
 
 -- | Symbolic memory: stores name and value constraints
 data SymbolicMemory = SymbolicMemory {
-  _symLocals :: SymbolicStore,       -- ^ Local name constraints
-  _symGlobals :: SymbolicStore,      -- ^ Global name constraints
-  _symHeap :: SymbolicHeap           -- ^ Value constraints
+  _symLocals :: NameConstraints,       -- ^ Local name constraints
+  _symGlobals :: NameConstraints,      -- ^ Global name constraints
+  _symHeap :: MapConstraints           -- ^ Value constraints
 }
 
 makeLenses ''SymbolicMemory
@@ -243,9 +236,9 @@ symbolicMemoryDoc :: SymbolicMemory -> Doc
 symbolicMemoryDoc mem = vsep $ 
   docNonEmpty (mem^.symLocals) (labeledStoreDoc "SLocals") ++
   docNonEmpty (mem^.symGlobals) (labeledStoreDoc "SGlobals") ++
-  docNonEmpty (mem^.symHeap) (\h -> text "SHeap:" <+> align (symbolicHeapDoc h))
+  docNonEmpty (mem^.symHeap) (\h -> text "SHeap:" <+> align (mapConstraintsDoc h))
   where
-    labeledStoreDoc label store = (text label <> text ":") <+> align (symbolicStoreDoc store)
+    labeledStoreDoc label store = (text label <> text ":") <+> align (nameConstraintsDoc store)
     docWhen flag doc = if flag then [doc] else [] 
     docNonEmpty m mDoc = docWhen (not (M.null m)) (mDoc m)
     
@@ -301,8 +294,8 @@ lookupCustomCount = lookupGetter envCustomCount 0
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
 addGlobalDefinition name def env = over (envConstraints.symGlobals) (M.insert name (over _1 (++ [def]) (lookupGetter (envConstraints.symGlobals) ([], []) name env))) env
 addGlobalConstraint name def env = over (envConstraints.symGlobals) (M.insert name (over _2 (++ [def]) (lookupGetter (envConstraints.symGlobals) ([], []) name env))) env
-addValueDefinition r def env = over (envConstraints.symHeap) (M.insert r (over _1 (++ [def]) (lookupValueConstraints r env))) env
-addValueConstraint r constraint env = over (envConstraints.symHeap) (M.insert r (over _2 (++ [constraint]) (lookupValueConstraints r env))) env
+addMapDefinition r def env = over (envConstraints.symHeap) (M.insert r (over _1 (++ [def]) (lookupValueConstraints r env))) env
+addMapConstraint r constraint env = over (envConstraints.symHeap) (M.insert r (over _2 (++ [constraint]) (lookupValueConstraints r env))) env
 setCustomCount t n = over envCustomCount (M.insert t n)
 withHeap f env = let (res, h') = f (env^.envMemory.memHeap) 
   in (res, set (envMemory.memHeap) h' env )

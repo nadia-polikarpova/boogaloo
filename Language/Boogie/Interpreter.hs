@@ -162,7 +162,7 @@ restoreOld callerMem = do
   envMemory.memModified %= ((callerMem^.memModified) `S.union`)
   
 -- | Execute computation in a local context
-executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> SymbolicStore -> s a -> s a
+executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> NameConstraints -> s a -> s a
 executeLocally localTC formals actuals localConstraints computation = do
   oldEnv <- get
   envTypeContext %= localTC
@@ -554,21 +554,21 @@ collectGarbage = do
       Derived base _ -> envMemory.memHeap %= decRefCount base
     mapM_ decRefCountValue (M.elems $ stored repr)
     cs <- gets $ lookupValueConstraints r
-    let usedRefs = nub . concatMap logicalVars $ concatMap (\c -> [fdefGuard c, fdefBody c]) (fst cs) ++ snd cs 
+    let usedRefs = nub . concatMap mepRefs $ concatMap (\c -> [defGuard c, defBody c]) (fst cs) ++ snd cs 
     mapM_ (\r -> envMemory.memHeap %= decRefCount r) usedRefs    
     envConstraints.symHeap %= M.delete r
     collectGarbage)
     
--- | 'extendValueDefinition' @r def@ : add @def@ to the definiton of the logical variable @r@
-extendValueDefinition r def = do
-  modify $ addValueDefinition r def
-  let usedRefs = nub $ logicalVars (fdefGuard def) ++ logicalVars (fdefBody def)
+-- | 'extendMapDefinition' @r def@ : add @def@ to the definiton of the map @r@
+extendMapDefinition r def = do
+  modify $ addMapDefinition r def
+  let usedRefs = nub $ mepRefs (defGuard def) ++ mepRefs (defBody def)
   mapM_ (\r -> envMemory.memHeap %= incRefCount r) usedRefs    
 
--- | 'extendValueConstraint' @r c@ : add @c@ to the consraints of the logical variable @r@  
-extendValueConstraint r c = do
-  modify $ addValueConstraint r c
-  mapM_ (\r -> envMemory.memHeap %= incRefCount r) (logicalVars c)
+-- | 'extendMapConstraint' @r c@ : add @c@ to the consraints of the map @r@  
+extendMapConstraint r c = do
+  modify $ addMapConstraint r c
+  mapM_ (\r -> envMemory.memHeap %= incRefCount r) (mepRefs c)
   
 {- Expressions -}
 
@@ -751,13 +751,13 @@ evalLambda tv vars e pos = do
   let t = exprType tc (lambda e)
   val@(Reference _ r) <- generateValue t pos
   (Quantified Lambda _ _ symBody) <- node <$> symbolicEval (lambda e)
-  extendValueDefinition r (fdef symBody)
+  extendMapDefinition r (def symBody)
   let app = attachPos pos $ MapSelection (attachPos pos $ Literal val) (map (attachPos pos . Var . fst) vars)
-  extendValueConstraint r (lambda $ app |=| symBody)
+  extendMapConstraint r (lambda $ app |=| symBody)
   return val
   where
     lambda = attachPos pos . Quantified Lambda tv vars
-    fdef = FDef tv vars (conjunction [])
+    def = Def tv vars (conjunction [])
 
 -- | Finite domain      
 type Domain = [Value]      
@@ -840,7 +840,7 @@ execCallBySig sig lhss args pos = do
       i <- generate (`genIndex` length defs)
       return (sig, defs !! i)
     params = psigParams sig
-    paramConstraints tc = M.filterWithKey (\k _ -> k `elem` map itwId params) $ foldr asUnion M.empty $ map (extractConstraints tc . itwWhere) params
+    paramConstraints tc = M.filterWithKey (\k _ -> k `elem` map itwId params) $ foldr ncUnion M.empty $ map (extractConstraints tc . itwWhere) params
     -- For procedures with no implementation: dummy definition that just havocs all modifiable globals
     dummyDef tc = PDef {
         pdefIns = map itwId (psigArgs sig),
@@ -934,11 +934,11 @@ symbolicEval expr = symbolicEval' [] expr
       Quantified qop tv bv e -> Quantified qop tv bv <$> symbolicEval' (vars ++ map fst bv) e
       
 -- | Evaluate all free variables in a definiton
-symbolicEvalDef :: (Monad m, Functor m) => FDef -> Execution m FDef
-symbolicEvalDef def@(FDef tv formals guard body) = do
-  (Quantified Lambda _ _ guard') <- node <$> symbolicEval (fdefGuardLambda def)
-  (Quantified Lambda _ _ body') <- node <$> symbolicEval (fdefBodyLambda def)
-  return $ FDef tv formals guard' body'      
+symbolicEvalDef :: (Monad m, Functor m) => Def -> Execution m Def
+symbolicEvalDef def@(Def tv formals guard body) = do
+  (Quantified Lambda _ _ guard') <- node <$> symbolicEval (defGuardLambda def)
+  (Quantified Lambda _ _ body') <- node <$> symbolicEval (defBodyLambda def)
+  return $ Def tv formals guard' body'      
         
 -- | 'wellDefined' @val@ : throw an exception if @val@ is under construction
 wellDefined (CustomValue t n) | t == ucType = throwInternalException $ UnderConstruction n
@@ -948,7 +948,7 @@ wellDefined val = return val
 -- if none are applicable return 'Nothing', 
 -- unless an under construction value different from @myCode@ has been evaluated, in which case rethrow the UnderConstruction exception;
 -- @pos@ is the position of the definition invocation
-checkDefinitions :: (Monad m, Functor m) => Int -> [FDef] -> [Value] -> SourcePos -> Execution m (Maybe Value)
+checkDefinitions :: (Monad m, Functor m) => Int -> [Def] -> [Value] -> SourcePos -> Execution m (Maybe Value)
 checkDefinitions myCode defs actuals pos = checkDefinitions' myCode Nothing defs actuals pos
 
 checkDefinitions' _ Nothing     [] _ _ = return Nothing
@@ -970,7 +970,7 @@ checkDefinitions' myCode mCode (def : defs) actuals pos = tryDefinitions `catchE
 -- if @guard (actuals)@ return the result of @body (actuals)@,
 -- otherwise return 'Nothing'
 -- (@pos@ is the position of the definition invocation)      
-applyDefinition (FDef tv formals guard body) actuals pos =
+applyDefinition (Def tv formals guard body) actuals pos =
   if isNothing $ unifier tv formalTypes actualTypes -- Is the definition applicable to these types?
     then return Nothing
     else do      
@@ -994,7 +994,7 @@ checkNameDefinitions name pos = do
   resetAnyVar name $ CustomValue ucType n  
   modify $ setCustomCount ucType (n + 1)
   defs <- fst <$> gets (lookupNameConstraints name)
-  let simpleDefs = [simpleDef | simpleDef <- defs, null $ fdefArgs simpleDef] -- Ignore forall-definition, they will be attached to the map value by checkNameConstraints
+  let simpleDefs = [simpleDef | simpleDef <- defs, null $ defArgs simpleDef] -- Ignore forall-definition, they will be attached to the map value by checkNameConstraints
   checkDefinitions n simpleDefs [] pos `finally` cleanup n `catchError` addFrame
   where  
     cleanup n = do
@@ -1054,13 +1054,13 @@ checkNameConstraints name pos = (do
       then do                                 -- Parametrized constraint: attach to the map value
         Reference _ r <- evalVar name pos
         symVal <- symbolicEval c
-        extendValueConstraint r symVal  
+        extendMapConstraint r symVal  
       else applyConstraint c [] pos           -- Simple constraint: assume it
     attachDefinition def = if isParametrizedDef def 
       then do                                 -- Parametrized definition: attach to the map value
         Reference _ r <- evalVar name pos
         symVal <- symbolicEvalDef def
-        extendValueDefinition r symVal
+        extendMapDefinition r symVal
       else return ()                           -- Simple definition: ignore
     addFrame = addStackFrame (StackFrame pos name)
       
@@ -1092,7 +1092,7 @@ processFunction name argNames mBody = do
     Nothing -> return ()
     Just body -> do
       let formals = zip (map formalName argNames) argTypes
-      let def = FDef tv formals (conjunction []) body
+      let def = Def tv formals (conjunction []) body
       modify $ addGlobalDefinition constName def
       let app = attachPos (position body) $ Application name (map (attachPos (position body) . Var . fst) formals)
       let c = inheritPos (Quantified Lambda tv formals) (app |=| body)
@@ -1107,7 +1107,7 @@ processProcedureBody name pos args rets body = do
   let paramsRenamed = map itwId params /= (argNames ++ retNames)    
   let flatBody = (map (mapItwType (resolve tc)) (concat $ fst body), M.fromList (toBasicBlocks $ snd body))
   let allLocals = params ++ fst flatBody
-  let localConstraints = M.filterWithKey (\k _ -> k `elem` map itwId allLocals) $ foldr asUnion M.empty $ map (extractConstraints tc . itwWhere) allLocals
+  let localConstraints = M.filterWithKey (\k _ -> k `elem` map itwId allLocals) $ foldr ncUnion M.empty $ map (extractConstraints tc . itwWhere) allLocals
   modify $ addProcedureImpl name (PDef argNames retNames paramsRenamed flatBody localConstraints pos) 
   where
     argNames = map fst args
@@ -1115,33 +1115,33 @@ processProcedureBody name pos args rets body = do
 
 processAxiom expr = do
   tc <- use envTypeContext
-  envConstraints.symGlobals %= (`asUnion` extractConstraints tc expr)
+  envConstraints.symGlobals %= (`ncUnion` extractConstraints tc expr)
   
 {- Constant and function constraints -}
 
 -- | 'extractConstraints' @tc bExpr@ : extract definitions and constraints from @bExpr@ in type context @tc@
-extractConstraints :: Context -> Expression -> SymbolicStore
+extractConstraints :: Context -> Expression -> NameConstraints
 extractConstraints tc bExpr = extractConstraints' tc [] [] [] (negationNF bExpr)
 
 -- | 'extractConstraints'' @tc tv vars guards body@ : extract definitions and constraints from expression @guards@ ==> @body@
 -- bound type variables @tv@ and bound variables @vars@ in type context @tc@
-extractConstraints' :: Context -> [Id] -> [IdType] -> [Expression] -> Expression -> SymbolicStore
+extractConstraints' :: Context -> [Id] -> [IdType] -> [Expression] -> Expression -> NameConstraints
 extractConstraints' tc tv vars guards body = case (node body) of
   Quantified Forall tv' vars' bExpr -> extractConstraints' tc (tv ++ tv') (vars ++ vars') guards bExpr
   Quantified Exists _ _ _ -> M.empty -- ToDo: treat as atomic
   BinaryExpression And bExpr1 bExpr2 -> let
     constraints1 = extractConstraints' tc tv vars guards bExpr1
     constraints2 = extractConstraints' tc tv vars guards bExpr2
-    in constraints1 `asUnion` constraints2
+    in constraints1 `ncUnion` constraints2
   BinaryExpression Or bExpr1 bExpr2 -> let
     constraints1 = extractConstraints' tc tv vars ((negationNF $ enot bExpr1) : guards) bExpr2
     constraints2 = extractConstraints' tc tv vars ((negationNF $ enot bExpr2) : guards) bExpr1
-    in constraints1 `asUnion` constraints2
+    in constraints1 `ncUnion` constraints2
   BinaryExpression Eq expr1 expr2 -> let
     defs1 = extractDefsAtomic expr1 expr2
     defs2 = extractDefsAtomic expr2 expr1
     constraints = extractConstraintsAtomic
-    in foldr1 asUnion [defs1, defs2, constraints]
+    in foldr1 ncUnion [defs1, defs2, constraints]
   _ -> extractConstraintsAtomic
   where
     fvBody = freeVars body
@@ -1162,12 +1162,12 @@ extractConstraints' tc tv vars guards body = case (node body) of
         allGuards = concat argGuards ++ guards
         extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
       in if length formals == length args && null extraVars -- Only possible if all arguments are simple and there are no extra variables
-        then M.singleton name ([FDef tv (zip formals argTypes) (conjunction allGuards) rhs], [])
+        then M.singleton name ([Def tv (zip formals argTypes) (conjunction allGuards) rhs], [])
         else M.empty
     
     extractConstraintsAtomic = case usedVars of -- This is a compromise: quantified expressions constrain names they mention of any arity but zero (ToDo: think about it)
-      [] -> foldr asUnion M.empty $ map addSimpleConstraintFor fvBody
-      _ -> foldr asUnion M.empty $ map addForallConstraintFor (freeSelections body ++ over (mapped._1) functionConst (applications body))
+      [] -> foldr ncUnion M.empty $ map addSimpleConstraintFor fvBody
+      _ -> foldr ncUnion M.empty $ map addForallConstraintFor (freeSelections body ++ over (mapped._1) functionConst (applications body))
     addSimpleConstraintFor name = M.singleton name ([], [guardWith guards body])
     addForallConstraintFor (name, args) = let
         argTypes = map (exprType boundTC) args
@@ -1430,7 +1430,7 @@ makeEq (Reference t r1) (Reference _ r2) = do
     mergeConstraints s1 s2 newSource = do
       (defs1, constraints1) <- gets $ lookupValueConstraints s1
       (defs2, constraints2) <- gets $ lookupValueConstraints s2
-      mapM_ (extendValueDefinition newSource) (defs1 ++ defs2)
-      mapM_ (extendValueConstraint newSource) (constraints1 ++ constraints2)
+      mapM_ (extendMapDefinition newSource) (defs1 ++ defs2)
+      mapM_ (extendMapConstraint newSource) (constraints1 ++ constraints2)
 makeEq (MapValue _ _) (MapValue _ _) = internalError $ text "Attempt to call makeEq on maps directly" 
 makeEq _ _ = return ()  

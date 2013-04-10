@@ -194,8 +194,8 @@ stored (Derived _ override) = override
 data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
   CustomValue Type Int |         -- ^ Value of a user-defined type
-  MapValue Type MapRepr |        -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
-  Reference Type Ref             -- ^ Logical variable: reference to a symbolic value stored in the heap (currently only maps)
+  MapValue Type MapRepr |        -- ^ Partial instance of a map
+  Reference Type Ref             -- ^ Map reference
   deriving (Eq, Ord)
   
 -- | Type of a value
