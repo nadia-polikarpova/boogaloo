@@ -18,21 +18,24 @@ import           Language.Boogie.Heap
 import           Language.Boogie.Position
 import           Language.Boogie.PrettyAST ()
 import           Language.Boogie.Pretty
+import           Language.Boogie.TypeChecker
 
-type Solution = Map Ref Value
 
--- data MapWithElse = MapWithElse
---     { mapPart :: MapRepr
---     , elsepart :: Value
---     }
 
--- (!) :: MapWithElse -> [Value] -> Value
--- (!) (MapWithElse m el) i = maybe el id (Map.lookup m i)
+data MapWithElse = MapWithElse
+    { mapPart :: MapRepr
+    , elsepart :: Value
+    }
 
--- data Solution = Solution 
---     { forcerLogical :: Map Ref Value
---     , forcerMaps    :: Map Ref MapWithElse
---     }
+(!) :: MapWithElse -> [Value] -> Value
+(!) (MapWithElse m el) i = maybe el id (Map.lookup m i)
+
+data Solution = Solution 
+    { forcerLogical :: Map Ref Value
+    , forcerMaps    :: Map Ref MapWithElse
+    }
+
+data TaggedRef = LogicRef Type Ref | MapRef Type Ref
 
 ex1 :: Map Ref String
 ex1 = Map.map (show . pretty) (solveConstr constrs)
@@ -47,6 +50,9 @@ ex1 = Map.map (show . pretty) (solveConstr constrs)
 
 -- | Given a set of constraint expressions produce a mapping
 -- of references to their concrete values.
+--
+-- The constraint expressions will have no regular variables,
+-- only logical variables and map variables.
 --
 -- FIXME: This is incomplete, as it does not include function maps yet.
 solveConstr :: [Expression] -> Solution
@@ -98,6 +104,8 @@ solveConstr constrs = unsafePerformIO (evalZ3 checkConstraints)
       assert' :: Map Value AST -> Map Value FuncDecl -> Z3 ()
       assert' m funcM = mapM_ (evalExpr m funcM >=> assertCnstr) constrs
 
+      typeOf = exprType emptyContext
+
       -- | Evaluate an expression to a Z3 AST.
       evalExpr :: Map Value AST      -- ^ Map from constants/vars to AST
                -> Map Value FuncDecl -- ^ Map from function ids to function decls
@@ -108,6 +116,12 @@ solveConstr constrs = unsafePerformIO (evalZ3 checkConstraints)
             Literal v -> return (m Map.! v)
             MapSelection (Pos _ (Literal v)) es -> 
                 mkApp (funcM Map.! v) =<< mapM go es
+            MapUpdate m args val ->
+                do args' <- map go args
+                   m' <- go m
+                   val' <- go val
+                   argTuple <- arrayArgTuple m args'
+                   mkStore m' argTuple val'
             UnaryExpression op e -> go e >>= unOp op
             BinaryExpression op e1 e2 ->
                 join (binOp op <$> go e1 <*> go e2)
@@ -148,22 +162,23 @@ solveConstr constrs = unsafePerformIO (evalZ3 checkConstraints)
                 where list2 o x y = o [x, y]
 
       -- | Get the values from a single expression.
-      values :: Expression -> Set Value
-      values expr =
+      refs :: Expression -> Set Ref
+      refs expr =
           case node expr of
-            Literal v                -> Set.singleton v
-            MapSelection e es        -> valueUnion (e:es)
-            MapUpdate e1 es e2       -> valueUnion (e1:e2:es)
-            Old e                    -> values e
-            IfExpr c e1 e2           -> valueUnion [c,e1,e2]
-            UnaryExpression _ e      -> values e
-            BinaryExpression _ e1 e2 -> valueUnion [e1, e2]
-            Quantified _ _ _ e       -> values e
-            e -> error $ "solveConstr.values: " ++ show e
+            Literal v                -> Set.singleton (valueRef v)
+            LogicalVar t ref         -> Set.singleton (LogicRef t ref)
+            MapSelection e es        -> refUnion (e:es)
+            MapUpdate e1 es e2       -> refUnion (e1:e2:es)
+            Old e                    -> refs e
+            IfExpr c e1 e2           -> refUnion [c,e1,e2]
+            UnaryExpression _ e      -> refs e
+            BinaryExpression _ e1 e2 -> refUnion [e1, e2]
+            Quantified _ _ _ e       -> refs e
+            e -> error $ "solveConstr.refs: " ++ show e
 
-      -- | Get the values of a list of expressions
-      valueUnion :: [Expression] -> Set Value
-      valueUnion = Set.unions . map values
+      -- | Get the refs of a list of expressions
+      refUnion :: [Expression] -> Set Ref
+      refUnion = Set.unions . map refs
 
       -- | Function types are not `Sort`, so this won't work for them.
       typeToSort :: Type -> Z3 Sort
@@ -175,16 +190,13 @@ solveConstr constrs = unsafePerformIO (evalZ3 checkConstraints)
       -- FIXME: Functions (maps) must be declared differently, so this won't
       -- work due to the use of `typeToSort`.
       -- Should treat functions separately.
-      declareValue :: Value -> Z3 (Either AST FuncDecl)
-      declareValue (IntValue i)      = Left <$> mkInt i
-      declareValue (BoolValue True)  = Left <$> mkTrue
-      declareValue (BoolValue False) = Left <$> mkFalse
-      declareValue v@(Reference (MapType _ args res) _ref) =
+      declareRef :: Ref -> Z3 (Either AST FuncDecl)
+      declareRef v@(Reference (MapType _ args res) _ref) =
           do symbol <- mkStringSymbol (valueName v)
              args'  <- mapM typeToSort args
              res'   <- typeToSort res
              Right <$> mkFuncDecl symbol args' res'
-      declareValue v =
+      declareRef v =
           do symbol <- mkStringSymbol (valueName v)
              sort   <- typeToSort (valueType v)
              Left <$> mkConst symbol sort
