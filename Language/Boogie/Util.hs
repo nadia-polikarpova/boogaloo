@@ -18,24 +18,27 @@ module Language.Boogie.Util (
   paramSubst,
   freeSelections,
   applications,
-  logicalVars,
+  mapRefs,
   -- * Specs
   preconditions,
   postconditions,
   modifies,
   assumePreconditions,
   assumePostconditions,
-  -- * Functions and procedures
-  FDef (..),
-  fdefBodyLambda,
-  fdefGuardLambda,
+  -- * Constraints
+  Def (..),
+  defBodyLambda,
+  defGuardLambda,
   ConstraintSet,
   isParametrized,
   isParametrizedDef,
   constraintSetDoc,
-  SymbolicStore,
-  asUnion,
-  symbolicStoreDoc,
+  NameConstraints,
+  ncUnion,
+  nameConstraintsDoc,
+  MapConstraints,
+  mapConstraintsDoc,
+  -- * Functions and procedures
   PSig (..),
   psigParams,
   psigArgTypes,
@@ -50,13 +53,13 @@ module Language.Boogie.Util (
   num, eneg, enot,
   (|+|), (|-|), (|*|), (|/|), (|%|), (|=|), (|!=|), (|<|), (|<=|), (|>|), (|>=|), (|&|), (|||), (|=>|), (|<=>|),
   conjunction,
+  disjunction,
   guardWith,
   assume,
   -- * Special names
   nullaryType,
   noType,
   tupleType,
-  refIdType,
   ucType,  
   functionConst,
   functionFromConst,
@@ -74,7 +77,7 @@ module Language.Boogie.Util (
 ) where
 
 import Language.Boogie.AST
-import Language.Boogie.Heap (Ref)
+import Language.Boogie.Heap (Ref, refDoc)
 import Language.Boogie.Position
 import Language.Boogie.Tokens
 import Language.Boogie.Pretty
@@ -289,22 +292,22 @@ applications' (UnaryExpression _ e) = applications e
 applications' (BinaryExpression _ e1 e2) = nub . concat $ [applications e1, applications e2]
 applications' (Quantified _ _ _ e) = applications e  
 
--- | 'logicalVars' @expr@ : all logical variables that occur in @expr@
-logicalVars :: Expression -> [Ref]
-logicalVars expr = logicalVars' $ node expr
+-- | 'mapRefs' @expr@ : all map references that occur in @expr@
+mapRefs :: Expression -> [Ref]
+mapRefs expr = mapRefs' $ node expr
 
-logicalVars' (Literal (Reference _ r)) = [r]
-logicalVars' (Literal _) = []
-logicalVars' (Var x) = []
-logicalVars' (Application name args) = nub . concat $ map logicalVars args
-logicalVars' (MapSelection m args) = nub . concat $ map logicalVars (m : args)
-logicalVars' (MapUpdate m args val) =  nub . concat $ map logicalVars (val : m : args)
-logicalVars' (Old e) = internalError $ text "logicalVars should only be applied in single-state context"
-logicalVars' (IfExpr cond e1 e2) = nub . concat $ [logicalVars cond, logicalVars e1, logicalVars e2]
-logicalVars' (Coercion e _) = logicalVars e
-logicalVars' (UnaryExpression _ e) = logicalVars e
-logicalVars' (BinaryExpression _ e1 e2) = nub . concat $ [logicalVars e1, logicalVars e2]
-logicalVars' (Quantified _ _ _ e) = logicalVars e  
+mapRefs' (Literal (Reference _ r)) = [r]
+mapRefs' (Literal _) = []
+mapRefs' (Var x) = []
+mapRefs' (Application name args) = nub . concat $ map mapRefs args
+mapRefs' (MapSelection m args) = nub . concat $ map mapRefs (m : args)
+mapRefs' (MapUpdate m args val) =  nub . concat $ map mapRefs (val : m : args)
+mapRefs' (Old e) = internalError $ text "mapRefs should only be applied in single-state context"
+mapRefs' (IfExpr cond e1 e2) = nub . concat $ [mapRefs cond, mapRefs e1, mapRefs e2]
+mapRefs' (Coercion e _) = mapRefs e
+mapRefs' (UnaryExpression _ e) = mapRefs e
+mapRefs' (BinaryExpression _ e1 e2) = nub . concat $ [mapRefs e1, mapRefs e2]
+mapRefs' (Quantified _ _ _ e) = mapRefs e  
 
 {- Specs -}
 
@@ -341,25 +344,25 @@ assumePostconditions :: PSig -> PSig
 assumePostconditions sig = sig { psigContracts = map assumePostcondition (psigContracts sig) }
   where
     assumePostcondition (Ensures _ e) = Ensures True e
-    assumePostcondition c = c    
+    assumePostcondition c = c
+    
+{- Constraints -}
 
-{- Functions and procedures -}
-    
--- | Function definition (lambda expression with a guard)
-data FDef = FDef {
-    fdefTV    :: [Id],          -- ^ Type variables
-    fdefArgs  :: [IdType],      -- ^ Arguments (types may be less general than in the corresponding signature)
-    fdefGuard :: Expression,    -- ^ Condition under which the definition applies
-    fdefBody  :: Expression     -- ^ Body 
+-- | Definition (lambda expression with a guard)
+data Def = Def {
+    defTV    :: [Id],          -- ^ Type variables
+    defArgs  :: [IdType],      -- ^ Arguments
+    defGuard :: Expression,    -- ^ Condition under which the definition applies
+    defBody  :: Expression     -- ^ Body 
   } deriving Eq
-  
--- | Lambda expression that corresponds to function definition body  
-fdefBodyLambda (FDef tv args _ body) = attachPos (position body) $ Quantified Lambda tv args body  
--- | Lambda expression that corresponds to function definition guard
-fdefGuardLambda (FDef tv args guard _) = attachPos (position guard) $ Quantified Lambda tv args guard
+
+-- | Lambda expression that corresponds to definition guard
+defGuardLambda (Def tv args guard _) = attachPos (position guard) $ Quantified Lambda tv args guard  
+-- | Lambda expression that corresponds to definition body  
+defBodyLambda (Def tv args _ body) = attachPos (position body) $ Quantified Lambda tv args body  
     
-instance Pretty FDef where
-  pretty (FDef tv formals guard expr) = 
+instance Pretty Def where
+  pretty (Def tv formals guard expr) = 
     text "lambda" <+>
     option (not (null tv)) (angles (commaSep (map text tv))) <+> 
     option (not (null formals)) (parens (commaSep (map idpretty formals))) <+> 
@@ -367,32 +370,40 @@ instance Pretty FDef where
     text "::" <+> pretty expr
 
 -- | Constraint set: contains a list of definitions and a list of constraints
-type ConstraintSet = ([FDef], [Expression])
+type ConstraintSet = ([Def], [Expression])
 
 -- | 'isParametrized' @expr@: is @expr@ a parametrized constraint?
 isParametrized (Pos _ (Quantified Lambda _ _ _)) = True
 isParametrized (Pos _ _) = False
 
 -- | 'isParametrizedDef' @def@: is @def@ a parametrized definition?
-isParametrizedDef (FDef[] [] _ _) = False
+isParametrizedDef (Def[] [] _ _) = False
 isParametrizedDef _ = True
 
 -- | Pretty-printed constraint set  
 constraintSetDoc :: ConstraintSet -> Doc   
 constraintSetDoc cs = vsep (map pretty (fst cs)) $+$ vsep (map pretty (snd cs))
 
--- | Symbolic store: maps names to their constraints
-type SymbolicStore = Map Id ConstraintSet
+-- | Mapping from names to their constraints
+type NameConstraints = Map Id ConstraintSet
 
--- | Union of symbolic stores (values at the same key are concatenated)
-asUnion :: SymbolicStore -> SymbolicStore -> SymbolicStore
-asUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2
+-- | Union of name constraints (values at the same key are concatenated)
+ncUnion :: NameConstraints -> NameConstraints -> NameConstraints
+ncUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2
 
 -- | Pretty-printed abstract store
-symbolicStoreDoc :: SymbolicStore -> Doc
-symbolicStoreDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (name, cs) = nest 2 (text name <+> constraintSetDoc cs)  
- 
+nameConstraintsDoc :: NameConstraints -> Doc
+nameConstraintsDoc vars = vsep $ map varDoc (M.toList vars)
+  where varDoc (name, cs) = nest 2 (text name <+> constraintSetDoc cs)
+
+-- | Mapping from map references to their parametrized constraints
+type MapConstraints = Map Ref ConstraintSet
+
+mapConstraintsDoc heap = vsep $ map valDoc (M.toList heap)
+  where valDoc (r, cs) = nest 2 (refDoc r <+> constraintSetDoc cs)
+
+{- Procedures -}
+     
 -- | Procedure signature 
 data PSig = PSig {
     psigName :: Id,               -- ^ Procedure name
@@ -427,7 +438,7 @@ data PDef = PDef {
     pdefOuts :: [Id],                 -- ^ Out-parameter names (in the same order as 'psigRets' in the corresponding signature)
     pdefParamsRenamed :: Bool,        -- ^ Are any parameter names in this definition different for the procedure signature? (used for optimizing parameter renaming, True is a safe default)
     pdefBody :: BasicBody,            -- ^ Body
-    pdefConstraints :: SymbolicStore, -- ^ Constraints on local names
+    pdefConstraints :: NameConstraints, -- ^ Constraints on local names
     pdefPos :: SourcePos              -- ^ Location of the (first line of the) procedure definition in the source
   }
   
@@ -450,16 +461,24 @@ e1 |<|    e2 = inheritPos2 (BinaryExpression Ls) e1 e2
 e1 |<=|   e2 = inheritPos2 (BinaryExpression Leq) e1 e2
 e1 |>|    e2 = inheritPos2 (BinaryExpression Gt) e1 e2
 e1 |>=|   e2 = inheritPos2 (BinaryExpression Geq) e1 e2
-e1 |&|    e2 = inheritPos2 (BinaryExpression And) e1 e2
-e1 |||    e2 = inheritPos2 (BinaryExpression Or) e1 e2
-e1 |=>|   e2 = inheritPos2 (BinaryExpression Implies) e1 e2
+e1 |&|    e2 = if node e1 == tt 
+                  then e2
+                  else if node e2 == tt
+                    then e1
+                    else inheritPos2 (BinaryExpression And) e1 e2
+e1 |||    e2 = if node e1 == ff 
+                  then e2
+                  else if node e2 == ff
+                    then e1
+                    else inheritPos2 (BinaryExpression Or) e1 e2
+e1 |=>|   e2 = if node e1 == tt 
+                  then e2
+                  else inheritPos2 (BinaryExpression Implies) e1 e2
 e1 |<=>|  e2 = inheritPos2 (BinaryExpression Equiv) e1 e2
 assume e = attachPos (position e) (Predicate (SpecClause Inline True e))
 
-conjunction [] = gen tt
-conjunction es = foldl1 (|&|) es
-
-guardWith [] e = e
+conjunction es = foldl (|&|) (gen tt) es
+disjunction es = foldl (|||) (gen ff) es
 guardWith gs e = conjunction gs |=>| e
 
 {- Special names -}
@@ -472,9 +491,6 @@ noType = nullaryType (nonIdChar : "NoType")
 
 -- | Dummy user-defined type used to represent procedure returns as a single type
 tupleType = IdType (nonIdChar : "Tuple")
-
--- | Dummy user-defined type used to differentiate map values
-refIdType = nullaryType (nonIdChar : "RefId")
 
 -- | Dummy user-defined type used to mark entities whose definitions are currently being evaluated
 ucType = nullaryType (nonIdChar : "UC")

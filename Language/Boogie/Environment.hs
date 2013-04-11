@@ -2,12 +2,8 @@
 
 -- | Execution state for the interpreter
 module Language.Boogie.Environment ( 
-  flattenMap,
-  mapSource,
-  mapValues,
   deepDeref,
   objectEq,
-  mustAgree,
   mustDisagree,
   Store,
   emptyStore,
@@ -25,7 +21,6 @@ module Language.Boogie.Environment (
   visibleVariables,
   userMemory,
   memoryDoc,
-  SymbolicHeap,
   SymbolicMemory,
   symLocals,
   symGlobals,
@@ -39,6 +34,7 @@ module Language.Boogie.Environment (
   envCustomCount,
   envQBound,
   envInOld,
+  envInDef,
   envLastTerm,
   initEnv,
   lookupProcedure,
@@ -48,8 +44,8 @@ module Language.Boogie.Environment (
   addProcedureImpl,
   addGlobalDefinition,
   addGlobalConstraint,
-  addValueDefinition,
-  addValueConstraint,
+  addMapDefinition,
+  addMapConstraint,
   setCustomCount,
   withHeap,
   markModified
@@ -70,60 +66,33 @@ import Control.Lens hiding (Context, at)
   
 {- Map operations -}
 
--- | Source reference and key-value pairs of a reference in a heap
-flattenMap :: Heap Value -> Ref -> (Ref, (Map [Value] Value))
-flattenMap h r = case h `at` r of
-  MapValue _ (Source vals) -> (r, vals)
-  MapValue _ (Derived base override) -> let (s, v) = flattenMap h base
-    in (s, override `M.union` v)
-    
--- | First component of 'flattenMap'
-mapSource h r = flattenMap h r ^. _1
-
--- | Second component of 'flattenMap'
-mapValues h r = flattenMap h r ^. _2
-
 -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
-deepDeref :: Heap Value -> Value -> Value
+deepDeref :: Heap MapRepr -> Value -> Value
 deepDeref h v = deepDeref' v
   where
-    deepDeref' (Reference t r) = let vals = mapValues h r
-      in MapValue t . Source $ (M.map deepDeref' . M.mapKeys (map deepDeref') . M.filter (not . isAux)) vals -- Here we do not assume that keys contain no references, as this is used for error reporting
-    deepDeref' (MapValue _ _) = internalError $ text "Attempt to dereference a map directly"
+    deepDeref' (Reference t r) = MapValue t $ M.map deepDeref' (M.mapKeys (map deepDeref') (h `at` r)) -- Dereference all keys and values
     deepDeref' v = v
-    isAux (CustomValue t _) | t == refIdType = True
-    isAux _ = False
 
 -- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
-objectEq :: Heap Value -> Value -> Value -> Maybe Bool
+objectEq :: Heap MapRepr -> Value -> Value -> Maybe Bool
 objectEq h (Reference t1 r1) (Reference t2 r2) = if r1 == r2
   then Just True -- Equal references point to equal maps
   else if t1 /= t2 -- Different types can occur in a generic context
     then Just False
     else let 
-      (s1, vals1) = flattenMap h r1
-      (s2, vals2) = flattenMap h r2
+      vals1 = h `at` r1
+      vals2 = h `at` r2
       in if mustDisagree h vals1 vals2
           then Just False
-          else if s1 == s2 && mustAgree h vals1 vals2
-            then Just True
-            else Nothing
+          else Nothing
 objectEq _ (MapValue _ _) (MapValue _ _) = internalError $ text "Attempt to compare two maps"
 objectEq _ v1 v2 = Just $ v1 == v2
 
-mustEq h v1 v2 = case objectEq h v1 v2 of
-  Just True -> True
-  _ -> False  
 mustNeq h v1 v2 = case objectEq h v1 v2 of
   Just False -> True
   _ -> False  
-mayEq h v1 v2 = not $ mustNeq h v1 v2
-mayNeq h v1 v2 = not $ mustEq h v1 v2
 
 mustDisagree h vals1 vals2 = M.foldl (||) False $ (M.intersectionWith (mustNeq h) vals1 vals2)
-
-mustAgree h vals1 vals2 = let common = M.intersectionWith (mustEq h) vals1 vals2 in
-      M.size vals1 == M.size common && M.size vals2 == M.size common && M.foldl (&&) True common
   
 {- Store -}  
 
@@ -140,7 +109,7 @@ storeDoc vars = vsep $ map varDoc (M.toList vars)
   where varDoc (id, val) = text id <+> text "=" <+> pretty val
     
 -- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@
-userStore :: Heap Value -> Store -> Store
+userStore :: Heap MapRepr -> Store -> Store
 userStore heap store = M.map (deepDeref heap) store    
 
 {- Memory -}
@@ -152,7 +121,7 @@ data Memory = Memory {
   _memOld :: Store,         -- ^ Old global variable store (in two-state contexts)
   _memModified :: Set Id,   -- ^ Set of global variables, which have been modified since the beginning of the current procedure
   _memConstants :: Store,   -- ^ Constant and function cache
-  _memHeap :: Heap Value    -- ^ Heap
+  _memHeap :: Heap MapRepr  -- ^ Heap
 } deriving Eq
 
 makeLenses ''Memory
@@ -175,10 +144,10 @@ visibleVariables :: Memory -> Store
 visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (mem^.memConstants)
 
 -- | Clear cached values if maps that have guard-less definitions
-clearDefinedCache :: SymbolicHeap -> Heap Value -> Heap Value
-clearDefinedCache symHeap heap = foldr (\r -> update r (MapValue (valueType (heap `at` r)) emptyMap)) heap definedRefs
+clearDefinedCache :: MapConstraints -> Heap MapRepr -> Heap MapRepr
+clearDefinedCache symHeap heap = foldr (\r -> update r emptyMap) heap definedRefs
   where
-    definedRefs = [r | (r, (defs, _)) <- M.toList symHeap, any (\def -> node (fdefGuard def) == tt) defs]
+    definedRefs = [r | (r, (defs, _)) <- M.toList symHeap, any (\def -> node (defGuard def) == tt) defs]
 
 -- | 'userStore' @symMem mem@ : @mem@ with all reference values completely dereferenced and cache of defined maps removed 
 userMemory :: SymbolicMemory -> Memory -> Memory
@@ -215,19 +184,13 @@ memoryDoc inNames outNames mem = vsep $
 instance Pretty Memory where
   pretty mem = memoryDoc [] [] mem
   
-{- Symbolic memory -}
-
--- | Symbolic heap: maps logical variables to ground constraints
-type SymbolicHeap = Map Ref ConstraintSet
-
-symbolicHeapDoc heap = vsep $ map valDoc (M.toList heap)
-  where valDoc (r, cs) = nest 2 (refDoc r <+> constraintSetDoc cs)
+{- Constraint memory -}
 
 -- | Symbolic memory: stores name and value constraints
 data SymbolicMemory = SymbolicMemory {
-  _symLocals :: SymbolicStore,       -- ^ Local name constraints
-  _symGlobals :: SymbolicStore,      -- ^ Global name constraints
-  _symHeap :: SymbolicHeap           -- ^ Value constraints
+  _symLocals :: NameConstraints,       -- ^ Local name constraints
+  _symGlobals :: NameConstraints,      -- ^ Global name constraints
+  _symHeap :: MapConstraints           -- ^ Value constraints
 }
 
 makeLenses ''SymbolicMemory
@@ -243,9 +206,9 @@ symbolicMemoryDoc :: SymbolicMemory -> Doc
 symbolicMemoryDoc mem = vsep $ 
   docNonEmpty (mem^.symLocals) (labeledStoreDoc "SLocals") ++
   docNonEmpty (mem^.symGlobals) (labeledStoreDoc "SGlobals") ++
-  docNonEmpty (mem^.symHeap) (\h -> text "SHeap:" <+> align (symbolicHeapDoc h))
+  docNonEmpty (mem^.symHeap) (\h -> text "SHeap:" <+> align (mapConstraintsDoc h))
   where
-    labeledStoreDoc label store = (text label <> text ":") <+> align (symbolicStoreDoc store)
+    labeledStoreDoc label store = (text label <> text ":") <+> align (nameConstraintsDoc store)
     docWhen flag doc = if flag then [doc] else [] 
     docNonEmpty m mDoc = docWhen (not (M.null m)) (mDoc m)
     
@@ -265,6 +228,7 @@ data Environment m = Environment
     _envCustomCount :: Map Type Int,        -- ^ For each user-defined type, number of distinct values of this type already generated
     _envQBound :: Maybe Integer,            -- ^ Maximum number of values to try for a quantified variable (unbounded if Nothing)
     _envInOld :: Bool,                      -- ^ Is an old expression currently being evaluated?
+    _envInDef :: Bool,                      -- ^ Is a definition currently being evaluated?
     _envLastTerm :: Maybe Expression        -- ^ Last evaluated term (used to determine which part of short-circuit expression determined its result)
   }
   
@@ -281,6 +245,7 @@ initEnv tc gen qbound = Environment
     _envCustomCount = M.empty,
     _envQBound = qbound,
     _envInOld = False,
+    _envInDef = False,
     _envLastTerm = Nothing
   }
   
@@ -301,8 +266,8 @@ lookupCustomCount = lookupGetter envCustomCount 0
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
 addGlobalDefinition name def env = over (envConstraints.symGlobals) (M.insert name (over _1 (++ [def]) (lookupGetter (envConstraints.symGlobals) ([], []) name env))) env
 addGlobalConstraint name def env = over (envConstraints.symGlobals) (M.insert name (over _2 (++ [def]) (lookupGetter (envConstraints.symGlobals) ([], []) name env))) env
-addValueDefinition r def env = over (envConstraints.symHeap) (M.insert r (over _1 (++ [def]) (lookupValueConstraints r env))) env
-addValueConstraint r constraint env = over (envConstraints.symHeap) (M.insert r (over _2 (++ [constraint]) (lookupValueConstraints r env))) env
+addMapDefinition r def env = over (envConstraints.symHeap) (M.insert r (over _1 (++ [def]) (lookupValueConstraints r env))) env
+addMapConstraint r constraint env = over (envConstraints.symHeap) (M.insert r (over _2 (++ [constraint]) (lookupValueConstraints r env))) env
 setCustomCount t n = over envCustomCount (M.insert t n)
 withHeap f env = let (res, h') = f (env^.envMemory.memHeap) 
   in (res, set (envMemory.memHeap) h' env )

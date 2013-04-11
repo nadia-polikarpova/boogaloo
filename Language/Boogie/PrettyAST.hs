@@ -230,18 +230,12 @@ implementationDoc name fv args rets bodies =
 {- Values -}
 
 -- | Pretty-printed map representation  
-mapReprDoc :: MapRepr -> Doc
-mapReprDoc repr = case repr of
-  Source vals -> brackets (commaSep (map itemDoc (M.toList vals)))
-  Derived base override -> refDoc base <> 
-    brackets (commaSep (map itemDoc (M.toList override))) 
-  where
-    keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
-    itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> pretty v
-    
 instance Pretty MapRepr where
-  pretty repr = mapReprDoc repr
-
+  pretty repr = let
+      keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
+      itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> pretty v
+    in brackets (commaSep (map itemDoc (M.toList repr)))
+    
 -- | Pretty-printed value
 instance Pretty Value where
   pretty (IntValue n) = integer n

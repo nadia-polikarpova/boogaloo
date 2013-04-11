@@ -3,7 +3,6 @@
 -- | Abstract syntax tree for Boogie 2
 module Language.Boogie.AST where
 
-import Language.Boogie.Pretty
 import Language.Boogie.Position
 import Language.Boogie.Heap
 import Data.Map (Map)
@@ -178,27 +177,17 @@ data BareDecl =
 {- Values -}
 
 -- | Representation of a map value
-data MapRepr = 
-  Source (Map [Value] Value) |    -- ^ Map that comes directly from a non-deterministic choice, possibly with some key-value pairs defined
-  Derived Ref (Map [Value] Value) -- ^ Map that is derived from another map by redefining values at some keys
-  deriving (Eq, Ord)
+type MapRepr = Map [Value] Value
   
 -- | Representation of an empty map  
-emptyMap = Source M.empty
-
--- | Key-value pairs stored explicitly in a map representation
-stored :: MapRepr -> Map [Value] Value
-stored (Source vals) = vals
-stored (Derived _ override) = override
+emptyMap = M.empty
   
 -- | Run-time value
 data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
   CustomValue Type Int |         -- ^ Value of a user-defined type
-  MapValue Type MapRepr |        -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
-  Reference Type Ref  |          -- ^ Map reference
-  LogicalVar Type Ref            -- ^ Logical variable with a type and name
-  
+  MapValue Type MapRepr |        -- ^ Partial instance of a map
+  Reference Type Ref             -- ^ Map reference
   deriving (Eq, Ord)
   
 -- | Type of a value
@@ -208,14 +197,7 @@ valueType (BoolValue _) = BoolType
 valueType (CustomValue t _) = t
 valueType (MapValue t _) = t
 valueType (Reference t _) = t
-valueType (LogicalVar t _) = t
-
--- | Name of a value, undefined if the value isn't a reference or
--- logical variable.
-valueName :: Value -> String
-valueName (Reference _ r) = "map_" ++ show r
-valueName (LogicalVar _ r) = "logic_" ++ show r
-
+  
 -- | 'valueFromInteger' @t n@: value of type @t@ with an integer code @n@
 valueFromInteger :: Type -> Integer -> Value  
 valueFromInteger IntType n        = IntValue n
@@ -224,7 +206,6 @@ valueFromInteger _ _              = error "cannot create a boolean or map value 
   
 unValueBool (BoolValue b) = b  
 vnot (BoolValue b) = BoolValue (not b)
-
 isEmptyMap (MapValue _ repr) = repr == emptyMap
 isEmptyMap _ = False  
     

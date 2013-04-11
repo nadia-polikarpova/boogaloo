@@ -22,14 +22,8 @@
     - Infer constraints from axioms that mention a map update (using not-equals guard?)
     - Do not ignore forall constraints for constants
     - Check if we need to normalize expressions before extracting constraints    
-    - Move definitions/constraints without guards to the front    
-  - Map representation  
-    - Map equality with overrides
-      - check that values chosen for old sources conform to constraints (problem that we don't have types when choosing a value)
-      - add non-equal guards to the new source
-    - Get rid of base-override representation and just use constraints?
-    - Fix map inequality (currently unsound when a constraints says maps are equal)
-    - Indexing by maps (so far only for functions)
+    - Move definitions/constraints without guards to the front      
+  - Indexing maps by maps
   - Execution
     - Change backtracking model: introduce generateSuchThat, which would not generate assumption violation      
     - Add symbolic values not just for maps
