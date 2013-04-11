@@ -73,6 +73,7 @@ type Expression = Pos BareExpression
 data BareExpression = 
   Literal Value |
   Var Id |                                        -- ^ 'Var' @name@
+  LogicalVar Type Ref |                           -- ^ A logical variable
   Application Id [Expression] |                   -- ^ 'Application' @f args@
   MapSelection Expression [Expression] |          -- ^ 'MapSelection' @map indexes@
   MapUpdate Expression [Expression] Expression |  -- ^ 'MapUpdate' @map indexes rhs@
