@@ -25,10 +25,10 @@
     - Move definitions/constraints without guards to the front      
   - Indexing maps by maps
   - Execution
-    - Change backtracking model: introduce generateSuchThat, which would not generate assumption violation      
-    - Add symbolic values not just for maps
-    - Make some or all operations (e.g. assume) symbolic
-  - Constraint solving  
+    - Change quantifier evaluation: extract constraints
+    - Introduce logical variables
+    - Get rid of FDef 
+    - Integrate SMT constraint solving  
   - Mark executions in which a definitional axiom is violated as suspicious? (It is usually a sign of ill-defined recursive definition)?
   
   - Error reporting: when violated spec has logical vars, output their values
