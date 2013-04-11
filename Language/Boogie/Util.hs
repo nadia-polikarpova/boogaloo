@@ -71,7 +71,9 @@ module Language.Boogie.Util (
   removeDomain,
   partitionDomain,
   mapItwType,
+  allM,
   anyM,
+  findM,
   changeState,
   withLocalState
 ) where
@@ -534,19 +536,20 @@ partitionDomain keys m = M.partitionWithKey (\k _ -> k `S.member` keys) m
 
 mapItwType f (IdTypeWhere i t w) = IdTypeWhere i (f t) w
 
--- | Monadic version of 'any' (executes boolean-valued computation for all arguments in a list until the first True is found) 
-anyM :: Monad m => (a -> m Bool) -> [a] -> m Bool
-anyM _ [] = return False
-anyM pred (x : xs) = do
-  res <- pred x
-  if res then return True else anyM pred xs
+-- | Monadic version of 'any'
+anyM :: (Functor m, Monad m) => (a -> m Bool) -> [a] -> m Bool
+anyM pred xs = isJust <$> findM pred xs
   
--- | Monadic version of 'all' (executes boolean-valued computation for all arguments in a list until the first False is found) 
-allM :: Monad m => (a -> m Bool) -> [a] -> m Bool
-allM _ [] = return True
-allM pred (x : xs) = do
+-- | Monadic version of 'all'
+allM :: (Functor m, Monad m) => (a -> m Bool) -> [a] -> m Bool
+allM pred xs = isNothing <$> findM (\x -> not <$> pred x) xs
+  
+-- | Monadic version of 'find' (finds the first element in a list for which a computation evaluates to True) 
+findM :: (Functor m, Monad m) => (a -> m Bool) -> [a] -> m (Maybe a)
+findM _ [] = return Nothing
+findM pred (x : xs) = do
   res <- pred x
-  if not res then return False else allM pred xs  
+  if res then return (Just x) else findM pred xs  
 
 -- | Execute a computation with state of type @t@ inside a computation with state of type @s@
 changeState :: Monad m => (s -> t) -> (t -> s -> s) -> StateT t m a -> StateT s m a

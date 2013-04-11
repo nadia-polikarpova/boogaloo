@@ -243,6 +243,11 @@ throwRuntimeFailure source pos = do
 -- | Push frame on the stack trace of a runtime failure
 addStackFrame frame (RuntimeFailure source pos mem trace) = throwError (RuntimeFailure source pos mem (frame : trace))
 
+-- | Throw a spec violation
+throwViolation specClause pos = do
+  lt <- use envLastTerm
+  throwRuntimeFailure (SpecViolation specClause lt) pos
+
 -- | Kinds of run-time failures
 data FailureKind = Error | -- ^ Error state reached (assertion violation)
   Unreachable | -- ^ Unreachable state reached (assumption violation)
@@ -752,7 +757,7 @@ evalLambda tv vars e pos = do
   return val
   where
     lambda = attachPos pos . Quantified Lambda tv vars
-    def = Def tv vars (conjunction [])
+    def = Def tv vars (conjunction [])    
 
 -- | Finite domain      
 type Domain = [Value]      
@@ -795,12 +800,8 @@ exec stmt = case node stmt of
   >> collectGarbage
   
 execPredicate specClause pos = do
-  b <- eval $ specExpr specClause
-  case b of 
-    BoolValue True -> return ()
-    BoolValue False -> do
-      lt <- use envLastTerm
-      throwRuntimeFailure (SpecViolation specClause lt) pos      
+  b <- unValueBool <$> eval (specExpr specClause)
+  when (not b) $ throwViolation specClause pos
     
 execHavoc names pos = do
   mapM_ forgetAnyVar names
@@ -1018,8 +1019,7 @@ checkMapDefinitions r actuals pos = do
       modify $ setCustomCount ucType n      
 
 -- | 'applyConstraint' @c actuals pos@ : 
--- check that @c (actuals)@,
--- otherwise throw an axiom violation
+-- return if @c (actuals)@ holds
 -- (@pos@ is the position of the constraint invocation)      
 applyConstraint c actuals pos = case node c of
   Quantified Lambda tv formals body ->
@@ -1029,48 +1029,43 @@ applyConstraint c actuals pos = case node c of
       actualTypes = map valueType actuals
       locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty    
     in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
-      then return ()
-      else do
-        satisfied <- unValueBool <$> locally (evalSub body)
-        when (not satisfied) violation
-  _ -> do
-        satisfied <- unValueBool <$> evalSub c
-        when (not satisfied) violation
-  where    
-    violation = do
-      lt <- use envLastTerm
-      throwRuntimeFailure (SpecViolation (SpecClause Axiom True c) lt) pos
-  
+      then return True
+      else unValueBool <$> locally (evalSub body)
+  _ -> unValueBool <$> evalSub c  
     
 -- | 'checkNameConstraints' @name pos@: assume all constraints of entity @name@ mentioned at @pos@;
 -- is @name@ is of map type, attach all its forall-definitions and forall-contraints to the corresponding reference 
 -- Must be executed in the context of the constraint.
 checkNameConstraints name pos = (do
     (defs, constraints) <- gets $ lookupNameConstraints name
-    mapM_ checkConstraint constraints
-    mapM_ attachDefinition defs
+    if any isParametrized constraints
+      then do -- name is a map and all constraints are parametrized
+        Reference _ r <- evalVar name pos
+        mapM_ (attachDefinition r) defs
+        mapM_ (attachConstraint r) constraints
+      else do -- name is a scalar and all constraints are simple
+        mc <- findM (\c -> not <$> applyConstraint c [] pos) constraints
+        when (isJust mc) (throwViolation (SpecClause Axiom True $ fromJust mc) pos)        
   ) `catchError` addFrame
   where
-    checkConstraint c = if isParametrized c
-      then do                                 -- Parametrized constraint: attach to the map value
-        Reference _ r <- evalVar name pos
+    -- | Attach parametrized definition to the map value
+    attachDefinition r def = do
+        symVal <- symbolicEvalDef def
+        extendMapDefinition r symVal  
+    -- | Attach parametrized constraint to the map value
+    attachConstraint r c = do                                 
         symVal <- symbolicEval c
         extendMapConstraint r symVal  
-      else applyConstraint c [] pos           -- Simple constraint: assume it
-    attachDefinition def = if isParametrizedDef def 
-      then do                                 -- Parametrized definition: attach to the map value
-        Reference _ r <- evalVar name pos
-        symVal <- symbolicEvalDef def
-        extendMapDefinition r symVal
-      else return ()                           -- Simple definition: ignore
+        return True
     addFrame = addStackFrame (StackFrame pos name)
       
 -- | 'checkMapConstraints' @r actuals pos@ : assume all constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
 checkMapConstraints r actuals pos = do
   constraints <- snd <$> gets (lookupValueConstraints r)
-  mapM_ (\c -> applyConstraint c actuals pos) constraints        
-
+  mc <- findM (\c -> not <$> applyConstraint c actuals pos) constraints
+  when (isJust mc) (throwViolation (SpecClause Axiom True $ fromJust mc) pos)
+  
 {- Preprocessing -}
 
 -- | Collect procedure implementations, and constant/function/global variable constraints
@@ -1129,7 +1124,7 @@ extractConstraints tc bExpr = extractConstraints' tc [] [] [] (negationNF bExpr)
 extractConstraints' :: Context -> [Id] -> [IdType] -> [Expression] -> Expression -> NameConstraints
 extractConstraints' tc tv vars guards body = case (node body) of
   Quantified Forall tv' vars' bExpr -> extractConstraints' tc (tv ++ tv') (vars ++ vars') guards bExpr
-  Quantified Exists _ _ _ -> M.empty -- ToDo: treat as atomic
+  Quantified Exists _ _ _ -> M.empty -- ToDo: skolemize?
   BinaryExpression And bExpr1 bExpr2 -> let
     constraints1 = extractConstraints' tc tv vars guards bExpr1
     constraints2 = extractConstraints' tc tv vars guards bExpr2
