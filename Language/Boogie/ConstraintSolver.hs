@@ -19,6 +19,21 @@ import           Language.Boogie.Position
 import           Language.Boogie.PrettyAST ()
 import           Language.Boogie.Pretty
 
+type Solution = Map Ref Value
+
+-- data MapWithElse = MapWithElse
+--     { mapPart :: MapRepr
+--     , elsepart :: Value
+--     }
+
+-- (!) :: MapWithElse -> [Value] -> Value
+-- (!) (MapWithElse m el) i = maybe el id (Map.lookup m i)
+
+-- data Solution = Solution 
+--     { forcerLogical :: Map Ref Value
+--     , forcerMaps    :: Map Ref MapWithElse
+--     }
+
 ex1 :: Map Ref String
 ex1 = Map.map (show . pretty) (solveConstr constrs)
     where
@@ -29,11 +44,12 @@ ex1 = Map.map (show . pretty) (solveConstr constrs)
                      (p0 (BinaryExpression Plus v0 v0))
                      c4)]
 
+
 -- | Given a set of constraint expressions produce a mapping
 -- of references to their concrete values.
 --
 -- FIXME: This is incomplete, as it does not include function maps yet.
-solveConstr :: [Expression] -> Map Ref Value
+solveConstr :: [Expression] -> Solution
 solveConstr constrs = unsafePerformIO (evalZ3 checkConstraints)
     where
       -- | Produce a the result in the Z3 monad, to be extracted later.
