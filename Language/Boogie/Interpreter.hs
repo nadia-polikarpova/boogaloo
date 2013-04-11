@@ -689,20 +689,22 @@ evalMapSelection m args pos = do
       case M.lookup argsV (h `at` r) of    -- Lookup a cached value
         Just val -> wellDefined val
         Nothing -> do                           -- If not found, look for an applicable definition          
-          tc <- use envTypeContext
+          tc <- use envTypeContext          
           definedValue <- checkMapDefinitions r argsV pos
           case definedValue of
-            Just val -> cache r argsV val
+            Just val -> do
+              inDef <- use envInDef
+              cache r argsV val (not inDef)
             Nothing -> do                       -- If not found, choose a value non-deterministically
               mapM_ (rejectMapIndex pos) argsV
               let rangeType = exprType tc (gen $ MapSelection m args)
               chosenValue <- generateValue rangeType pos
-              cache r argsV chosenValue
+              cache r argsV chosenValue True
     _ -> return mV -- function without arguments (ToDo: is this how it should be handled?)
   where
-    cache r argsV val = do              
+    cache r argsV val check = do              
       setMapValue r argsV val
-      checkMapConstraints r argsV pos
+      when check $ checkMapConstraints r argsV pos
       return val
         
 evalMapUpdate m args new pos = do
@@ -963,21 +965,27 @@ checkDefinitions' myCode mCode (def : defs) actuals pos = tryDefinitions `catchE
 -- if @guard (actuals)@ return the result of @body (actuals)@,
 -- otherwise return 'Nothing'
 -- (@pos@ is the position of the definition invocation)      
-applyDefinition (Def tv formals guard body) actuals pos =
+applyDefinition def@(Def tv formals guard body) actuals pos = do
   if isNothing $ unifier tv formalTypes actualTypes -- Is the definition applicable to these types?
     then return Nothing
-    else do      
-      applicable <- unValueBool <$> locally (evalSub guard) -- Is the definition applicable to these values?
-      if not applicable
+    else do
+      applicable <- unValueBool <$> evalInDef guard -- Is the definition applicable to these values?
+      res <- if not applicable
         then return Nothing
-        else Just <$> locally (evalSub body)
+        else Just <$> evalInDef body
+      return res
   where
     formalNames = map fst formals
     formalTypes = map snd formals
     actualTypes = map valueType actuals
     locally = if null formals
         then id
-        else executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty    
+        else executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty
+    evalInDef expr = do
+      oldInDef <- use envInDef
+      envInDef .= True
+      res <- locally (evalSub expr) `finally` (envInDef .= oldInDef)
+      return res
     
 -- | 'checkNameDefinitions' @name pos@ : return a value for @name@ mentioned at @pos@, if there is an applicable definition.
 -- Must be executed in the context of the definition.

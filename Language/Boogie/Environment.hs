@@ -34,6 +34,7 @@ module Language.Boogie.Environment (
   envCustomCount,
   envQBound,
   envInOld,
+  envInDef,
   envLastTerm,
   initEnv,
   lookupProcedure,
@@ -227,6 +228,7 @@ data Environment m = Environment
     _envCustomCount :: Map Type Int,        -- ^ For each user-defined type, number of distinct values of this type already generated
     _envQBound :: Maybe Integer,            -- ^ Maximum number of values to try for a quantified variable (unbounded if Nothing)
     _envInOld :: Bool,                      -- ^ Is an old expression currently being evaluated?
+    _envInDef :: Bool,                      -- ^ Is a definition currently being evaluated?
     _envLastTerm :: Maybe Expression        -- ^ Last evaluated term (used to determine which part of short-circuit expression determined its result)
   }
   
@@ -243,6 +245,7 @@ initEnv tc gen qbound = Environment
     _envCustomCount = M.empty,
     _envQBound = qbound,
     _envInOld = False,
+    _envInDef = False,
     _envLastTerm = Nothing
   }
   
