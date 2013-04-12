@@ -7,6 +7,7 @@ module Language.Boogie.Position
     ,sourceColumn
     ,sourceName
 
+    ,samePos
     ,noPos
     ,attachPos
     ,gen
@@ -28,6 +29,8 @@ data Pos a = Pos {
 
 instance Eq a => Eq (Pos a) where
     (==) p1 p2 = node p1 == node p2
+    
+samePos (Pos p1 _) (Pos p2 _) = p1 == p2    
 
 instance Show a => Show (Pos a) where
     show p = show (node p)

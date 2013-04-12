@@ -58,6 +58,7 @@ import Language.Boogie.Heap
 import Language.Boogie.Generator
 import Language.Boogie.TypeChecker (Context, ctxGlobals)
 import Language.Boogie.Pretty
+import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Data.Set (Set)
@@ -265,9 +266,9 @@ lookupCustomCount = lookupGetter envCustomCount 0
 -- Environment modifications  
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
 addGlobalDefinition name def env = over (envConstraints.symGlobals) (M.insert name (over _1 (++ [def]) (lookupGetter (envConstraints.symGlobals) ([], []) name env))) env
-addGlobalConstraint name def env = over (envConstraints.symGlobals) (M.insert name (over _2 (++ [def]) (lookupGetter (envConstraints.symGlobals) ([], []) name env))) env
-addMapDefinition r def env = over (envConstraints.symHeap) (M.insert r (over _1 (++ [def]) (lookupValueConstraints r env))) env
-addMapConstraint r constraint env = over (envConstraints.symHeap) (M.insert r (over _2 (++ [constraint]) (lookupValueConstraints r env))) env
+addGlobalConstraint name con env = over (envConstraints.symGlobals) (M.insert name (over _2 (++ [con]) (lookupGetter (envConstraints.symGlobals) ([], []) name env))) env
+addMapDefinition r def env = over (envConstraints.symHeap) (M.insert r (over _1 (nub . (++ [def])) (lookupValueConstraints r env))) env
+addMapConstraint r con env = over (envConstraints.symHeap) (M.insert r (over _2 (nub. (++ [con])) (lookupValueConstraints r env))) env
 setCustomCount t n = over envCustomCount (M.insert t n)
 withHeap f env = let (res, h') = f (env^.envMemory.memHeap) 
   in (res, set (envMemory.memHeap) h' env )

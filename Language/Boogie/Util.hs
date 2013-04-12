@@ -19,6 +19,7 @@ module Language.Boogie.Util (
   freeSelections,
   applications,
   mapRefs,
+  refSelections,
   -- * Specs
   preconditions,
   postconditions,
@@ -34,7 +35,7 @@ module Language.Boogie.Util (
   isParametrizedDef,
   constraintSetDoc,
   NameConstraints,
-  ncUnion,
+  constraintUnion,
   nameConstraintsDoc,
   MapConstraints,
   mapConstraintsDoc,
@@ -64,8 +65,8 @@ module Language.Boogie.Util (
   functionConst,
   functionFromConst,
   -- * Misc
-  interval,
   fromRight,
+  maybe2,
   deleteAll,
   restrictDomain,
   removeDomain,
@@ -259,57 +260,71 @@ paramSubst sig def = if not (pdefParamsRenamed def)
   then id 
   else exprSubst (paramBinding sig def)
   
--- | 'freeSelections' @expr@ : all map selections that occur in @expr@, where the map is a free variable
+-- | 'freeSelections' @expr@ : all named map selections that occur in @expr@, where the map is a free variable
 freeSelections :: Expression -> [(Id, [Expression])]
-freeSelections expr = freeSelections' $ node expr
-
-freeSelections' (Literal _) = []
-freeSelections' (Var x) = []
-freeSelections' (Application name args) = nub . concat $ map freeSelections args
-freeSelections' (MapSelection m args) = case node m of 
- Var name -> (name, args) : (nub . concat $ map freeSelections args)
- _ -> nub . concat $ map freeSelections (m : args)
-freeSelections' (MapUpdate m args val) =  nub . concat $ map freeSelections (val : m : args)
-freeSelections' (Old e) = internalError $ text "freeSelections should only be applied in single-state context"
-freeSelections' (IfExpr cond e1 e2) = nub . concat $ [freeSelections cond, freeSelections e1, freeSelections e2]
-freeSelections' (Coercion e _) = freeSelections e
-freeSelections' (UnaryExpression _ e) = freeSelections e
-freeSelections' (BinaryExpression _ e1 e2) = nub . concat $ [freeSelections e1, freeSelections e2]
-freeSelections' (Quantified _ _ boundVars e) = let boundVarNames = map fst boundVars 
-  in [(m, args) | (m, args) <- freeSelections e, m `notElem` boundVarNames]
+freeSelections expr = case node expr of
+  Literal _ -> []
+  Var x -> []
+  Application name args -> nub . concat $ map freeSelections args
+  MapSelection m args -> case node m of 
+   Var name -> (name, args) : (nub . concat $ map freeSelections args)
+   _ -> nub . concat $ map freeSelections (m : args)
+  MapUpdate m args val ->  nub . concat $ map freeSelections (val : m : args)
+  Old e -> internalError $ text "freeSelections should only be applied in single-state context"
+  IfExpr cond e1 e2 -> nub . concat $ [freeSelections cond, freeSelections e1, freeSelections e2]
+  Coercion e _ -> freeSelections e
+  UnaryExpression _ e -> freeSelections e
+  BinaryExpression _ e1 e2 -> nub . concat $ [freeSelections e1, freeSelections e2]
+  Quantified _ _ boundVars e -> let boundVarNames = map fst boundVars 
+    in [(m, args) | (m, args) <- freeSelections e, m `notElem` boundVarNames]
   
 -- | 'applications' @expr@ : all function applications that occur in @expr@
 applications :: Expression -> [(Id, [Expression])]
-applications expr = applications' $ node expr
-
-applications' (Literal _) = []
-applications' (Var x) = []
-applications' (Application name args) = (name, args) : (nub . concat $ map applications args)
-applications' (MapSelection m args) = nub . concat $ map applications (m : args)
-applications' (MapUpdate m args val) =  nub . concat $ map applications (val : m : args)
-applications' (Old e) = internalError $ text "applications should only be applied in single-state context"
-applications' (IfExpr cond e1 e2) = nub . concat $ [applications cond, applications e1, applications e2]
-applications' (Coercion e _) = applications e
-applications' (UnaryExpression _ e) = applications e
-applications' (BinaryExpression _ e1 e2) = nub . concat $ [applications e1, applications e2]
-applications' (Quantified _ _ _ e) = applications e  
+applications expr = case node expr of
+  Literal _ -> []
+  Var x -> []
+  Application name args -> (name, args) : (nub . concat $ map applications args)
+  MapSelection m args -> nub . concat $ map applications (m : args)
+  MapUpdate m args val ->  nub . concat $ map applications (val : m : args)
+  Old e -> internalError $ text "applications should only be applied in single-state context"
+  IfExpr cond e1 e2 -> nub . concat $ [applications cond, applications e1, applications e2]
+  Coercion e _ -> applications e
+  UnaryExpression _ e -> applications e
+  BinaryExpression _ e1 e2 -> nub . concat $ [applications e1, applications e2]
+  Quantified _ _ _ e -> applications e  
 
 -- | 'mapRefs' @expr@ : all map references that occur in @expr@
-mapRefs :: Expression -> [Ref]
-mapRefs expr = mapRefs' $ node expr
-
-mapRefs' (Literal (Reference _ r)) = [r]
-mapRefs' (Literal _) = []
-mapRefs' (Var x) = []
-mapRefs' (Application name args) = nub . concat $ map mapRefs args
-mapRefs' (MapSelection m args) = nub . concat $ map mapRefs (m : args)
-mapRefs' (MapUpdate m args val) =  nub . concat $ map mapRefs (val : m : args)
-mapRefs' (Old e) = internalError $ text "mapRefs should only be applied in single-state context"
-mapRefs' (IfExpr cond e1 e2) = nub . concat $ [mapRefs cond, mapRefs e1, mapRefs e2]
-mapRefs' (Coercion e _) = mapRefs e
-mapRefs' (UnaryExpression _ e) = mapRefs e
-mapRefs' (BinaryExpression _ e1 e2) = nub . concat $ [mapRefs e1, mapRefs e2]
-mapRefs' (Quantified _ _ _ e) = mapRefs e  
+mapRefs :: Expression -> [Value]
+mapRefs expr = case node expr of
+  Literal v@(Reference _ _) -> [v]
+  Literal _ -> []
+  Var x -> []
+  Application name args -> nub . concat $ map mapRefs args
+  MapSelection m args -> nub . concat $ map mapRefs (m : args)
+  MapUpdate m args val ->  nub . concat $ map mapRefs (val : m : args)
+  Old e -> internalError $ text "mapRefs should only be applied in single-state context"
+  IfExpr cond e1 e2 -> nub . concat $ [mapRefs cond, mapRefs e1, mapRefs e2]
+  Coercion e _ -> mapRefs e
+  UnaryExpression _ e -> mapRefs e
+  BinaryExpression _ e1 e2 -> nub . concat $ [mapRefs e1, mapRefs e2]
+  Quantified _ _ _ e -> mapRefs e  
+  
+-- | 'refSelections' @expr@ : all map reference selections that occur in @expr@, where the map is a free variable
+refSelections :: Expression -> [(Value, [Expression])]
+refSelections expr = case node expr of
+  Literal _ -> []
+  Var x -> []
+  Application name args -> nub . concat $ map refSelections args
+  MapSelection m args -> case node m of 
+   Literal v@(Reference _ _) -> (v, args) : (nub . concat $ map refSelections args)
+   _ -> nub . concat $ map refSelections (m : args)
+  MapUpdate m args val ->  nub . concat $ map refSelections (val : m : args)
+  Old e -> internalError $ text "refSelections should only be applied in single-state context"
+  IfExpr cond e1 e2 -> nub . concat $ [refSelections cond, refSelections e1, refSelections e2]
+  Coercion e _ -> refSelections e
+  UnaryExpression _ e -> refSelections e
+  BinaryExpression _ e1 e2 -> nub . concat $ [refSelections e1, refSelections e2]
+  Quantified _ _ boundVars e -> refSelections e
 
 {- Specs -}
 
@@ -389,9 +404,8 @@ constraintSetDoc cs = vsep (map pretty (fst cs)) $+$ vsep (map pretty (snd cs))
 -- | Mapping from names to their constraints
 type NameConstraints = Map Id ConstraintSet
 
--- | Union of name constraints (values at the same key are concatenated)
-ncUnion :: NameConstraints -> NameConstraints -> NameConstraints
-ncUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2
+-- | Union of constraints (values at the same key are concatenated)
+constraintUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2
 
 -- | Pretty-printed abstract store
 nameConstraintsDoc :: NameConstraints -> Doc
@@ -511,12 +525,13 @@ functionFromConst name = let (prefix, suffix) = splitAt (length functionFrefix) 
   
 {- Misc -}
 
--- | 'interval' @(lo, hi)@ : Interval from @lo@ to @hi@
-interval (lo, hi) = [lo..hi]
-
 -- | Extract the element out of a 'Right' and throw an error if its argument is 'Left'
 fromRight :: Either a b -> b
 fromRight (Right x) = x
+
+-- | Two-argument equivalent of 'maybe'
+maybe2 :: c -> (a -> b -> c) -> (Maybe a) -> (Maybe b) -> c  
+maybe2 def f mx my = maybe def (maybe (const def) f mx) my  
 
 -- | 'deleteAll' @keys m@ : map @m@ with @keys@ removed from its domain
 deleteAll :: Ord k => [k] -> Map k a -> Map k a

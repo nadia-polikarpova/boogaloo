@@ -34,7 +34,6 @@ import Language.Boogie.AST
 import Language.Boogie.Util
 import Language.Boogie.Heap
 import Language.Boogie.Generator
-import Language.Boogie.Intervals
 import Language.Boogie.Position
 import Language.Boogie.Tokens (nonIdChar)
 import Language.Boogie.Pretty
@@ -213,12 +212,15 @@ executeGlobally computation = do
 
 data FailureSource = 
   SpecViolation SpecClause (Maybe Expression) | -- ^ Violation of user-defined specification
-  DivisionByZero |                              -- ^ Division by zero  
   UnsupportedConstruct Doc |                    -- ^ Language construct is not yet supported (should disappear in later versions)
-  InfiniteDomain Id Interval |                  -- ^ Quantification over an infinite set
   InternalException InternalCode                -- ^ Must be cought inside the interpreter and never reach the user
-  deriving Eq
-
+  
+instance Eq FailureSource where
+  SpecViolation clause1 lt1 == SpecViolation clause2 lt2  = clause1 == clause2 && maybe2 True samePos lt1 lt2
+  UnsupportedConstruct doc1 == UnsupportedConstruct doc2  = doc1 == doc2
+  InternalException code1 == InternalException code2      = code1 == code2
+  _ == _                                                  = False
+  
 -- | Information about a procedure or function call  
 data StackFrame = StackFrame {
   callPos :: SourcePos,    -- ^ Source code position of the call
@@ -259,7 +261,6 @@ failureKind :: RuntimeFailure -> FailureKind
 failureKind err = case rtfSource err of
   SpecViolation (SpecClause _ True _) _ -> Unreachable
   SpecViolation (SpecClause _ False _) _ -> Error
-  DivisionByZero -> Error
   _ -> Nonexecutable
   
 instance Error RuntimeFailure where
@@ -277,8 +278,6 @@ runtimeFailureDoc debug err =
     failureSourceDoc (SpecViolation (SpecClause specType isFree e) lt) = text (clauseName specType isFree) <+> dquotes (pretty e) <+> defPosition specType e <+>
       lastTermDoc lt <+>
       text "violated"
-    failureSourceDoc (DivisionByZero) = text "Division by zero"
-    failureSourceDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
     failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> s
     
     clauseName Inline isFree = if isFree then "Assumption" else "Assertion"  
@@ -310,13 +309,8 @@ instance Pretty RuntimeFailure where pretty err = runtimeFailureDoc True err
 -- | Do two runtime failures represent the same fault?
 -- Yes if the same property failed at the same program location
 -- or, for preconditions, for the same caller   
-sameFault f f' = rtfSource f == rtfSource f' && rtfPos f == rtfPos f' &&
-  case rtfSource f of
-    SpecViolation _ lt -> let SpecViolation _ lt' = rtfSource f' in lt == lt'
-    _ -> True
-  
 instance Eq RuntimeFailure where
-  f == f' = sameFault f f'
+  f == f' = rtfSource f == rtfSource f' && rtfPos f == rtfPos f'
     
 -- | Internal error codes 
 data InternalCode = NotLinear | UnderConstruction Int
@@ -554,21 +548,21 @@ collectGarbage = do
     r <- state $ withHeap dealloc
     mapM_ decRefCountValue (M.elems $ h `at` r)
     cs <- gets $ lookupValueConstraints r
-    let usedRefs = nub . concatMap mapRefs $ concatMap (\c -> [defGuard c, defBody c]) (fst cs) ++ snd cs 
+    let usedRefs = nub . map unValueRef . concatMap mapRefs $ concatMap (\c -> [defGuard c, defBody c]) (fst cs) ++ snd cs 
     mapM_ (\r -> envMemory.memHeap %= decRefCount r) usedRefs    
     envConstraints.symHeap %= M.delete r
     collectGarbage)
-    
+
 -- | 'extendMapDefinition' @r def@ : add @def@ to the definiton of the map @r@
 extendMapDefinition r def = do
   modify $ addMapDefinition r def
-  let usedRefs = nub $ mapRefs (defGuard def) ++ mapRefs (defBody def)
+  let usedRefs = nub . map unValueRef $ mapRefs (defGuard def) ++ mapRefs (defBody def)
   mapM_ (\r -> envMemory.memHeap %= incRefCount r) usedRefs    
 
 -- | 'extendMapConstraint' @r c@ : add @c@ to the consraints of the map @r@  
 extendMapConstraint r c = do
   modify $ addMapConstraint r c
-  mapM_ (\r -> envMemory.memHeap %= incRefCount r) (mapRefs c)
+  mapM_ (\r -> envMemory.memHeap %= incRefCount r) (map unValueRef $ mapRefs c)
   
 {- Expressions -}
 
@@ -595,10 +589,10 @@ binOp pos Plus    (IntValue n1) (IntValue n2)   = return $ IntValue (n1 + n2)
 binOp pos Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
 binOp pos Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
 binOp pos Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then throwRuntimeFailure DivisionByZero pos
+                                                then generateValue IntType pos
                                                 else return $ IntValue (fst (n1 `euclidean` n2))
 binOp pos Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then throwRuntimeFailure DivisionByZero pos
+                                                then generateValue IntType pos
                                                 else return $ IntValue (snd (n1 `euclidean` n2))
 binOp pos Leq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 <= n2)
 binOp pos Ls      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 < n2)
@@ -641,8 +635,8 @@ evalSub expr = case node expr of
   UnaryExpression op e -> unOp op <$> evalSub e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
   Quantified Lambda tv vars e -> evalLambda tv vars e (position expr)
-  Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e) (position expr)
-  Quantified Exists tv vars e -> evalExists tv vars e (position expr)
+  Quantified Forall tv vars e -> evalForall tv vars e (position expr)
+  Quantified Exists tv vars e -> vnot <$> evalForall tv vars (enot e) (position expr)
   where
     functionExpr name = gen . Var $ functionConst name
   
@@ -757,34 +751,32 @@ evalLambda tv vars e pos = do
   return val
   where
     lambda = attachPos pos . Quantified Lambda tv vars
-    def = Def tv vars (conjunction [])    
-
--- | Finite domain      
-type Domain = [Value]      
-
-evalExists :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> SourcePos -> Execution m Value      
-evalExists tv vars e pos = let Quantified Exists tv' vars' e' = node $ normalize (attachPos pos $ Quantified Exists tv vars e)
-  in evalExists' tv' vars' e'
-
-evalExists' :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> Execution m Value    
-evalExists' tv vars e = do
-  when (not (null tv)) $ throwRuntimeFailure (UnsupportedConstruct $ text "quantification over types") (position e)
-  localConstraints <- use $ envConstraints.symLocals
-  BoolValue <$> executeNested M.empty vars evalWithDomains
+    def = Def tv vars (conjunction [])
+    
+evalForall :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> SourcePos -> Execution m Value
+evalForall tv vars e pos = do
+  symExpr <- symbolicEval (attachPos pos $ Quantified Forall tv vars e)
+  let mc = extractMapConstraints symExpr
+  BoolValue <$> allM evalForMap (M.toList mc)
   where
-    evalWithDomains = do
-      doms <- domains e varNames
-      evalForEach varNames doms
-    -- | evalForEach vars domains: evaluate e for each combination of possible values of vars, drown from respective domains
-    evalForEach :: (Monad m, Functor m) => [Id] -> [Domain] -> Execution m Bool
-    evalForEach [] [] = unValueBool <$> evalSub e
-    evalForEach (var : vars) (dom : doms) = anyM (fixOne vars doms var) dom
-    -- | Fix the value of var to val, then evaluate e for each combination of values for the rest of vars
-    fixOne :: (Monad m, Functor m) => [Id] -> [Domain] -> Id -> Value -> Execution m Bool
-    fixOne vars doms var val = do
-      resetVar memLocals var val
-      evalForEach vars doms
-    varNames = map fst vars
+    -- ToDo: after introducing logical variables: allM theWholeProcess constraints
+    evalForMap (Reference t r, (defs, constraints)) = do
+      sat <- allM (\c -> checkCached r c) constraints
+      if sat  -- If all cached values satisfy the constraint
+        then decideForMap r t defs constraints -- no evidence yet if the constraint holds for all arguments, make a non-deterministic choice
+        else return False                           -- found evidence that the constraint does not hold
+    checkCached r c = do
+      cache <- readHeap r
+      allM (\actuals -> applyConstraint c actuals pos) (M.keys cache)
+    decideForMap r (MapType tv domains _) defs constraints = do
+      -- ToDo: tv?
+      -- ToDo: we could plug in linear analysis here and replace with genIndex sometimes
+      index <- mapM (flip generateValue pos) domains -- choose an index non-deterministically
+      sat <- allM (\c -> applyConstraint c index pos) constraints
+      when sat $ mapM_ (extendMapDefinition r) defs
+      when sat $ mapM_ (extendMapConstraint r) constraints      
+      (error . show . pretty) <$> use (envConstraints)
+      return sat
           
 {- Statements -}
 
@@ -836,7 +828,7 @@ execCallBySig sig lhss args pos = do
       i <- generate (`genIndex` length defs)
       return (sig, defs !! i)
     params = psigParams sig
-    paramConstraints tc = M.filterWithKey (\k _ -> k `elem` map itwId params) $ foldr ncUnion M.empty $ map (extractConstraints tc . itwWhere) params
+    paramConstraints tc = M.filterWithKey (\k _ -> k `elem` map itwId params) $ foldr constraintUnion M.empty $ map (extractNameConstraints tc . itwWhere) params
     -- For procedures with no implementation: dummy definition that just havocs all modifiable globals
     dummyDef tc = PDef {
         pdefIns = map itwId (psigArgs sig),
@@ -1103,7 +1095,7 @@ processProcedureBody name pos args rets body = do
   let paramsRenamed = map itwId params /= (argNames ++ retNames)    
   let flatBody = (map (mapItwType (resolve tc)) (concat $ fst body), M.fromList (toBasicBlocks $ snd body))
   let allLocals = params ++ fst flatBody
-  let localConstraints = M.filterWithKey (\k _ -> k `elem` map itwId allLocals) $ foldr ncUnion M.empty $ map (extractConstraints tc . itwWhere) allLocals
+  let localConstraints = M.filterWithKey (\k _ -> k `elem` map itwId allLocals) $ foldr constraintUnion M.empty $ map (extractNameConstraints tc . itwWhere) allLocals
   modify $ addProcedureImpl name (PDef argNames retNames paramsRenamed flatBody localConstraints pos) 
   where
     argNames = map fst args
@@ -1111,35 +1103,51 @@ processProcedureBody name pos args rets body = do
 
 processAxiom expr = do
   tc <- use envTypeContext
-  envConstraints.symGlobals %= (`ncUnion` extractConstraints tc expr)
+  envConstraints.symGlobals %= (`constraintUnion` extractNameConstraints tc expr)
   
 {- Constant and function constraints -}
 
+extractNameConstraints tc = extractConstraints tc freeVars (\e -> freeSelections e ++ over (mapped._1) functionConst (applications e)) defLhs
+  where
+    defLhs e = case node e of
+      Var name -> Just (name, [])
+      MapSelection (Pos _ (Var name)) args -> Just (name, args)
+      Application name args -> Just (functionConst name, args)
+      _ -> Nothing
+
+extractMapConstraints = extractConstraints emptyContext mapRefs refSelections defLhs
+  where
+    defLhs e = case node e of
+      (Literal v@(Reference _ _)) -> Just (v, [])
+      MapSelection (Pos _ (Literal v@(Reference _ _))) args -> Just (v, args)
+      _ -> Nothing
+
 -- | 'extractConstraints' @tc bExpr@ : extract definitions and constraints from @bExpr@ in type context @tc@
-extractConstraints :: Context -> Expression -> NameConstraints
-extractConstraints tc bExpr = extractConstraints' tc [] [] [] (negationNF bExpr)
+extractConstraints :: Ord a => Context -> (Expression -> [a]) -> (Expression -> [(a, [Expression])]) -> (Expression -> Maybe (a, [Expression])) -> Expression -> Map a ConstraintSet
+extractConstraints tc scalars selections defLhs bExpr = extractConstraints' tc scalars selections defLhs [] [] [] (negationNF bExpr)
 
 -- | 'extractConstraints'' @tc tv vars guards body@ : extract definitions and constraints from expression @guards@ ==> @body@
 -- bound type variables @tv@ and bound variables @vars@ in type context @tc@
-extractConstraints' :: Context -> [Id] -> [IdType] -> [Expression] -> Expression -> NameConstraints
-extractConstraints' tc tv vars guards body = case (node body) of
-  Quantified Forall tv' vars' bExpr -> extractConstraints' tc (tv ++ tv') (vars ++ vars') guards bExpr
+extractConstraints' :: Ord a => Context -> (Expression -> [a]) -> (Expression -> [(a, [Expression])]) -> (Expression -> Maybe (a, [Expression])) -> [Id] -> [IdType] -> [Expression] -> Expression -> Map a ConstraintSet
+extractConstraints' tc scalars selections defLhs tv vars guards body = case (node body) of
+  Quantified Forall tv' vars' bExpr -> extractConstraints' tc scalars selections defLhs (tv ++ tv') (vars ++ vars') guards bExpr
   Quantified Exists _ _ _ -> M.empty -- ToDo: skolemize?
   BinaryExpression And bExpr1 bExpr2 -> let
-    constraints1 = extractConstraints' tc tv vars guards bExpr1
-    constraints2 = extractConstraints' tc tv vars guards bExpr2
-    in constraints1 `ncUnion` constraints2
+    constraints1 = extractConstraints' tc scalars selections defLhs tv vars guards bExpr1
+    constraints2 = extractConstraints' tc scalars selections defLhs tv vars guards bExpr2
+    in constraints1 `constraintUnion` constraints2
   BinaryExpression Or bExpr1 bExpr2 -> let
-    constraints1 = extractConstraints' tc tv vars ((negationNF $ enot bExpr1) : guards) bExpr2
-    constraints2 = extractConstraints' tc tv vars ((negationNF $ enot bExpr2) : guards) bExpr1
-    in constraints1 `ncUnion` constraints2
+    constraints1 = extractConstraints' tc scalars selections defLhs tv vars ((negationNF $ enot bExpr1) : guards) bExpr2
+    constraints2 = extractConstraints' tc scalars selections defLhs tv vars ((negationNF $ enot bExpr2) : guards) bExpr1
+    in constraints1 `constraintUnion` constraints2
   BinaryExpression Eq expr1 expr2 -> let
     defs1 = extractDefsAtomic expr1 expr2
     defs2 = extractDefsAtomic expr2 expr1
     constraints = extractConstraintsAtomic
-    in foldr1 ncUnion [defs1, defs2, constraints]
+    in foldr1 constraintUnion [defs1, defs2, constraints]
   _ -> extractConstraintsAtomic
   where
+  
     fvBody = freeVars body
     fvGuards = concatMap freeVars guards
     allFV = fvBody ++ fvGuards
@@ -1147,34 +1155,34 @@ extractConstraints' tc tv vars guards body = case (node body) of
     usedVars = [(v, t) | (v, t) <- vars, v `elem` allFV]
     boundTC = nestedContext M.empty vars tc { ctxTypeVars = tv }
   
-    extractDefsAtomic lhs rhs = case node lhs of
-      Var name -> addDefFor name [] rhs
-      MapSelection (Pos _ (Var name)) args -> addDefFor name args rhs
-      Application name args -> addDefFor (functionConst name) args rhs
-      _ -> M.empty
-    addDefFor name args rhs = let
+    extractDefsAtomic lhs rhs = case defLhs lhs of
+      Just (x, args) -> addDefFor x args rhs
+      Nothing -> M.empty
+    addDefFor x args rhs = let
         argTypes = map (exprType boundTC) args
         (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
         allGuards = concat argGuards ++ guards
         extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
       in if length formals == length args && null extraVars -- Only possible if all arguments are simple and there are no extra variables
-        then M.singleton name ([Def tv (zip formals argTypes) (conjunction allGuards) rhs], [])
+        then M.singleton x ([Def tv (zip formals argTypes) (conjunction allGuards) rhs], [])
         else M.empty
     
-    extractConstraintsAtomic = case usedVars of -- This is a compromise: quantified expressions constrain names they mention of any arity but zero (ToDo: think about it)
-      [] -> foldr ncUnion M.empty $ map addSimpleConstraintFor fvBody
-      _ -> foldr ncUnion M.empty $ map addForallConstraintFor (freeSelections body ++ over (mapped._1) functionConst (applications body))
-    addSimpleConstraintFor name = M.singleton name ([], [guardWith guards body])
-    addForallConstraintFor (name, args) = let
+    -- We extract a parametrized constraint from an application if its argumnets contain at least one bound variable
+    extractConstraintsAtomic = case usedVars of
+      [] -> foldr constraintUnion M.empty $ map addSimpleConstraintFor (scalars body)   -- Constant application cannot contain any bound variable, so don't even try
+      _ -> foldr constraintUnion M.empty $ map addForallConstraintFor (selections body)
+    addSimpleConstraintFor x = M.singleton x ([], [guardWith guards body])
+    addForallConstraintFor (x, args) = let
         argTypes = map (exprType boundTC) args
         (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
         allArgGuards = concat argGuards
-        extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
+        (argVars, extraVars) = partition (\(v, t) -> v `elem` formals) usedVars
         constraint = if null extraVars
           then guardWith guards body
           else inheritPos (Quantified Forall tv extraVars) (guardWith guards body) -- outer guards are inserted into the body, because they might contain extraVars
-      in if length formals == length args -- Only possible if all arguments are simple
-        then M.singleton name ([], [inheritPos (Quantified Lambda tv (zip formals argTypes)) (guardWith allArgGuards constraint)])
+      in if not (null argVars) &&       -- argumnets contain bound variables
+          length formals == length args -- all arguments are simple
+        then M.singleton x ([], [inheritPos (Quantified Lambda tv (zip formals argTypes)) (guardWith allArgGuards constraint)])
         else M.empty
             
 -- | 'extractArgs' @vars args@: extract simple arguments from @args@;
@@ -1200,133 +1208,6 @@ extractArgs vars args = foldl extractArg [] (zip args [0..])
     varArgs = [v | (Pos p (Var v)) <- args]
     nonfixedBV = vars \\ varArgs    
        
-{- Quantification -}
-
--- | Sets of interval constraints on integer variables
-type IntervalConstraints = Map Id Interval
-            
--- | The set of domains for each variable in vars, outside which boolean expression boolExpr is always false.
--- Fails if any of the domains are infinite or cannot be found.
-domains :: (Monad m, Functor m) => Expression -> [Id] -> Execution m [Domain]
-domains boolExpr vars = do
-  initC <- foldM initConstraints M.empty vars
-  finalC <- inferConstraints boolExpr initC 
-  forM vars (domain finalC)
-  where
-    initConstraints c var = do
-      tc <- use envTypeContext
-      qbound <- use envQBound
-      case M.lookup var (allVars tc) of
-        Just BoolType         -> return c
-        Just (MapType _ _ _)  -> throwRuntimeFailure (UnsupportedConstruct $ text "quantification over a map") (position boolExpr)
-        Just t                -> return $ M.insert var (defaultDomain qbound t) c        
-    defaultDomain qbound t = case qbound of
-      Nothing -> top
-      Just n -> let 
-        (lower, upper) = case t of
-          IntType -> intInterval n
-          IdType _ _ -> natInterval n
-        in Interval (Finite lower) (Finite upper)
-    domain c var = do
-      tc <- use envTypeContext
-      case M.lookup var (allVars tc) of
-        Just BoolType -> return $ map BoolValue [True, False]
-        Just t -> do
-          case c ! var of
-            int | isBottom int -> return []
-            Interval (Finite l) (Finite u) -> return $ map (valueFromInteger t) [l..u]
-            int -> throwRuntimeFailure (InfiniteDomain var int) (position boolExpr)
-
--- | Starting from initial constraints, refine them with the information from boolExpr,
--- until fixpoint is reached or the domain for one of the variables is empty.
--- This function terminates because the interval for each variable can only become smaller with each iteration.
-inferConstraints :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Execution m IntervalConstraints
-inferConstraints boolExpr constraints = do
-  constraints' <- foldM refineVar constraints (M.keys constraints)
-  if bot `elem` M.elems constraints'
-    then return $ M.map (const bot) constraints'  -- if boolExpr does not have a satisfying assignment to one variable, then it has none to all variables
-    else if constraints == constraints'
-      then return constraints'                    -- if a fixpoint is reached, return it
-      else inferConstraints boolExpr constraints' -- otherwise do another iteration
-  where
-    refineVar :: (Monad m, Functor m) => IntervalConstraints -> Id -> Execution m IntervalConstraints
-    refineVar c id = do
-      int <- inferInterval boolExpr c id
-      return $ M.insert id (meet (c ! id) int) c 
-
--- | Infer an interval for variable x, outside which boolean expression booExpr is always false, 
--- assuming all other quantified variables satisfy constraints;
--- boolExpr has to be in negation-prenex normal form.
-inferInterval :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Id -> Execution m Interval
-inferInterval boolExpr constraints x = (case node boolExpr of
-  Literal (BoolValue False) -> return bot
-  BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 constraints x) (inferInterval be2 constraints x)
-  BinaryExpression Or be1 be2 -> liftM2 join (inferInterval be1 constraints x) (inferInterval be2 constraints x)
-  BinaryExpression Eq ae1 ae2 -> do
-    (a, b) <- toLinearForm (ae1 |-| ae2) constraints x
-    if 0 <: a && 0 <: b
-      then return top
-      else return $ -b // a
-  BinaryExpression Leq ae1 ae2 -> do
-    (a, b) <- toLinearForm (ae1 |-| ae2) constraints x
-    if isBottom a || isBottom b
-      then return bot
-      else if 0 <: a && not (isBottom (meet b nonPositives))
-        then return top
-        else return $ join (lessEqual (-b // meet a positives)) (greaterEqual (-b // meet a negatives))
-  BinaryExpression Ls ae1 ae2 -> inferInterval (ae1 |<=| (ae2 |-| num 1)) constraints x
-  BinaryExpression Geq ae1 ae2 -> inferInterval (ae2 |<=| ae1) constraints x
-  BinaryExpression Gt ae1 ae2 -> inferInterval (ae2 |<=| (ae1 |-| num 1)) constraints x
-  -- Quantifier can only occur here if it is alternating with the enclosing one, hence no domain can be inferred 
-  _ -> return top
-  ) `catchError` handleNotLinear
-  where      
-    lessEqual int | isBottom int = bot
-                  | otherwise = Interval NegInf (upper int)
-    greaterEqual int  | isBottom int = bot
-                      | otherwise = Interval (lower int) Inf
-    handleNotLinear err = case rtfSource err of
-      InternalException NotLinear -> return top
-      _ -> throwError err                      
-
--- | Linear form (A, B) represents a set of expressions a*x + b, where a in A and b in B
-type LinearForm = (Interval, Interval)
-
--- | If possible, convert arithmetic expression aExpr into a linear form over variable x,
--- assuming all other quantified variables satisfy constraints.
-toLinearForm :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Id -> Execution m LinearForm
-toLinearForm aExpr constraints x = case node aExpr of
-  Literal (IntValue n) -> return (0, fromInteger n)
-  Var y -> if x == y
-    then return (1, 0)
-    else case M.lookup y constraints of
-      Just int -> return (0, int)
-      Nothing -> const aExpr
-  Application name args -> if null $ M.keys constraints `intersect` freeVars aExpr
-    then const aExpr
-    else throwInternalException NotLinear
-  MapSelection m args -> if null $ M.keys constraints `intersect` freeVars aExpr
-    then const aExpr
-    else throwInternalException NotLinear
-  Old e -> old $ toLinearForm e constraints x
-  UnaryExpression Neg e -> do
-    (a, b) <- toLinearForm e constraints x
-    return (-a, -b)
-  BinaryExpression op e1 e2 -> do
-    left <- toLinearForm e1 constraints x
-    right <- toLinearForm e2 constraints x 
-    combineBinOp op left right
-  where
-    const e = do
-      v <- eval e
-      case v of
-        IntValue n -> return (0, fromInteger n)
-    combineBinOp Plus   (a1, b1) (a2, b2) = return (a1 + a2, b1 + b2)
-    combineBinOp Minus  (a1, b1) (a2, b2) = return (a1 - a2, b1 - b2)
-    combineBinOp Times  (a, b)   (0, k)   = return (k * a, k * b)
-    combineBinOp Times  (0, k)   (a, b)   = return (k * a, k * b)
-    combineBinOp _ _ _ = throwInternalException NotLinear
-    
 {- Map equality -}
 
 -- | 'evalEquality' @v1 v2 pos@ : Evaluate @v1 == v2@ at position @pos@
