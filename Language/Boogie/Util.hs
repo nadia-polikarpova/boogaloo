@@ -60,6 +60,7 @@ module Language.Boogie.Util (
   -- * Special names
   nullaryType,
   noType,
+  anyType,
   tupleType,
   ucType,  
   functionConst,
@@ -294,9 +295,9 @@ applications expr = case node expr of
   Quantified _ _ _ e -> applications e  
 
 -- | 'mapRefs' @expr@ : all map references that occur in @expr@
-mapRefs :: Expression -> [Value]
+mapRefs :: Expression -> [Ref]
 mapRefs expr = case node expr of
-  Literal v@(Reference _ _) -> [v]
+  Literal (Reference _ r) -> [r]
   Literal _ -> []
   Var x -> []
   Application name args -> nub . concat $ map mapRefs args
@@ -310,13 +311,13 @@ mapRefs expr = case node expr of
   Quantified _ _ _ e -> mapRefs e  
   
 -- | 'refSelections' @expr@ : all map reference selections that occur in @expr@, where the map is a free variable
-refSelections :: Expression -> [(Value, [Expression])]
+refSelections :: Expression -> [(Ref, [Expression])]
 refSelections expr = case node expr of
   Literal _ -> []
   Var x -> []
   Application name args -> nub . concat $ map refSelections args
   MapSelection m args -> case node m of 
-   Literal v@(Reference _ _) -> (v, args) : (nub . concat $ map refSelections args)
+   Literal (Reference _ r) -> (r, args) : (nub . concat $ map refSelections args)
    _ -> nub . concat $ map refSelections (m : args)
   MapUpdate m args val ->  nub . concat $ map refSelections (val : m : args)
   Old e -> internalError $ text "refSelections should only be applied in single-state context"
@@ -503,13 +504,16 @@ guardWith gs e = conjunction gs |=>| e
 nullaryType id = IdType id []
 
 -- | Dummy type used during type checking to denote error
-noType = nullaryType (nonIdChar : "NoType")
+noType = nullaryType ("NONE" ++ [nonIdChar])
 
--- | Dummy user-defined type used to represent procedure returns as a single type
-tupleType = IdType (nonIdChar : "Tuple")
+-- | Dummy type used when the type does not matter
+anyType = nullaryType ("ANY" ++ [nonIdChar])
 
--- | Dummy user-defined type used to mark entities whose definitions are currently being evaluated
-ucType = nullaryType (nonIdChar : "UC")
+-- | Dummy type used to represent procedure returns as a single type
+tupleType = IdType ("TUPLE" ++ [nonIdChar])
+
+-- | Dummy type used to mark entities whose definitions are currently being evaluated
+ucType = nullaryType ("UC" ++ [nonIdChar])
 
 functionFrefix = "function "
 

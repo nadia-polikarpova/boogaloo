@@ -205,7 +205,6 @@ valueFromInteger t@(IdType _ _) n = CustomValue t (fromInteger n)
 valueFromInteger _ _              = error "cannot create a boolean or map value from integer" 
   
 unValueBool (BoolValue b) = b
-unValueRef (Reference _ r) = r  
 vnot (BoolValue b) = BoolValue (not b)
 isEmptyMap (MapValue _ repr) = repr == emptyMap
 isEmptyMap _ = False  

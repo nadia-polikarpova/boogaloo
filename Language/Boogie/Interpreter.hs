@@ -548,7 +548,7 @@ collectGarbage = do
     r <- state $ withHeap dealloc
     mapM_ decRefCountValue (M.elems $ h `at` r)
     cs <- gets $ lookupValueConstraints r
-    let usedRefs = nub . map unValueRef . concatMap mapRefs $ concatMap (\c -> [defGuard c, defBody c]) (fst cs) ++ snd cs 
+    let usedRefs = nub . concatMap mapRefs $ concatMap (\c -> [defGuard c, defBody c]) (fst cs) ++ snd cs 
     mapM_ (\r -> envMemory.memHeap %= decRefCount r) usedRefs    
     envConstraints.symHeap %= M.delete r
     collectGarbage)
@@ -556,13 +556,13 @@ collectGarbage = do
 -- | 'extendMapDefinition' @r def@ : add @def@ to the definiton of the map @r@
 extendMapDefinition r def = do
   modify $ addMapDefinition r def
-  let usedRefs = nub . map unValueRef $ mapRefs (defGuard def) ++ mapRefs (defBody def)
+  let usedRefs = nub $ mapRefs (defGuard def) ++ mapRefs (defBody def)
   mapM_ (\r -> envMemory.memHeap %= incRefCount r) usedRefs    
 
 -- | 'extendMapConstraint' @r c@ : add @c@ to the consraints of the map @r@  
 extendMapConstraint r c = do
   modify $ addMapConstraint r c
-  mapM_ (\r -> envMemory.memHeap %= incRefCount r) (map unValueRef $ mapRefs c)
+  mapM_ (\r -> envMemory.memHeap %= incRefCount r) (mapRefs c)
   
 {- Expressions -}
 
@@ -754,29 +754,29 @@ evalLambda tv vars e pos = do
     def = Def tv vars (conjunction [])
     
 evalForall :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> SourcePos -> Execution m Value
-evalForall tv vars e pos = do
+evalForall tv vars e pos = do  
   symExpr <- symbolicEval (attachPos pos $ Quantified Forall tv vars e)
   let mc = extractMapConstraints symExpr
   BoolValue <$> allM evalForMap (M.toList mc)
   where
-    -- ToDo: after introducing logical variables: allM theWholeProcess constraints
-    evalForMap (Reference t r, (defs, constraints)) = do
-      sat <- allM (\c -> checkCached r c) constraints
-      if sat  -- If all cached values satisfy the constraint
-        then decideForMap r t defs constraints -- no evidence yet if the constraint holds for all arguments, make a non-deterministic choice
-        else return False                           -- found evidence that the constraint does not hold
+    evalForMap (r, (defs, constraints)) = do      
+      satCache <- allM (checkCached r) constraints
+      if not satCache  -- If any cached values do not satisfy the constraint
+        then return False   -- found evidence that the constraint does not hold
+        else do             -- no evidence yet if the constraint holds for all arguments, make a non-deterministic choice for every constraint           
+          satDecide <- allM (decideConstraint r) constraints 
+          when satDecide $ mapM_ (extendMapDefinition r) defs
+          when satDecide $ mapM_ (extendMapConstraint r) constraints      
+          return satDecide          
     checkCached r c = do
       cache <- readHeap r
       allM (\actuals -> applyConstraint c actuals pos) (M.keys cache)
-    decideForMap r (MapType tv domains _) defs constraints = do
-      -- ToDo: tv?
+    decideConstraint r c@(Pos _ (Quantified Lambda tv vars _)) = do
+      let typeBinding = M.fromList $ zip tv (repeat anyType)
+      let argTypes = map (typeSubst typeBinding . snd) vars
       -- ToDo: we could plug in linear analysis here and replace with genIndex sometimes
-      index <- mapM (flip generateValue pos) domains -- choose an index non-deterministically
-      sat <- allM (\c -> applyConstraint c index pos) constraints
-      when sat $ mapM_ (extendMapDefinition r) defs
-      when sat $ mapM_ (extendMapConstraint r) constraints      
-      (error . show . pretty) <$> use (envConstraints)
-      return sat
+      index <- mapM (flip generateValue pos) argTypes -- choose an index non-deterministically
+      applyConstraint c index pos
           
 {- Statements -}
 
@@ -1118,8 +1118,8 @@ extractNameConstraints tc = extractConstraints tc freeVars (\e -> freeSelections
 extractMapConstraints = extractConstraints emptyContext mapRefs refSelections defLhs
   where
     defLhs e = case node e of
-      (Literal v@(Reference _ _)) -> Just (v, [])
-      MapSelection (Pos _ (Literal v@(Reference _ _))) args -> Just (v, args)
+      (Literal (Reference _ r)) -> Just (r, [])
+      MapSelection (Pos _ (Literal (Reference _ r))) args -> Just (r, args)
       _ -> Nothing
 
 -- | 'extractConstraints' @tc bExpr@ : extract definitions and constraints from @bExpr@ in type context @tc@
