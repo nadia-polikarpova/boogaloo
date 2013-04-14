@@ -106,7 +106,7 @@ evalExpr expr = debug ("evalExpr: " ++ show expr) >>
       tupleArg :: [Expression] -> Z3Gen AST
       tupleArg es =
           do let ts = map (exprType emptyContext) es
-             liftIO $ print ts
+             debug (show ts)
              (_sort, ctor, _projs) <- lookupCtor ts
              es' <- mapM go es
              c <- mkApp ctor es'
