@@ -626,19 +626,17 @@ eval expr = do
 evalSub expr = case node expr of
   Literal v -> return v
   Var name -> evalVar name (position expr)
-  Application name args -> evalMapSelection (functionExpr name) args (position expr)
+  Application name args -> evalApplication name args (position expr)
   MapSelection m args -> evalMapSelection m args (position expr)
   MapUpdate m args new -> evalMapUpdate m args new (position expr)
   Old e -> old $ evalSub e
   IfExpr cond e1 e2 -> evalIf cond e1 e2
   Coercion e t -> evalSub e
-  UnaryExpression op e -> unOp op <$> evalSub e
+  UnaryExpression op e -> evalUnary op e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
   Quantified Lambda tv vars e -> evalLambda tv vars e (position expr)
   Quantified Forall tv vars e -> evalForall tv vars e (position expr)
   Quantified Exists tv vars e -> vnot <$> evalForall tv vars (enot e) (position expr)
-  where
-    functionExpr name = gen . Var $ functionConst name
   
 evalVar :: (Monad m, Functor m) => Id -> SourcePos -> Execution m Value  
 evalVar name pos = do
@@ -674,6 +672,11 @@ evalVar name pos = do
               when initOld $ setVar memOld name chosenValue
               checkNameConstraints name pos
               return chosenValue
+              
+evalApplication :: (Monad m, Functor m) => Id -> [Expression] -> SourcePos -> Execution m Value  
+evalApplication name args pos = evalMapSelection (functionExpr name) args pos
+  where
+    functionExpr name = gen . Var $ functionConst name
         
 rejectMapIndex pos idx = case idx of
   Reference _ r -> throwRuntimeFailure (UnsupportedConstruct $ text "map as an index") pos
@@ -724,6 +727,8 @@ evalIf cond e1 e2 = do
   case v of
     BoolValue True -> evalSub e1    
     BoolValue False -> evalSub e2    
+    
+evalUnary op e = unOp op <$> evalSub e    
       
 evalBinary op e1 e2 = if op `elem` shortCircuitOps
   then do -- Keep track of which terms got evaluated
@@ -889,7 +894,7 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
     
 {- Constraints and symbolic execution -}
 
--- | 'symbolicEval' @expr@ : evaluate all free variables in @expr@
+-- | 'symbolicEval' @expr@ : evaluate @expr@ modulo quantification
 symbolicEval expr = symbolicEval' [] expr
   where
     symbolicEval' vars (Pos p e) = attachPos p <$> case e of
@@ -897,28 +902,44 @@ symbolicEval expr = symbolicEval' [] expr
       var@(Var name) -> if name `elem` vars
         then return var
         else Literal <$> evalVar name p
-      Application name args -> Application name <$> mapM (symbolicEval' vars) args
+      Application name args -> do
+        args' <- mapM (symbolicEval' vars) args
+        if all isLiteral args'
+          then Literal <$> evalApplication name args' p
+          else return $ Application name args'
       MapSelection m args -> do
-        m' <- (symbolicEval' vars) m
+        m' <- symbolicEval' vars m
         args' <- mapM (symbolicEval' vars) args
-        return $ MapSelection m' args'
+        if all isLiteral (m' : args')
+          then Literal <$> evalMapSelection m' args' p
+          else return $ MapSelection m' args'
       MapUpdate m args new -> do
-        m' <- (symbolicEval' vars) m
+        m' <- symbolicEval' vars m
         args' <- mapM (symbolicEval' vars) args
-        new' <- (symbolicEval' vars) new
-        return $ MapUpdate m' args' new'   
+        new' <- symbolicEval' vars new
+        if all isLiteral (m' : new' : args')
+          then Literal <$> evalMapUpdate m' args' new' p
+          else return $ MapUpdate m' args' new'   
       Old e -> node <$> old (symbolicEval' vars e)
       IfExpr cond e1 e2 -> do
-        cond' <- (symbolicEval' vars) cond
-        e1' <- (symbolicEval' vars) e1
-        e2' <- (symbolicEval' vars) e2
-        return $ IfExpr cond' e1' e2'
-      Coercion e t -> node <$> (symbolicEval' vars) e
-      UnaryExpression op e -> UnaryExpression op <$> (symbolicEval' vars) e
+        cond' <- symbolicEval' vars cond
+        e1' <- symbolicEval' vars e1
+        e2' <- symbolicEval' vars e2
+        if all isLiteral [cond', e1', e2']
+          then Literal <$> evalIf cond' e1' e2'
+          else return $ IfExpr cond' e1' e2'
+      Coercion e t -> node <$> symbolicEval' vars e
+      UnaryExpression op e -> do
+        e' <- symbolicEval' vars e
+        if isLiteral e'
+          then Literal <$> evalUnary op e'
+          else return $ UnaryExpression op e'
       BinaryExpression op e1 e2 -> do
-        e1' <- (symbolicEval' vars) e1
-        e2' <- (symbolicEval' vars) e2
-        return $ BinaryExpression op e1' e2'
+        e1' <- symbolicEval' vars e1
+        e2' <- symbolicEval' vars e2
+        if isLiteral e1' && isLiteral e2'
+          then Literal <$> evalBinary op e1' e2'
+          else return $ BinaryExpression op e1' e2'
       Quantified qop tv bv e -> Quantified qop tv bv <$> symbolicEval' (vars ++ map fst bv) e
       
 -- | Evaluate all free variables in a definiton

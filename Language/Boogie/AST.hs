@@ -90,6 +90,9 @@ mapSelectExpr m args = attachPos (position m) (MapSelection m args)
 ff = Literal (BoolValue False)
 tt = Literal (BoolValue True)
 numeral n = Literal (IntValue n)
+
+isLiteral (Pos _ (Literal _)) = True
+isLiteral _ = False
   
 -- | Wildcard or expression  
 data WildcardExpression = Wildcard | Expr Expression

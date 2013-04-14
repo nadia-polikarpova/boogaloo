@@ -27,6 +27,7 @@
   - Execution
     - Introduce logical variables
     - Get rid of FDef 
+    - assert p -> assume (not p); fail
     - Integrate SMT constraint solving
   - Quantification over types: if a map has specialization axioms, treat those types specially?
   - Mark executions in which a definitional axiom is violated as suspicious? (It is usually a sign of ill-defined recursive definition)?

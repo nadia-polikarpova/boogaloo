@@ -269,6 +269,7 @@ freeSelections expr = case node expr of
   Application name args -> nub . concat $ map freeSelections args
   MapSelection m args -> case node m of 
    Var name -> (name, args) : (nub . concat $ map freeSelections args)
+   MapUpdate m' args' val -> freeSelections (gen $ MapSelection m' args) ++ concatMap freeSelections (val : args')
    _ -> nub . concat $ map freeSelections (m : args)
   MapUpdate m args val ->  nub . concat $ map freeSelections (val : m : args)
   Old e -> internalError $ text "freeSelections should only be applied in single-state context"
@@ -319,7 +320,7 @@ refSelections expr = case node expr of
   MapSelection m args -> case node m of 
    Literal (Reference _ r) -> (r, args) : (nub . concat $ map refSelections args)
    _ -> nub . concat $ map refSelections (m : args)
-  MapUpdate m args val ->  nub . concat $ map refSelections (val : m : args)
+  MapUpdate m args val ->  nub . concat $ map refSelections (val : m : args)  
   Old e -> internalError $ text "refSelections should only be applied in single-state context"
   IfExpr cond e1 e2 -> nub . concat $ [refSelections cond, refSelections e1, refSelections e2]
   Coercion e _ -> refSelections e
