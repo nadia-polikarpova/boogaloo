@@ -36,7 +36,6 @@ library
       Language.Boogie.Position,
       Language.Boogie.Parser,
       Language.Boogie.NormalForm,
-      Language.Boogie.Intervals,
       Language.Boogie.Interpreter,
       Language.Boogie.Heap,
       Language.Boogie.Generator,
