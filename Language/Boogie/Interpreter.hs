@@ -603,8 +603,8 @@ binOp pos Or      (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 || b2)
 binOp pos Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
 binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 >= b2)
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
-binOp pos Eq      v1 v2                         = BoolValue <$> evalEquality v1 v2 pos
-binOp pos Neq     v1 v2                         = BoolValue . not <$> evalEquality v1 v2 pos
+binOp pos Eq      v1 v2                         = evalEquality v1 v2 pos
+binOp pos Neq     v1 v2                         = vnot <$> evalEquality v1 v2 pos
 binOp pos Lc      v1 v2                         = throwRuntimeFailure (UnsupportedConstruct $ text "orders") pos
 
 -- | Euclidean division used by Boogie for integer division and modulo
@@ -614,6 +614,23 @@ a `euclidean` b =
     (q, r) | r >= 0    -> (q, r)
            | b >  0    -> (q - 1, r + b)
            | otherwise -> (q + 1, r - b)
+           
+-- | 'evalEquality' @v1 v2 pos@ : Evaluate @v1 == v2@ at position @pos@
+evalEquality :: (Monad m, Functor m) => Value -> Value -> SourcePos -> Execution m Value
+evalEquality v1@(Reference t1 r1) v2@(Reference t2 r2) pos = if r1 == r2
+  then return (BoolValue True) -- Equal references point to equal maps
+  else if t1 /= t2 -- Different types can occur in a generic context
+    then return (BoolValue False)
+    else let
+        MapType tv domains range = t1
+        freshVarNames = map (\i -> nonIdChar : show i) [0..]
+        vars = zip freshVarNames domains
+        lit = attachPos pos . Literal
+        var = attachPos pos . Var
+        app m = attachPos pos $ MapSelection (lit m) (map (var . fst) vars)
+      in evalForall tv vars (app v1 |=| app v2) pos
+evalEquality (MapValue _ _) (MapValue _ _) _ = internalError $ text "Attempt to compare two maps"
+evalEquality v1 v2 _ = return $ BoolValue (v1 == v2)           
          
 -- | Evaluate an expression;
 -- can have a side-effect of initializing variables that were not previously defined
@@ -711,16 +728,26 @@ evalMapSelection m args pos = do
         
 evalMapUpdate m args new pos = do
   mVal@(Reference t r) <- evalSub m
-  argsV <- mapM evalSub args
-  mapM_ (rejectMapIndex pos) argsV
-  newV <- evalSub new
+  argsVals <- mapM evalSub args
+  mapM_ (rejectMapIndex pos) argsVals
+  newVal <- evalSub new
   repr <- readHeap r
-  newMVal@(Reference _ r') <- allocate t (M.insert argsV newV repr)
-  let update = attachPos pos $ MapUpdate (lit mVal) (map lit argsV) (lit newV)
-  makeEq update (lit newMVal) pos
+  newMVal@(Reference _ r') <- allocate t (M.insert argsVals newVal repr)
+  let lit = attachPos pos . Literal    
+      var = attachPos pos . Var
+      freshVarNames = map (\i -> nonIdChar : show i) [0..]
+      bv = zip freshVarNames domains
+      bvExprs = map (var . fst) bv
+      MapType tv domains _ = t
+      appOld = attachPos pos $ MapSelection (lit mVal) bvExprs
+      appNew = attachPos pos $ MapSelection (lit newMVal) bvExprs
+      guard = disjunction (zipWith (|!=|) bvExprs (map lit argsVals))
+      constraint = inheritPos (Quantified Lambda tv bv) (guard |=>| (appOld |=| appNew))
+  extendMapConstraint r constraint
+  extendMapConstraint r' constraint  
+  extendMapDefinition r (Def tv bv guard appNew)
+  extendMapDefinition r' (Def tv bv guard appOld)
   return newMVal
-  where
-    lit = attachPos pos . Literal
   
 evalIf cond e1 e2 = do
   v <- evalSub cond
@@ -771,7 +798,7 @@ evalForall tv vars e pos = do
         else do             -- no evidence yet if the constraint holds for all arguments, make a non-deterministic choice for every constraint           
           satDecide <- allM (decideConstraint r) constraints 
           when satDecide $ mapM_ (extendMapDefinition r) defs
-          when satDecide $ mapM_ (extendMapConstraint r) constraints      
+          when satDecide $ mapM_ (extendMapConstraint r) constraints
           return satDecide          
     checkCached r c = do
       cache <- readHeap r
@@ -1229,46 +1256,3 @@ extractArgs vars args = foldl extractArg [] (zip args [0..])
     varArgs = [v | (Pos p (Var v)) <- args]
     nonfixedBV = vars \\ varArgs    
        
-{- Map equality -}
-
--- | 'evalEquality' @v1 v2 pos@ : Evaluate @v1 == v2@ at position @pos@
-evalEquality :: (Monad m, Functor m) => Value -> Value -> SourcePos -> Execution m Bool
-evalEquality v1 v2 pos = do
-  h <- use $ envMemory.memHeap
-  case objectEq h v1 v2 of
-    Just b -> return b
-    Nothing -> decideEquality v1 v2  -- No evidence yet if two maps are equal or not, make a non-deterministic choice
-  where
-    decideEquality (Reference (MapType tv domains range) r1) (Reference _ r2) = do
-      index <- mapM (flip generateValue pos) domains        -- Choose an index non-deterministically
-      res1 <- evalMapSelection (lit v1) (map lit index) pos
-      res2 <- evalMapSelection (lit v2) (map lit index) pos
-      eq <- evalEquality res1 res2 pos                      -- Check if the wo map values at that index are equal
-      when eq $ makeEq (lit v1) (lit v2) pos                -- If yes, make the maps equal (if no, they are already non-equal)
-      return eq
-    lit = attachPos pos . Literal      
-    
--- | 'makeEq' @m1 m2 pos@: add a constraint that two map-valued expressions are equal
-makeEq :: (Monad m, Functor m) => Expression -> Expression -> SourcePos -> Execution m ()
-makeEq m1 m2 pos = do
-  let (r1, tv, vars, g1, app1) = application m1
-  let (r2, _, _, g2, app2) = application m2  
-  let g = g1 |&| g2
-  let body = app1 |=| app2
-  let constraint = inheritPos (Quantified Lambda tv vars) (g |=>| body)
-  extendMapConstraint r1 constraint
-  extendMapConstraint r2 constraint  
-  extendMapDefinition r1 (Def tv vars g app2)
-  extendMapDefinition r2 (Def tv vars g app1)
-  where
-    freshVars = map (\i -> nonIdChar : show i) [0..]
-    base l@(Pos _ (Literal _)) = l
-    base (Pos _ (MapUpdate m _ _)) = base m
-    guards (Pos _ (Literal _)) = []
-    guards (Pos _ (MapUpdate m args _)) = disjunction (zipWith (|!=|) (map var freshVars) args) : guards m
-    application m = let pos = position m
-                        l@(Pos _ (Literal (Reference t r))) = base m
-                        MapType tv domains range = t  
-                        vars = zip freshVars domains
-                    in (r, tv, vars, conjunction $ guards m, attachPos pos (MapSelection l (map var (map fst vars))))
-    var = attachPos pos . Var
