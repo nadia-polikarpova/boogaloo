@@ -271,9 +271,9 @@ data MapWithElse = MapWithElse
 data NewCustomVal = NewCustomVal Type Int
 
 data Solution = Solution 
-    { forcerLogical :: Map Ref Value
-    , forcerMaps    :: Map Ref MapWithElse
-    , forcerCustoms :: Set NewCustomVal
+    { solnLogical :: Map Ref Value
+    , solnMaps    :: Map Ref MapWithElse
+    , solnCustoms :: Set NewCustomVal
     }
 
 instance Show Solution where
@@ -284,38 +284,43 @@ instance Show Solution where
             , show mapMap
             ]
 
-ex1 :: String
-ex1 = show (solveConstr constrs)
-    where
-      p0 = Pos noPos
-      int = p0 . Literal . IntValue
-      v0 = p0 (LogicalVar IntType 57)
-      m0 = p0 (Literal $ Reference (MapType [] [IntType, IntType] IntType) 50)
-      sel0 = p0 (MapSelection m0 [int 42, int 100])
-      constrs = [ p0 (BinaryExpression Eq 
-                       (p0 (BinaryExpression Plus v0 v0))
-                       (int 4))
-                , p0 (BinaryExpression Gt sel0 v0)
-                ]
-
 -- | Given a set of constraint expressions produce a mapping
 -- of references to their concrete values.
 --
 -- The constraint expressions will have no regular variables,
 -- only logical variables and map variables.
 
-solveConstr :: [Expression] -> Solution
-solveConstr constrs = unsafePerformIO (evalZ3Gen checkConstraints)
+solveConstr :: [Expression] -> Z3Gen (Model, Solution)
+solveConstr constrs = checkConstraints
     where
       -- | Produce a the result in the Z3 monad, to be extracted later.
-      checkConstraints :: Z3Gen Solution
+      checkConstraints :: Z3Gen (Model, Solution)
       checkConstraints = 
           do updateRefMap constrs
              mapM_ (evalExpr >=> assertCnstr) constrs
              (_result, modelMb) <- getModel
              case modelMb of
-               Just model -> reconstruct model
+               Just model -> (model,) <$> reconstruct model
                Nothing -> error "solveConstr.evalZ3: no model"
+
+
+-- | Extracts a particular type from an AST node, evaluating
+-- the node first.
+extract :: Model -> Type -> AST -> Z3Gen Value
+extract model t ast = 
+    do Just ast' <- eval model ast
+       case t of 
+         IntType -> IntValue <$> getInt ast'
+         BoolType -> 
+             do bMb <- getBool ast'
+                case bMb of
+                  Just b -> return $ BoolValue b
+                  Nothing -> error "solveConstr.reconstruct.extract: not bool"
+         _ ->
+             error $ concat [ "solveConstr.reconstruct.extract: can't "
+                            , "extract for type "
+                            , show t
+                            ]
 
 -- | From a model and a mapping of values to Z3 AST nodes reconstruct
 -- a mapping from references to values. This extracts the appropriate
@@ -326,21 +331,7 @@ reconstruct model =
        customs <- customSet
        return (Solution logicMap mapMap customs)
     where
-      extract :: Type -> AST -> Z3Gen Value
-      extract t ast = do -- astToString ast >>= \ str -> debug (show (str, t)) >>
-        Just ast' <- eval model ast
-        case t of 
-          IntType -> IntValue <$> getInt ast'
-          BoolType -> 
-            do bMb <- getBool ast'
-               case bMb of
-                 Just b -> return $ BoolValue b
-                 Nothing -> error "solveConstr.reconstruct.extract: not bool"
-          _ ->
-            error $ concat [ "solveConstr.reconstruct.extract: can't "
-                           , "extract for type "
-                           , show t
-                           ]
+      extract' = extract model
 
       -- | Extract an argument to a 'select' or 'store', which is stored
       -- as a tuple. This 'untuples' the ast into a list of Boogaloo values.
@@ -351,7 +342,7 @@ reconstruct model =
              asts <- mapM (\ proj -> mkApp proj [tuple]) projs
              astsStr <- mapM astToString (tuple:asts)
              debug (unlines (map ("extArg: " ++) astsStr))
-             zipWithM extract types asts
+             zipWithM extract' types asts
 
       -- | Extract a Boogaloo function entry
       extractEntry :: [Type] -> Type -> [AST] -> AST -> Z3Gen ([Value], Value)
@@ -359,7 +350,7 @@ reconstruct model =
           do debug "Entry start" 
              args <- extractArg argTypes argTuple
              debug "Extracted arg"
-             res' <- extract resType res
+             res' <- extract' resType res
              debug "Extracted res"
              return (args, res')
 
@@ -387,7 +378,7 @@ reconstruct model =
       reconMapWithElse (MapRef (MapType _ args res) ref) ast =
           do debug "reconMap start" 
              Just funcModel <- evalArray model ast
-             !elsePart <- extract res (interpElse funcModel)
+             !elsePart <- extract' res (interpElse funcModel)
              debug "extracted else"
              entries <- mapM (uncurry (extractEntry args res))
                              (interpMap funcModel)
@@ -400,7 +391,7 @@ reconstruct model =
       reconLogicRef :: TaggedRef -> AST -> Z3Gen (Ref, Value)
       reconLogicRef (LogicRef t ref) ast =
           do Just ast' <- eval model ast
-             x <- extract t ast'
+             x <- extract' t ast'
              return (ref, x)
       reconLogicRef tr _ast = 
           error $ "reconLogicRef: not a logical ref" ++ show tr
