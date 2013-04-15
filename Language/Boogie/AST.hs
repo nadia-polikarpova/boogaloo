@@ -91,6 +91,9 @@ mapSelectExpr m args = attachPos (position m) (MapSelection m args)
 ff = Literal (BoolValue False)
 tt = Literal (BoolValue True)
 numeral n = Literal (IntValue n)
+
+isLiteral (Pos _ (Literal _)) = True
+isLiteral _ = False
   
 -- | Wildcard or expression  
 data WildcardExpression = Wildcard | Expr Expression
@@ -178,24 +181,16 @@ data BareDecl =
 {- Values -}
 
 -- | Representation of a map value
-data MapRepr = 
-  Source (Map [Value] Value) |    -- ^ Map that comes directly from a non-deterministic choice, possibly with some key-value pairs defined
-  Derived Ref (Map [Value] Value) -- ^ Map that is derived from another map by redefining values at some keys
-  deriving (Eq, Ord)
+type MapRepr = Map [Value] Value
   
 -- | Representation of an empty map  
-emptyMap = Source M.empty
-
--- | Key-value pairs stored explicitly in a map representation
-stored :: MapRepr -> Map [Value] Value
-stored (Source vals) = vals
-stored (Derived _ override) = override
+emptyMap = M.empty
   
 -- | Run-time value
 data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
   CustomValue Type Int |         -- ^ Value of a user-defined type
-  MapValue Type MapRepr |        -- ^ Value of a map type: consists of an optional reference to the base map (if derived from base by updating) and key-value pairs that override base
+  MapValue Type MapRepr |        -- ^ Partial instance of a map
   Reference Type Ref  |          -- ^ Map reference
   LogicalVar Type Ref            -- ^ Logical variable with a type and name
   
@@ -222,9 +217,8 @@ valueFromInteger IntType n        = IntValue n
 valueFromInteger t@(IdType _ _) n = CustomValue t (fromInteger n)
 valueFromInteger _ _              = error "cannot create a boolean or map value from integer" 
   
-unValueBool (BoolValue b) = b  
+unValueBool (BoolValue b) = b
 vnot (BoolValue b) = BoolValue (not b)
-
 isEmptyMap (MapValue _ repr) = repr == emptyMap
 isEmptyMap _ = False  
     

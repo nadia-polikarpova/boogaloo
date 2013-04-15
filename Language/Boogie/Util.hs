@@ -18,24 +18,28 @@ module Language.Boogie.Util (
   paramSubst,
   freeSelections,
   applications,
-  logicalVars,
+  mapRefs,
+  refSelections,
   -- * Specs
   preconditions,
   postconditions,
   modifies,
   assumePreconditions,
   assumePostconditions,
-  -- * Functions and procedures
-  FDef (..),
-  fdefBodyLambda,
-  fdefGuardLambda,
+  -- * Constraints
+  Def (..),
+  defBodyLambda,
+  defGuardLambda,
   ConstraintSet,
   isParametrized,
   isParametrizedDef,
   constraintSetDoc,
-  SymbolicStore,
-  asUnion,
-  symbolicStoreDoc,
+  NameConstraints,
+  constraintUnion,
+  nameConstraintsDoc,
+  MapConstraints,
+  mapConstraintsDoc,
+  -- * Functions and procedures
   PSig (..),
   psigParams,
   psigArgTypes,
@@ -50,31 +54,34 @@ module Language.Boogie.Util (
   num, eneg, enot,
   (|+|), (|-|), (|*|), (|/|), (|%|), (|=|), (|!=|), (|<|), (|<=|), (|>|), (|>=|), (|&|), (|||), (|=>|), (|<=>|),
   conjunction,
+  disjunction,
   guardWith,
   assume,
   -- * Special names
   nullaryType,
   noType,
+  anyType,
   tupleType,
-  refIdType,
   ucType,  
   functionConst,
   functionFromConst,
   -- * Misc
-  interval,
   fromRight,
+  maybe2,
   deleteAll,
   restrictDomain,
   removeDomain,
   partitionDomain,
   mapItwType,
+  allM,
   anyM,
+  findM,
   changeState,
   withLocalState
 ) where
 
 import Language.Boogie.AST
-import Language.Boogie.Heap (Ref)
+import Language.Boogie.Heap (Ref, refDoc)
 import Language.Boogie.Position
 import Language.Boogie.Tokens
 import Language.Boogie.Pretty
@@ -254,57 +261,72 @@ paramSubst sig def = if not (pdefParamsRenamed def)
   then id 
   else exprSubst (paramBinding sig def)
   
--- | 'freeSelections' @expr@ : all map selections that occur in @expr@, where the map is a free variable
+-- | 'freeSelections' @expr@ : all named map selections that occur in @expr@, where the map is a free variable
 freeSelections :: Expression -> [(Id, [Expression])]
-freeSelections expr = freeSelections' $ node expr
-
-freeSelections' (Literal _) = []
-freeSelections' (Var x) = []
-freeSelections' (Application name args) = nub . concat $ map freeSelections args
-freeSelections' (MapSelection m args) = case node m of 
- Var name -> (name, args) : (nub . concat $ map freeSelections args)
- _ -> nub . concat $ map freeSelections (m : args)
-freeSelections' (MapUpdate m args val) =  nub . concat $ map freeSelections (val : m : args)
-freeSelections' (Old e) = internalError $ text "freeSelections should only be applied in single-state context"
-freeSelections' (IfExpr cond e1 e2) = nub . concat $ [freeSelections cond, freeSelections e1, freeSelections e2]
-freeSelections' (Coercion e _) = freeSelections e
-freeSelections' (UnaryExpression _ e) = freeSelections e
-freeSelections' (BinaryExpression _ e1 e2) = nub . concat $ [freeSelections e1, freeSelections e2]
-freeSelections' (Quantified _ _ boundVars e) = let boundVarNames = map fst boundVars 
-  in [(m, args) | (m, args) <- freeSelections e, m `notElem` boundVarNames]
+freeSelections expr = case node expr of
+  Literal _ -> []
+  Var x -> []
+  Application name args -> nub . concat $ map freeSelections args
+  MapSelection m args -> case node m of 
+   Var name -> (name, args) : (nub . concat $ map freeSelections args)
+   MapUpdate m' args' val -> freeSelections (gen $ MapSelection m' args) ++ concatMap freeSelections (val : args')
+   _ -> nub . concat $ map freeSelections (m : args)
+  MapUpdate m args val ->  nub . concat $ map freeSelections (val : m : args)
+  Old e -> internalError $ text "freeSelections should only be applied in single-state context"
+  IfExpr cond e1 e2 -> nub . concat $ [freeSelections cond, freeSelections e1, freeSelections e2]
+  Coercion e _ -> freeSelections e
+  UnaryExpression _ e -> freeSelections e
+  BinaryExpression _ e1 e2 -> nub . concat $ [freeSelections e1, freeSelections e2]
+  Quantified _ _ boundVars e -> let boundVarNames = map fst boundVars 
+    in [(m, args) | (m, args) <- freeSelections e, m `notElem` boundVarNames]
   
 -- | 'applications' @expr@ : all function applications that occur in @expr@
 applications :: Expression -> [(Id, [Expression])]
-applications expr = applications' $ node expr
+applications expr = case node expr of
+  Literal _ -> []
+  Var x -> []
+  Application name args -> (name, args) : (nub . concat $ map applications args)
+  MapSelection m args -> nub . concat $ map applications (m : args)
+  MapUpdate m args val ->  nub . concat $ map applications (val : m : args)
+  Old e -> internalError $ text "applications should only be applied in single-state context"
+  IfExpr cond e1 e2 -> nub . concat $ [applications cond, applications e1, applications e2]
+  Coercion e _ -> applications e
+  UnaryExpression _ e -> applications e
+  BinaryExpression _ e1 e2 -> nub . concat $ [applications e1, applications e2]
+  Quantified _ _ _ e -> applications e  
 
-applications' (Literal _) = []
-applications' (Var x) = []
-applications' (Application name args) = (name, args) : (nub . concat $ map applications args)
-applications' (MapSelection m args) = nub . concat $ map applications (m : args)
-applications' (MapUpdate m args val) =  nub . concat $ map applications (val : m : args)
-applications' (Old e) = internalError $ text "applications should only be applied in single-state context"
-applications' (IfExpr cond e1 e2) = nub . concat $ [applications cond, applications e1, applications e2]
-applications' (Coercion e _) = applications e
-applications' (UnaryExpression _ e) = applications e
-applications' (BinaryExpression _ e1 e2) = nub . concat $ [applications e1, applications e2]
-applications' (Quantified _ _ _ e) = applications e  
-
--- | 'logicalVars' @expr@ : all logical variables that occur in @expr@
-logicalVars :: Expression -> [Ref]
-logicalVars expr = logicalVars' $ node expr
-
-logicalVars' (Literal (Reference _ r)) = [r]
-logicalVars' (Literal _) = []
-logicalVars' (Var x) = []
-logicalVars' (Application name args) = nub . concat $ map logicalVars args
-logicalVars' (MapSelection m args) = nub . concat $ map logicalVars (m : args)
-logicalVars' (MapUpdate m args val) =  nub . concat $ map logicalVars (val : m : args)
-logicalVars' (Old e) = internalError $ text "logicalVars should only be applied in single-state context"
-logicalVars' (IfExpr cond e1 e2) = nub . concat $ [logicalVars cond, logicalVars e1, logicalVars e2]
-logicalVars' (Coercion e _) = logicalVars e
-logicalVars' (UnaryExpression _ e) = logicalVars e
-logicalVars' (BinaryExpression _ e1 e2) = nub . concat $ [logicalVars e1, logicalVars e2]
-logicalVars' (Quantified _ _ _ e) = logicalVars e  
+-- | 'mapRefs' @expr@ : all map references that occur in @expr@
+mapRefs :: Expression -> [Ref]
+mapRefs expr = case node expr of
+  Literal (Reference _ r) -> [r]
+  Literal _ -> []
+  Var x -> []
+  Application name args -> nub . concat $ map mapRefs args
+  MapSelection m args -> nub . concat $ map mapRefs (m : args)
+  MapUpdate m args val ->  nub . concat $ map mapRefs (val : m : args)
+  Old e -> internalError $ text "mapRefs should only be applied in single-state context"
+  IfExpr cond e1 e2 -> nub . concat $ [mapRefs cond, mapRefs e1, mapRefs e2]
+  Coercion e _ -> mapRefs e
+  UnaryExpression _ e -> mapRefs e
+  BinaryExpression _ e1 e2 -> nub . concat $ [mapRefs e1, mapRefs e2]
+  Quantified _ _ _ e -> mapRefs e  
+  
+-- | 'refSelections' @expr@ : all map reference selections that occur in @expr@, where the map is a free variable
+refSelections :: Expression -> [(Ref, [Expression])]
+refSelections expr = case node expr of
+  Literal _ -> []
+  Var x -> []
+  Application name args -> nub . concat $ map refSelections args
+  MapSelection m args -> case node m of 
+   Literal (Reference _ r) -> (r, args) : (nub . concat $ map refSelections args)
+   _ -> nub . concat $ map refSelections (m : args)
+  MapUpdate m args val ->  nub . concat $ map refSelections (val : m : args)  
+  Old e -> internalError $ text "refSelections should only be applied in single-state context"
+  IfExpr cond e1 e2 -> nub . concat $ [refSelections cond, refSelections e1, refSelections e2]
+  Coercion e _ -> refSelections e
+  UnaryExpression _ e -> refSelections e
+  BinaryExpression _ e1 e2 -> nub . concat $ [refSelections e1, refSelections e2]
+  Quantified _ _ boundVars e -> refSelections e
 
 {- Specs -}
 
@@ -341,25 +363,25 @@ assumePostconditions :: PSig -> PSig
 assumePostconditions sig = sig { psigContracts = map assumePostcondition (psigContracts sig) }
   where
     assumePostcondition (Ensures _ e) = Ensures True e
-    assumePostcondition c = c    
+    assumePostcondition c = c
+    
+{- Constraints -}
 
-{- Functions and procedures -}
-    
--- | Function definition (lambda expression with a guard)
-data FDef = FDef {
-    fdefTV    :: [Id],          -- ^ Type variables
-    fdefArgs  :: [IdType],      -- ^ Arguments (types may be less general than in the corresponding signature)
-    fdefGuard :: Expression,    -- ^ Condition under which the definition applies
-    fdefBody  :: Expression     -- ^ Body 
+-- | Definition (lambda expression with a guard)
+data Def = Def {
+    defTV    :: [Id],          -- ^ Type variables
+    defArgs  :: [IdType],      -- ^ Arguments
+    defGuard :: Expression,    -- ^ Condition under which the definition applies
+    defBody  :: Expression     -- ^ Body 
   } deriving Eq
-  
--- | Lambda expression that corresponds to function definition body  
-fdefBodyLambda (FDef tv args _ body) = attachPos (position body) $ Quantified Lambda tv args body  
--- | Lambda expression that corresponds to function definition guard
-fdefGuardLambda (FDef tv args guard _) = attachPos (position guard) $ Quantified Lambda tv args guard
+
+-- | Lambda expression that corresponds to definition guard
+defGuardLambda (Def tv args guard _) = attachPos (position guard) $ Quantified Lambda tv args guard  
+-- | Lambda expression that corresponds to definition body  
+defBodyLambda (Def tv args _ body) = attachPos (position body) $ Quantified Lambda tv args body  
     
-instance Pretty FDef where
-  pretty (FDef tv formals guard expr) = 
+instance Pretty Def where
+  pretty (Def tv formals guard expr) = 
     text "lambda" <+>
     option (not (null tv)) (angles (commaSep (map text tv))) <+> 
     option (not (null formals)) (parens (commaSep (map idpretty formals))) <+> 
@@ -367,32 +389,39 @@ instance Pretty FDef where
     text "::" <+> pretty expr
 
 -- | Constraint set: contains a list of definitions and a list of constraints
-type ConstraintSet = ([FDef], [Expression])
+type ConstraintSet = ([Def], [Expression])
 
 -- | 'isParametrized' @expr@: is @expr@ a parametrized constraint?
 isParametrized (Pos _ (Quantified Lambda _ _ _)) = True
 isParametrized (Pos _ _) = False
 
 -- | 'isParametrizedDef' @def@: is @def@ a parametrized definition?
-isParametrizedDef (FDef[] [] _ _) = False
+isParametrizedDef (Def[] [] _ _) = False
 isParametrizedDef _ = True
 
 -- | Pretty-printed constraint set  
 constraintSetDoc :: ConstraintSet -> Doc   
 constraintSetDoc cs = vsep (map pretty (fst cs)) $+$ vsep (map pretty (snd cs))
 
--- | Symbolic store: maps names to their constraints
-type SymbolicStore = Map Id ConstraintSet
+-- | Mapping from names to their constraints
+type NameConstraints = Map Id ConstraintSet
 
--- | Union of symbolic stores (values at the same key are concatenated)
-asUnion :: SymbolicStore -> SymbolicStore -> SymbolicStore
-asUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2
+-- | Union of constraints (values at the same key are concatenated)
+constraintUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2
 
 -- | Pretty-printed abstract store
-symbolicStoreDoc :: SymbolicStore -> Doc
-symbolicStoreDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (name, cs) = nest 2 (text name <+> constraintSetDoc cs)  
- 
+nameConstraintsDoc :: NameConstraints -> Doc
+nameConstraintsDoc vars = vsep $ map varDoc (M.toList vars)
+  where varDoc (name, cs) = nest 2 (text name <+> constraintSetDoc cs)
+
+-- | Mapping from map references to their parametrized constraints
+type MapConstraints = Map Ref ConstraintSet
+
+mapConstraintsDoc heap = vsep $ map valDoc (M.toList heap)
+  where valDoc (r, cs) = nest 2 (refDoc r <+> constraintSetDoc cs)
+
+{- Procedures -}
+     
 -- | Procedure signature 
 data PSig = PSig {
     psigName :: Id,               -- ^ Procedure name
@@ -427,7 +456,7 @@ data PDef = PDef {
     pdefOuts :: [Id],                 -- ^ Out-parameter names (in the same order as 'psigRets' in the corresponding signature)
     pdefParamsRenamed :: Bool,        -- ^ Are any parameter names in this definition different for the procedure signature? (used for optimizing parameter renaming, True is a safe default)
     pdefBody :: BasicBody,            -- ^ Body
-    pdefConstraints :: SymbolicStore, -- ^ Constraints on local names
+    pdefConstraints :: NameConstraints, -- ^ Constraints on local names
     pdefPos :: SourcePos              -- ^ Location of the (first line of the) procedure definition in the source
   }
   
@@ -450,16 +479,24 @@ e1 |<|    e2 = inheritPos2 (BinaryExpression Ls) e1 e2
 e1 |<=|   e2 = inheritPos2 (BinaryExpression Leq) e1 e2
 e1 |>|    e2 = inheritPos2 (BinaryExpression Gt) e1 e2
 e1 |>=|   e2 = inheritPos2 (BinaryExpression Geq) e1 e2
-e1 |&|    e2 = inheritPos2 (BinaryExpression And) e1 e2
-e1 |||    e2 = inheritPos2 (BinaryExpression Or) e1 e2
-e1 |=>|   e2 = inheritPos2 (BinaryExpression Implies) e1 e2
+e1 |&|    e2 = if node e1 == tt 
+                  then e2
+                  else if node e2 == tt
+                    then e1
+                    else inheritPos2 (BinaryExpression And) e1 e2
+e1 |||    e2 = if node e1 == ff 
+                  then e2
+                  else if node e2 == ff
+                    then e1
+                    else inheritPos2 (BinaryExpression Or) e1 e2
+e1 |=>|   e2 = if node e1 == tt 
+                  then e2
+                  else inheritPos2 (BinaryExpression Implies) e1 e2
 e1 |<=>|  e2 = inheritPos2 (BinaryExpression Equiv) e1 e2
 assume e = attachPos (position e) (Predicate (SpecClause Inline True e))
 
-conjunction [] = gen tt
-conjunction es = foldl1 (|&|) es
-
-guardWith [] e = e
+conjunction es = foldl (|&|) (gen tt) es
+disjunction es = foldl (|||) (gen ff) es
 guardWith gs e = conjunction gs |=>| e
 
 {- Special names -}
@@ -468,16 +505,16 @@ guardWith gs e = conjunction gs |=>| e
 nullaryType id = IdType id []
 
 -- | Dummy type used during type checking to denote error
-noType = nullaryType (nonIdChar : "NoType")
+noType = nullaryType ("NONE" ++ [nonIdChar])
 
--- | Dummy user-defined type used to represent procedure returns as a single type
-tupleType = IdType (nonIdChar : "Tuple")
+-- | Dummy type used when the type does not matter
+anyType = nullaryType ("ANY" ++ [nonIdChar])
 
--- | Dummy user-defined type used to differentiate map values
-refIdType = nullaryType (nonIdChar : "RefId")
+-- | Dummy type used to represent procedure returns as a single type
+tupleType = IdType ("TUPLE" ++ [nonIdChar])
 
--- | Dummy user-defined type used to mark entities whose definitions are currently being evaluated
-ucType = nullaryType (nonIdChar : "UC")
+-- | Dummy type used to mark entities whose definitions are currently being evaluated
+ucType = nullaryType ("UC" ++ [nonIdChar])
 
 functionFrefix = "function "
 
@@ -493,12 +530,13 @@ functionFromConst name = let (prefix, suffix) = splitAt (length functionFrefix) 
   
 {- Misc -}
 
--- | 'interval' @(lo, hi)@ : Interval from @lo@ to @hi@
-interval (lo, hi) = [lo..hi]
-
 -- | Extract the element out of a 'Right' and throw an error if its argument is 'Left'
 fromRight :: Either a b -> b
 fromRight (Right x) = x
+
+-- | Two-argument equivalent of 'maybe'
+maybe2 :: c -> (a -> b -> c) -> (Maybe a) -> (Maybe b) -> c  
+maybe2 def f mx my = maybe def (maybe (const def) f mx) my  
 
 -- | 'deleteAll' @keys m@ : map @m@ with @keys@ removed from its domain
 deleteAll :: Ord k => [k] -> Map k a -> Map k a
@@ -518,19 +556,20 @@ partitionDomain keys m = M.partitionWithKey (\k _ -> k `S.member` keys) m
 
 mapItwType f (IdTypeWhere i t w) = IdTypeWhere i (f t) w
 
--- | Monadic version of 'any' (executes boolean-valued computation for all arguments in a list until the first True is found) 
-anyM :: Monad m => (a -> m Bool) -> [a] -> m Bool
-anyM _ [] = return False
-anyM pred (x : xs) = do
-  res <- pred x
-  if res then return True else anyM pred xs
+-- | Monadic version of 'any'
+anyM :: (Functor m, Monad m) => (a -> m Bool) -> [a] -> m Bool
+anyM pred xs = isJust <$> findM pred xs
   
--- | Monadic version of 'all' (executes boolean-valued computation for all arguments in a list until the first False is found) 
-allM :: Monad m => (a -> m Bool) -> [a] -> m Bool
-allM _ [] = return True
-allM pred (x : xs) = do
+-- | Monadic version of 'all'
+allM :: (Functor m, Monad m) => (a -> m Bool) -> [a] -> m Bool
+allM pred xs = isNothing <$> findM (\x -> not <$> pred x) xs
+  
+-- | Monadic version of 'find' (finds the first element in a list for which a computation evaluates to True) 
+findM :: (Functor m, Monad m) => (a -> m Bool) -> [a] -> m (Maybe a)
+findM _ [] = return Nothing
+findM pred (x : xs) = do
   res <- pred x
-  if not res then return False else allM pred xs  
+  if res then return (Just x) else findM pred xs  
 
 -- | Execute a computation with state of type @t@ inside a computation with state of type @s@
 changeState :: Monad m => (s -> t) -> (t -> s -> s) -> StateT t m a -> StateT s m a

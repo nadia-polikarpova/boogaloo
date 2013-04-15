@@ -204,4 +204,4 @@ harness file = runOnFile printOutcome file defaultFormat
     printOutcome p context = do
       let env = head (toList (execStateT (preprocess p) (initEnv context (exhaustiveGenerator (Just defaultBranch)) (Just defaultBranch))))
       -- print $ memoryDoc True (env^.envMemory)
-      print $ symbolicStoreDoc (env ^. envConstraints . symGlobals)
+      print $ nameConstraintsDoc (env ^. envConstraints . symGlobals)

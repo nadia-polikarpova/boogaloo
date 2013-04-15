@@ -29,8 +29,9 @@ axiom F == G;
 axiom G == E;
 
 // Map definitions and constraints
-const m: [int] int;
+const m, mm: [int] int;
 axiom (forall i: int :: (i > 0 ==> m[i] == i) && (i <= 0 ==> m[i] != 0));
+axiom (forall i: int :: mm[N := N + 1][i] > i); // constraints on updates
 
 // Function definitions and constraints
 function f(int): int;
@@ -94,4 +95,6 @@ procedure Test() returns ()
   assert x > 0;
   assert y != x;
   assert n[0] != 0;
+  
+  assert mm[0] > 0;
 }

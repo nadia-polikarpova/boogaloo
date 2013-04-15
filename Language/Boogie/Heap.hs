@@ -29,7 +29,7 @@ type Ref = Int
 
 -- | Pretty-printed reference
 refDoc :: Ref -> Doc
-refDoc r = text "l'" <> int r
+refDoc r = text "r'" <> int r
 
 -- | Heap
 data Heap a = Heap {
@@ -54,9 +54,9 @@ emptyHeap = Heap {
 {- Access -}
 
 -- | 'at' @h r@: value of @r@ in heap @h@
-at :: Pretty a => Heap a -> Ref -> a
+at :: Heap a -> Ref -> a
 at h r = case M.lookup r (h^.hValCounts) of
-  Nothing -> internalError $ text "Cannot find reference" <+> refDoc r <+> text "in heap" $+$ heapDoc h
+  Nothing -> internalError $ text "Cannot find reference" <+> refDoc r <+> text "in the heap"
   Just (v, c) -> v
   
 -- | Does the heap have any garbage?

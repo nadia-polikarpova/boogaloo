@@ -34,7 +34,6 @@ import Language.Boogie.AST
 import Language.Boogie.Util
 import Language.Boogie.Heap
 import Language.Boogie.Generator
-import Language.Boogie.Intervals
 import Language.Boogie.Position
 import Language.Boogie.Tokens (nonIdChar)
 import Language.Boogie.Pretty
@@ -162,7 +161,7 @@ restoreOld callerMem = do
   envMemory.memModified %= ((callerMem^.memModified) `S.union`)
   
 -- | Execute computation in a local context
-executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> SymbolicStore -> s a -> s a
+executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> NameConstraints -> s a -> s a
 executeLocally localTC formals actuals localConstraints computation = do
   oldEnv <- get
   envTypeContext %= localTC
@@ -213,12 +212,15 @@ executeGlobally computation = do
 
 data FailureSource = 
   SpecViolation SpecClause (Maybe Expression) | -- ^ Violation of user-defined specification
-  DivisionByZero |                              -- ^ Division by zero  
   UnsupportedConstruct Doc |                    -- ^ Language construct is not yet supported (should disappear in later versions)
-  InfiniteDomain Id Interval |                  -- ^ Quantification over an infinite set
   InternalException InternalCode                -- ^ Must be cought inside the interpreter and never reach the user
-  deriving Eq
-
+  
+instance Eq FailureSource where
+  SpecViolation clause1 lt1 == SpecViolation clause2 lt2  = clause1 == clause2 && maybe2 True samePos lt1 lt2
+  UnsupportedConstruct doc1 == UnsupportedConstruct doc2  = doc1 == doc2
+  InternalException code1 == InternalException code2      = code1 == code2
+  _ == _                                                  = False
+  
 -- | Information about a procedure or function call  
 data StackFrame = StackFrame {
   callPos :: SourcePos,    -- ^ Source code position of the call
@@ -243,6 +245,11 @@ throwRuntimeFailure source pos = do
 -- | Push frame on the stack trace of a runtime failure
 addStackFrame frame (RuntimeFailure source pos mem trace) = throwError (RuntimeFailure source pos mem (frame : trace))
 
+-- | Throw a spec violation
+throwViolation specClause pos = do
+  lt <- use envLastTerm
+  throwRuntimeFailure (SpecViolation specClause lt) pos
+
 -- | Kinds of run-time failures
 data FailureKind = Error | -- ^ Error state reached (assertion violation)
   Unreachable | -- ^ Unreachable state reached (assumption violation)
@@ -254,7 +261,6 @@ failureKind :: RuntimeFailure -> FailureKind
 failureKind err = case rtfSource err of
   SpecViolation (SpecClause _ True _) _ -> Unreachable
   SpecViolation (SpecClause _ False _) _ -> Error
-  DivisionByZero -> Error
   _ -> Nonexecutable
   
 instance Error RuntimeFailure where
@@ -272,8 +278,6 @@ runtimeFailureDoc debug err =
     failureSourceDoc (SpecViolation (SpecClause specType isFree e) lt) = text (clauseName specType isFree) <+> dquotes (pretty e) <+> defPosition specType e <+>
       lastTermDoc lt <+>
       text "violated"
-    failureSourceDoc (DivisionByZero) = text "Division by zero"
-    failureSourceDoc (InfiniteDomain var int) = text "Variable" <+> text var <+> text "quantified over an infinite domain" <+> text (show int)
     failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> s
     
     clauseName Inline isFree = if isFree then "Assumption" else "Assertion"  
@@ -305,13 +309,8 @@ instance Pretty RuntimeFailure where pretty err = runtimeFailureDoc True err
 -- | Do two runtime failures represent the same fault?
 -- Yes if the same property failed at the same program location
 -- or, for preconditions, for the same caller   
-sameFault f f' = rtfSource f == rtfSource f' && rtfPos f == rtfPos f' &&
-  case rtfSource f of
-    SpecViolation _ lt -> let SpecViolation _ lt' = rtfSource f' in lt == lt'
-    _ -> True
-  
 instance Eq RuntimeFailure where
-  f == f' = sameFault f f'
+  f == f' = rtfSource f == rtfSource f' && rtfPos f == rtfPos f'
     
 -- | Internal error codes 
 data InternalCode = NotLinear | UnderConstruction Int
@@ -454,7 +453,7 @@ generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
 generateValue t pos = case t of
   IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct (text "choice of a value from unknown type" <+> pretty t)) pos
   -- Maps are initializaed lazily, allocate an empty map on the heap:
-  t@(MapType _ _ _) -> allocate $ MapValue t emptyMap
+  t@(MapType _ _ _) -> allocate t emptyMap
   BoolType -> BoolValue <$> generate genBool
   IntType -> IntValue <$> generate genInteger
   t@(IdType _ _) -> do
@@ -519,28 +518,27 @@ forgetAnyVar name = do
       else forgetVar memConstants name
       
 -- | 'setMapValue' @r index val@ : map @index@ to @val@ in the map referenced by @r@
--- (@r@ has to be a source map)
 setMapValue r index val = do
-  MapValue t (Source baseVals) <- readHeap r
-  envMemory.memHeap %= update r (MapValue t (Source (M.insert index val baseVals)))
+  vals <- readHeap r
+  envMemory.memHeap %= update r (M.insert index val vals)
   incRefCountValue val
   
 -- | 'forgetMapValue' @r index@ : forget value at @index@ in the map referenced by @r@  
 -- (@r@ has to be a source map)
 forgetMapValue r index = do
-  MapValue t (Source baseVals) <- readHeap r
-  case M.lookup index baseVals of
+  vals <- readHeap r
+  case M.lookup index vals of
     Nothing -> return ()
     Just val -> do
       decRefCountValue val
-      envMemory.memHeap %= update r (MapValue t (Source (M.delete index baseVals)))
+      envMemory.memHeap %= update r (M.delete index vals)
       
 -- | 'readHeap' @r@: current value of reference @r@ in the heap
 readHeap r = flip at r <$> use (envMemory.memHeap)
     
--- | 'allocate' @v@: store @v@ at a fresh location in the heap and return that location
-allocate :: (Monad m, Functor m) => Value -> Execution m Value
-allocate v = Reference (valueType v) <$> (state . withHeap . alloc) v
+-- | 'allocate': store an empty map of type @t@ at a fresh location in the heap
+allocate :: (Monad m, Functor m) => Type -> MapRepr -> Execution m Value
+allocate t repr = Reference t <$> (state . withHeap . alloc) repr
   
 -- | Remove all unused references from the heap  
 collectGarbage :: (Monad m, Functor m) => Execution m ()  
@@ -548,27 +546,23 @@ collectGarbage = do
   h <- use $ envMemory.memHeap
   when (hasGarbage h) (do
     r <- state $ withHeap dealloc
-    let MapValue _ repr = h `at` r
-    case repr of
-      Source _ -> return ()
-      Derived base _ -> envMemory.memHeap %= decRefCount base
-    mapM_ decRefCountValue (M.elems $ stored repr)
+    mapM_ decRefCountValue (M.elems $ h `at` r)
     cs <- gets $ lookupValueConstraints r
-    let usedRefs = nub . concatMap logicalVars $ concatMap (\c -> [fdefGuard c, fdefBody c]) (fst cs) ++ snd cs 
+    let usedRefs = nub . concatMap mapRefs $ concatMap (\c -> [defGuard c, defBody c]) (fst cs) ++ snd cs 
     mapM_ (\r -> envMemory.memHeap %= decRefCount r) usedRefs    
     envConstraints.symHeap %= M.delete r
     collectGarbage)
-    
--- | 'extendValueDefinition' @r def@ : add @def@ to the definiton of the logical variable @r@
-extendValueDefinition r def = do
-  modify $ addValueDefinition r def
-  let usedRefs = nub $ logicalVars (fdefGuard def) ++ logicalVars (fdefBody def)
+
+-- | 'extendMapDefinition' @r def@ : add @def@ to the definiton of the map @r@
+extendMapDefinition r def = do
+  modify $ addMapDefinition r def
+  let usedRefs = nub $ mapRefs (defGuard def) ++ mapRefs (defBody def)
   mapM_ (\r -> envMemory.memHeap %= incRefCount r) usedRefs    
 
--- | 'extendValueConstraint' @r c@ : add @c@ to the consraints of the logical variable @r@  
-extendValueConstraint r c = do
-  modify $ addValueConstraint r c
-  mapM_ (\r -> envMemory.memHeap %= incRefCount r) (logicalVars c)
+-- | 'extendMapConstraint' @r c@ : add @c@ to the consraints of the map @r@  
+extendMapConstraint r c = do
+  modify $ addMapConstraint r c
+  mapM_ (\r -> envMemory.memHeap %= incRefCount r) (mapRefs c)
   
 {- Expressions -}
 
@@ -595,10 +589,10 @@ binOp pos Plus    (IntValue n1) (IntValue n2)   = return $ IntValue (n1 + n2)
 binOp pos Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
 binOp pos Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
 binOp pos Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then throwRuntimeFailure DivisionByZero pos
+                                                then generateValue IntType pos
                                                 else return $ IntValue (fst (n1 `euclidean` n2))
 binOp pos Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then throwRuntimeFailure DivisionByZero pos
+                                                then generateValue IntType pos
                                                 else return $ IntValue (snd (n1 `euclidean` n2))
 binOp pos Leq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 <= n2)
 binOp pos Ls      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 < n2)
@@ -609,8 +603,8 @@ binOp pos Or      (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 || b2)
 binOp pos Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
 binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 >= b2)
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
-binOp pos Eq      v1 v2                         = evalEquality v1 v2
-binOp pos Neq     v1 v2                         = vnot <$> evalEquality v1 v2
+binOp pos Eq      v1 v2                         = evalEquality v1 v2 pos
+binOp pos Neq     v1 v2                         = vnot <$> evalEquality v1 v2 pos
 binOp pos Lc      v1 v2                         = throwRuntimeFailure (UnsupportedConstruct $ text "orders") pos
 
 -- | Euclidean division used by Boogie for integer division and modulo
@@ -620,6 +614,23 @@ a `euclidean` b =
     (q, r) | r >= 0    -> (q, r)
            | b >  0    -> (q - 1, r + b)
            | otherwise -> (q + 1, r - b)
+           
+-- | 'evalEquality' @v1 v2 pos@ : Evaluate @v1 == v2@ at position @pos@
+evalEquality :: (Monad m, Functor m) => Value -> Value -> SourcePos -> Execution m Value
+evalEquality v1@(Reference t1 r1) v2@(Reference t2 r2) pos = if r1 == r2
+  then return (BoolValue True) -- Equal references point to equal maps
+  else if t1 /= t2 -- Different types can occur in a generic context
+    then return (BoolValue False)
+    else let
+        MapType tv domains range = t1
+        freshVarNames = map (\i -> nonIdChar : show i) [0..]
+        vars = zip freshVarNames domains
+        lit = attachPos pos . Literal
+        var = attachPos pos . Var
+        app m = attachPos pos $ MapSelection (lit m) (map (var . fst) vars)
+      in evalForall tv vars (app v1 |=| app v2) pos
+evalEquality (MapValue _ _) (MapValue _ _) _ = internalError $ text "Attempt to compare two maps"
+evalEquality v1 v2 _ = return $ BoolValue (v1 == v2)           
          
 -- | Evaluate an expression;
 -- can have a side-effect of initializing variables that were not previously defined
@@ -632,19 +643,17 @@ eval expr = do
 evalSub expr = case node expr of
   Literal v -> return v
   Var name -> evalVar name (position expr)
-  Application name args -> evalMapSelection (functionExpr name) args (position expr)
+  Application name args -> evalApplication name args (position expr)
   MapSelection m args -> evalMapSelection m args (position expr)
   MapUpdate m args new -> evalMapUpdate m args new (position expr)
   Old e -> old $ evalSub e
   IfExpr cond e1 e2 -> evalIf cond e1 e2
   Coercion e t -> evalSub e
-  UnaryExpression op e -> unOp op <$> evalSub e
+  UnaryExpression op e -> evalUnary op e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
   Quantified Lambda tv vars e -> evalLambda tv vars e (position expr)
-  Quantified Forall tv vars e -> vnot <$> evalExists tv vars (enot e) (position expr)
-  Quantified Exists tv vars e -> evalExists tv vars e (position expr)
-  where
-    functionExpr name = gen . Var $ functionConst name
+  Quantified Forall tv vars e -> evalForall tv vars e (position expr)
+  Quantified Exists tv vars e -> vnot <$> evalForall tv vars (enot e) (position expr)
   
 evalVar :: (Monad m, Functor m) => Id -> SourcePos -> Execution m Value  
 evalVar name pos = do
@@ -680,6 +689,11 @@ evalVar name pos = do
               when initOld $ setVar memOld name chosenValue
               checkNameConstraints name pos
               return chosenValue
+              
+evalApplication :: (Monad m, Functor m) => Id -> [Expression] -> SourcePos -> Execution m Value  
+evalApplication name args pos = evalMapSelection (functionExpr name) args pos
+  where
+    functionExpr name = gen . Var $ functionConst name
         
 rejectMapIndex pos idx = case idx of
   Reference _ r -> throwRuntimeFailure (UnsupportedConstruct $ text "map as an index") pos
@@ -691,45 +705,57 @@ evalMapSelection m args pos = do
     Reference _ r -> do
       argsV <- mapM evalSub args
       h <- use $ envMemory.memHeap
-      let (s, vals) = flattenMap h r
-      case M.lookup argsV vals of    -- Lookup a cached value
+      case M.lookup argsV (h `at` r) of    -- Lookup a cached value
         Just val -> wellDefined val
         Nothing -> do                           -- If not found, look for an applicable definition          
-          tc <- use envTypeContext
-          definedValue <- checkMapDefinitions s argsV pos
+          tc <- use envTypeContext          
+          definedValue <- checkMapDefinitions r argsV pos
           case definedValue of
-            Just val -> cache s argsV val
+            Just val -> do
+              inDef <- use envInDef
+              cache r argsV val (not inDef)
             Nothing -> do                       -- If not found, choose a value non-deterministically
               mapM_ (rejectMapIndex pos) argsV
               let rangeType = exprType tc (gen $ MapSelection m args)
               chosenValue <- generateValue rangeType pos
-              cache s argsV chosenValue
+              cache r argsV chosenValue True
     _ -> return mV -- function without arguments (ToDo: is this how it should be handled?)
   where
-    cache s argsV val = do              
-      setMapValue s argsV val
-      checkMapConstraints s argsV pos
+    cache r argsV val check = do              
+      setMapValue r argsV val
+      when check $ checkMapConstraints r argsV pos
       return val
         
 evalMapUpdate m args new pos = do
-  Reference _ r <- evalSub m
-  argsV <- mapM evalSub args
-  mapM_ (rejectMapIndex pos) argsV
-  newV <- evalSub new
-  MapValue t repr <- readHeap r
-  let 
-    (newSource, newRepr) = case repr of 
-      Source _ -> (r, Derived r (M.singleton argsV newV))
-      Derived base override -> (base, Derived base (M.insert argsV newV override))
-  mapM_ incRefCountValue (M.elems $ stored newRepr)
-  envMemory.memHeap %= incRefCount newSource
-  allocate $ MapValue t newRepr
+  mVal@(Reference t r) <- evalSub m
+  argsVals <- mapM evalSub args
+  mapM_ (rejectMapIndex pos) argsVals
+  newVal <- evalSub new
+  repr <- readHeap r
+  newMVal@(Reference _ r') <- allocate t (M.insert argsVals newVal repr)
+  let lit = attachPos pos . Literal    
+      var = attachPos pos . Var
+      freshVarNames = map (\i -> nonIdChar : show i) [0..]
+      bv = zip freshVarNames domains
+      bvExprs = map (var . fst) bv
+      MapType tv domains _ = t
+      appOld = attachPos pos $ MapSelection (lit mVal) bvExprs
+      appNew = attachPos pos $ MapSelection (lit newMVal) bvExprs
+      guard = disjunction (zipWith (|!=|) bvExprs (map lit argsVals))
+      constraint = inheritPos (Quantified Lambda tv bv) (guard |=>| (appOld |=| appNew))
+  extendMapConstraint r constraint
+  extendMapConstraint r' constraint  
+  extendMapDefinition r (Def tv bv guard appNew)
+  extendMapDefinition r' (Def tv bv guard appOld)
+  return newMVal
   
 evalIf cond e1 e2 = do
   v <- evalSub cond
   case v of
     BoolValue True -> evalSub e1    
     BoolValue False -> evalSub e2    
+    
+evalUnary op e = unOp op <$> evalSub e    
       
 evalBinary op e1 e2 = if op `elem` shortCircuitOps
   then do -- Keep track of which terms got evaluated
@@ -751,40 +777,38 @@ evalLambda tv vars e pos = do
   let t = exprType tc (lambda e)
   val@(Reference _ r) <- generateValue t pos
   (Quantified Lambda _ _ symBody) <- node <$> symbolicEval (lambda e)
-  extendValueDefinition r (fdef symBody)
+  extendMapDefinition r (def symBody)
   let app = attachPos pos $ MapSelection (attachPos pos $ Literal val) (map (attachPos pos . Var . fst) vars)
-  extendValueConstraint r (lambda $ app |=| symBody)
+  extendMapConstraint r (lambda $ app |=| symBody)
   return val
   where
     lambda = attachPos pos . Quantified Lambda tv vars
-    fdef = FDef tv vars (conjunction [])
-
--- | Finite domain      
-type Domain = [Value]      
-
-evalExists :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> SourcePos -> Execution m Value      
-evalExists tv vars e pos = let Quantified Exists tv' vars' e' = node $ normalize (attachPos pos $ Quantified Exists tv vars e)
-  in evalExists' tv' vars' e'
-
-evalExists' :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> Execution m Value    
-evalExists' tv vars e = do
-  when (not (null tv)) $ throwRuntimeFailure (UnsupportedConstruct $ text "quantification over types") (position e)
-  localConstraints <- use $ envConstraints.symLocals
-  BoolValue <$> executeNested M.empty vars evalWithDomains
+    def = Def tv vars (conjunction [])
+    
+evalForall :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> SourcePos -> Execution m Value
+evalForall tv vars e pos = do  
+  symExpr <- symbolicEval (attachPos pos $ Quantified Forall tv vars e)
+  let mc = extractMapConstraints symExpr
+  BoolValue <$> allM evalForMap (M.toList mc)
   where
-    evalWithDomains = do
-      doms <- domains e varNames
-      evalForEach varNames doms
-    -- | evalForEach vars domains: evaluate e for each combination of possible values of vars, drown from respective domains
-    evalForEach :: (Monad m, Functor m) => [Id] -> [Domain] -> Execution m Bool
-    evalForEach [] [] = unValueBool <$> evalSub e
-    evalForEach (var : vars) (dom : doms) = anyM (fixOne vars doms var) dom
-    -- | Fix the value of var to val, then evaluate e for each combination of values for the rest of vars
-    fixOne :: (Monad m, Functor m) => [Id] -> [Domain] -> Id -> Value -> Execution m Bool
-    fixOne vars doms var val = do
-      resetVar memLocals var val
-      evalForEach vars doms
-    varNames = map fst vars
+    evalForMap (r, (defs, constraints)) = do      
+      satCache <- allM (checkCached r) constraints
+      if not satCache  -- If any cached values do not satisfy the constraint
+        then return False   -- found evidence that the constraint does not hold
+        else do             -- no evidence yet if the constraint holds for all arguments, make a non-deterministic choice for every constraint           
+          satDecide <- allM (decideConstraint r) constraints 
+          when satDecide $ mapM_ (extendMapDefinition r) defs
+          when satDecide $ mapM_ (extendMapConstraint r) constraints
+          return satDecide          
+    checkCached r c = do
+      cache <- readHeap r
+      allM (\actuals -> applyConstraint c actuals pos) (M.keys cache)
+    decideConstraint r c@(Pos _ (Quantified Lambda tv vars _)) = do
+      let typeBinding = M.fromList $ zip tv (repeat anyType)
+      let argTypes = map (typeSubst typeBinding . snd) vars
+      -- ToDo: we could plug in linear analysis here and replace with genIndex sometimes
+      index <- mapM (flip generateValue pos) argTypes -- choose an index non-deterministically
+      applyConstraint c index pos
           
 {- Statements -}
 
@@ -800,12 +824,8 @@ exec stmt = case node stmt of
   >> collectGarbage
   
 execPredicate specClause pos = do
-  b <- eval $ specExpr specClause
-  case b of 
-    BoolValue True -> return ()
-    BoolValue False -> do
-      lt <- use envLastTerm
-      throwRuntimeFailure (SpecViolation specClause lt) pos      
+  b <- unValueBool <$> eval (specExpr specClause)
+  when (not b) $ throwViolation specClause pos
     
 execHavoc names pos = do
   mapM_ forgetAnyVar names
@@ -840,7 +860,7 @@ execCallBySig sig lhss args pos = do
       i <- generate (`genIndex` length defs)
       return (sig, defs !! i)
     params = psigParams sig
-    paramConstraints tc = M.filterWithKey (\k _ -> k `elem` map itwId params) $ foldr asUnion M.empty $ map (extractConstraints tc . itwWhere) params
+    paramConstraints tc = M.filterWithKey (\k _ -> k `elem` map itwId params) $ foldr constraintUnion M.empty $ map (extractNameConstraints tc . itwWhere) params
     -- For procedures with no implementation: dummy definition that just havocs all modifiable globals
     dummyDef tc = PDef {
         pdefIns = map itwId (psigArgs sig),
@@ -901,7 +921,7 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
     
 {- Constraints and symbolic execution -}
 
--- | 'symbolicEval' @expr@ : evaluate all free variables in @expr@
+-- | 'symbolicEval' @expr@ : evaluate @expr@ modulo quantification
 symbolicEval expr = symbolicEval' [] expr
   where
     symbolicEval' vars (Pos p e) = attachPos p <$> case e of
@@ -909,36 +929,52 @@ symbolicEval expr = symbolicEval' [] expr
       var@(Var name) -> if name `elem` vars
         then return var
         else Literal <$> evalVar name p
-      Application name args -> Application name <$> mapM (symbolicEval' vars) args
+      Application name args -> do
+        args' <- mapM (symbolicEval' vars) args
+        if all isLiteral args'
+          then Literal <$> evalApplication name args' p
+          else return $ Application name args'
       MapSelection m args -> do
-        m' <- (symbolicEval' vars) m
+        m' <- symbolicEval' vars m
         args' <- mapM (symbolicEval' vars) args
-        return $ MapSelection m' args'
+        if all isLiteral (m' : args')
+          then Literal <$> evalMapSelection m' args' p
+          else return $ MapSelection m' args'
       MapUpdate m args new -> do
-        m' <- (symbolicEval' vars) m
+        m' <- symbolicEval' vars m
         args' <- mapM (symbolicEval' vars) args
-        new' <- (symbolicEval' vars) new
-        return $ MapUpdate m' args' new'   
+        new' <- symbolicEval' vars new
+        if all isLiteral (m' : new' : args')
+          then Literal <$> evalMapUpdate m' args' new' p
+          else return $ MapUpdate m' args' new'   
       Old e -> node <$> old (symbolicEval' vars e)
       IfExpr cond e1 e2 -> do
-        cond' <- (symbolicEval' vars) cond
-        e1' <- (symbolicEval' vars) e1
-        e2' <- (symbolicEval' vars) e2
-        return $ IfExpr cond' e1' e2'
-      Coercion e t -> node <$> (symbolicEval' vars) e
-      UnaryExpression op e -> UnaryExpression op <$> (symbolicEval' vars) e
+        cond' <- symbolicEval' vars cond
+        e1' <- symbolicEval' vars e1
+        e2' <- symbolicEval' vars e2
+        if all isLiteral [cond', e1', e2']
+          then Literal <$> evalIf cond' e1' e2'
+          else return $ IfExpr cond' e1' e2'
+      Coercion e t -> node <$> symbolicEval' vars e
+      UnaryExpression op e -> do
+        e' <- symbolicEval' vars e
+        if isLiteral e'
+          then Literal <$> evalUnary op e'
+          else return $ UnaryExpression op e'
       BinaryExpression op e1 e2 -> do
-        e1' <- (symbolicEval' vars) e1
-        e2' <- (symbolicEval' vars) e2
-        return $ BinaryExpression op e1' e2'
+        e1' <- symbolicEval' vars e1
+        e2' <- symbolicEval' vars e2
+        if isLiteral e1' && isLiteral e2'
+          then Literal <$> evalBinary op e1' e2'
+          else return $ BinaryExpression op e1' e2'
       Quantified qop tv bv e -> Quantified qop tv bv <$> symbolicEval' (vars ++ map fst bv) e
       
 -- | Evaluate all free variables in a definiton
-symbolicEvalDef :: (Monad m, Functor m) => FDef -> Execution m FDef
-symbolicEvalDef def@(FDef tv formals guard body) = do
-  (Quantified Lambda _ _ guard') <- node <$> symbolicEval (fdefGuardLambda def)
-  (Quantified Lambda _ _ body') <- node <$> symbolicEval (fdefBodyLambda def)
-  return $ FDef tv formals guard' body'      
+symbolicEvalDef :: (Monad m, Functor m) => Def -> Execution m Def
+symbolicEvalDef def@(Def tv formals guard body) = do
+  (Quantified Lambda _ _ guard') <- node <$> symbolicEval (defGuardLambda def)
+  (Quantified Lambda _ _ body') <- node <$> symbolicEval (defBodyLambda def)
+  return $ Def tv formals guard' body'      
         
 -- | 'wellDefined' @val@ : throw an exception if @val@ is under construction
 wellDefined (CustomValue t n) | t == ucType = throwInternalException $ UnderConstruction n
@@ -948,7 +984,7 @@ wellDefined val = return val
 -- if none are applicable return 'Nothing', 
 -- unless an under construction value different from @myCode@ has been evaluated, in which case rethrow the UnderConstruction exception;
 -- @pos@ is the position of the definition invocation
-checkDefinitions :: (Monad m, Functor m) => Int -> [FDef] -> [Value] -> SourcePos -> Execution m (Maybe Value)
+checkDefinitions :: (Monad m, Functor m) => Int -> [Def] -> [Value] -> SourcePos -> Execution m (Maybe Value)
 checkDefinitions myCode defs actuals pos = checkDefinitions' myCode Nothing defs actuals pos
 
 checkDefinitions' _ Nothing     [] _ _ = return Nothing
@@ -970,21 +1006,27 @@ checkDefinitions' myCode mCode (def : defs) actuals pos = tryDefinitions `catchE
 -- if @guard (actuals)@ return the result of @body (actuals)@,
 -- otherwise return 'Nothing'
 -- (@pos@ is the position of the definition invocation)      
-applyDefinition (FDef tv formals guard body) actuals pos =
+applyDefinition def@(Def tv formals guard body) actuals pos = do
   if isNothing $ unifier tv formalTypes actualTypes -- Is the definition applicable to these types?
     then return Nothing
-    else do      
-      applicable <- unValueBool <$> locally (evalSub guard) -- Is the definition applicable to these values?
-      if not applicable
+    else do
+      applicable <- unValueBool <$> evalInDef guard -- Is the definition applicable to these values?
+      res <- if not applicable
         then return Nothing
-        else Just <$> locally (evalSub body)
+        else Just <$> evalInDef body
+      return res
   where
     formalNames = map fst formals
     formalTypes = map snd formals
     actualTypes = map valueType actuals
     locally = if null formals
         then id
-        else executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty    
+        else executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty
+    evalInDef expr = do
+      oldInDef <- use envInDef
+      envInDef .= True
+      res <- locally (evalSub expr) `finally` (envInDef .= oldInDef)
+      return res
     
 -- | 'checkNameDefinitions' @name pos@ : return a value for @name@ mentioned at @pos@, if there is an applicable definition.
 -- Must be executed in the context of the definition.
@@ -994,7 +1036,7 @@ checkNameDefinitions name pos = do
   resetAnyVar name $ CustomValue ucType n  
   modify $ setCustomCount ucType (n + 1)
   defs <- fst <$> gets (lookupNameConstraints name)
-  let simpleDefs = [simpleDef | simpleDef <- defs, null $ fdefArgs simpleDef] -- Ignore forall-definition, they will be attached to the map value by checkNameConstraints
+  let simpleDefs = [simpleDef | simpleDef <- defs, null $ defArgs simpleDef] -- Ignore forall-definition, they will be attached to the map value by checkNameConstraints
   checkDefinitions n simpleDefs [] pos `finally` cleanup n `catchError` addFrame
   where  
     cleanup n = do
@@ -1017,8 +1059,7 @@ checkMapDefinitions r actuals pos = do
       modify $ setCustomCount ucType n      
 
 -- | 'applyConstraint' @c actuals pos@ : 
--- check that @c (actuals)@,
--- otherwise throw an axiom violation
+-- return if @c (actuals)@ holds
 -- (@pos@ is the position of the constraint invocation)      
 applyConstraint c actuals pos = case node c of
   Quantified Lambda tv formals body ->
@@ -1028,48 +1069,43 @@ applyConstraint c actuals pos = case node c of
       actualTypes = map valueType actuals
       locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty    
     in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
-      then return ()
-      else do
-        satisfied <- unValueBool <$> locally (evalSub body)
-        when (not satisfied) violation
-  _ -> do
-        satisfied <- unValueBool <$> evalSub c
-        when (not satisfied) violation
-  where    
-    violation = do
-      lt <- use envLastTerm
-      throwRuntimeFailure (SpecViolation (SpecClause Axiom True c) lt) pos
-  
+      then return True
+      else unValueBool <$> locally (evalSub body)
+  _ -> unValueBool <$> evalSub c  
     
 -- | 'checkNameConstraints' @name pos@: assume all constraints of entity @name@ mentioned at @pos@;
 -- is @name@ is of map type, attach all its forall-definitions and forall-contraints to the corresponding reference 
 -- Must be executed in the context of the constraint.
 checkNameConstraints name pos = (do
     (defs, constraints) <- gets $ lookupNameConstraints name
-    mapM_ checkConstraint constraints
-    mapM_ attachDefinition defs
+    if any isParametrized constraints
+      then do -- name is a map and all constraints are parametrized
+        Reference _ r <- evalVar name pos
+        mapM_ (attachDefinition r) defs
+        mapM_ (attachConstraint r) constraints
+      else do -- name is a scalar and all constraints are simple
+        mc <- findM (\c -> not <$> applyConstraint c [] pos) constraints
+        when (isJust mc) (throwViolation (SpecClause Axiom True $ fromJust mc) pos)        
   ) `catchError` addFrame
   where
-    checkConstraint c = if isParametrized c
-      then do                                 -- Parametrized constraint: attach to the map value
-        Reference _ r <- evalVar name pos
-        symVal <- symbolicEval c
-        extendValueConstraint r symVal  
-      else applyConstraint c [] pos           -- Simple constraint: assume it
-    attachDefinition def = if isParametrizedDef def 
-      then do                                 -- Parametrized definition: attach to the map value
-        Reference _ r <- evalVar name pos
+    -- | Attach parametrized definition to the map value
+    attachDefinition r def = do
         symVal <- symbolicEvalDef def
-        extendValueDefinition r symVal
-      else return ()                           -- Simple definition: ignore
+        extendMapDefinition r symVal  
+    -- | Attach parametrized constraint to the map value
+    attachConstraint r c = do                                 
+        symVal <- symbolicEval c
+        extendMapConstraint r symVal  
+        return True
     addFrame = addStackFrame (StackFrame pos name)
       
 -- | 'checkMapConstraints' @r actuals pos@ : assume all constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
 checkMapConstraints r actuals pos = do
   constraints <- snd <$> gets (lookupValueConstraints r)
-  mapM_ (\c -> applyConstraint c actuals pos) constraints        
-
+  mc <- findM (\c -> not <$> applyConstraint c actuals pos) constraints
+  when (isJust mc) (throwViolation (SpecClause Axiom True $ fromJust mc) pos)
+  
 {- Preprocessing -}
 
 -- | Collect procedure implementations, and constant/function/global variable constraints
@@ -1092,7 +1128,7 @@ processFunction name argNames mBody = do
     Nothing -> return ()
     Just body -> do
       let formals = zip (map formalName argNames) argTypes
-      let def = FDef tv formals (conjunction []) body
+      let def = Def tv formals (conjunction []) body
       modify $ addGlobalDefinition constName def
       let app = attachPos (position body) $ Application name (map (attachPos (position body) . Var . fst) formals)
       let c = inheritPos (Quantified Lambda tv formals) (app |=| body)
@@ -1107,7 +1143,7 @@ processProcedureBody name pos args rets body = do
   let paramsRenamed = map itwId params /= (argNames ++ retNames)    
   let flatBody = (map (mapItwType (resolve tc)) (concat $ fst body), M.fromList (toBasicBlocks $ snd body))
   let allLocals = params ++ fst flatBody
-  let localConstraints = M.filterWithKey (\k _ -> k `elem` map itwId allLocals) $ foldr asUnion M.empty $ map (extractConstraints tc . itwWhere) allLocals
+  let localConstraints = M.filterWithKey (\k _ -> k `elem` map itwId allLocals) $ foldr constraintUnion M.empty $ map (extractNameConstraints tc . itwWhere) allLocals
   modify $ addProcedureImpl name (PDef argNames retNames paramsRenamed flatBody localConstraints pos) 
   where
     argNames = map fst args
@@ -1115,35 +1151,51 @@ processProcedureBody name pos args rets body = do
 
 processAxiom expr = do
   tc <- use envTypeContext
-  envConstraints.symGlobals %= (`asUnion` extractConstraints tc expr)
+  envConstraints.symGlobals %= (`constraintUnion` extractNameConstraints tc expr)
   
 {- Constant and function constraints -}
 
+extractNameConstraints tc = extractConstraints tc freeVars (\e -> freeSelections e ++ over (mapped._1) functionConst (applications e)) defLhs
+  where
+    defLhs e = case node e of
+      Var name -> Just (name, [])
+      MapSelection (Pos _ (Var name)) args -> Just (name, args)
+      Application name args -> Just (functionConst name, args)
+      _ -> Nothing
+
+extractMapConstraints = extractConstraints emptyContext mapRefs refSelections defLhs
+  where
+    defLhs e = case node e of
+      (Literal (Reference _ r)) -> Just (r, [])
+      MapSelection (Pos _ (Literal (Reference _ r))) args -> Just (r, args)
+      _ -> Nothing
+
 -- | 'extractConstraints' @tc bExpr@ : extract definitions and constraints from @bExpr@ in type context @tc@
-extractConstraints :: Context -> Expression -> SymbolicStore
-extractConstraints tc bExpr = extractConstraints' tc [] [] [] (negationNF bExpr)
+extractConstraints :: Ord a => Context -> (Expression -> [a]) -> (Expression -> [(a, [Expression])]) -> (Expression -> Maybe (a, [Expression])) -> Expression -> Map a ConstraintSet
+extractConstraints tc scalars selections defLhs bExpr = extractConstraints' tc scalars selections defLhs [] [] [] (negationNF bExpr)
 
 -- | 'extractConstraints'' @tc tv vars guards body@ : extract definitions and constraints from expression @guards@ ==> @body@
 -- bound type variables @tv@ and bound variables @vars@ in type context @tc@
-extractConstraints' :: Context -> [Id] -> [IdType] -> [Expression] -> Expression -> SymbolicStore
-extractConstraints' tc tv vars guards body = case (node body) of
-  Quantified Forall tv' vars' bExpr -> extractConstraints' tc (tv ++ tv') (vars ++ vars') guards bExpr
-  Quantified Exists _ _ _ -> M.empty -- ToDo: treat as atomic
+extractConstraints' :: Ord a => Context -> (Expression -> [a]) -> (Expression -> [(a, [Expression])]) -> (Expression -> Maybe (a, [Expression])) -> [Id] -> [IdType] -> [Expression] -> Expression -> Map a ConstraintSet
+extractConstraints' tc scalars selections defLhs tv vars guards body = case (node body) of
+  Quantified Forall tv' vars' bExpr -> extractConstraints' tc scalars selections defLhs (tv ++ tv') (vars ++ vars') guards bExpr
+  Quantified Exists _ _ _ -> M.empty -- ToDo: skolemize?
   BinaryExpression And bExpr1 bExpr2 -> let
-    constraints1 = extractConstraints' tc tv vars guards bExpr1
-    constraints2 = extractConstraints' tc tv vars guards bExpr2
-    in constraints1 `asUnion` constraints2
+    constraints1 = extractConstraints' tc scalars selections defLhs tv vars guards bExpr1
+    constraints2 = extractConstraints' tc scalars selections defLhs tv vars guards bExpr2
+    in constraints1 `constraintUnion` constraints2
   BinaryExpression Or bExpr1 bExpr2 -> let
-    constraints1 = extractConstraints' tc tv vars ((negationNF $ enot bExpr1) : guards) bExpr2
-    constraints2 = extractConstraints' tc tv vars ((negationNF $ enot bExpr2) : guards) bExpr1
-    in constraints1 `asUnion` constraints2
+    constraints1 = extractConstraints' tc scalars selections defLhs tv vars ((negationNF $ enot bExpr1) : guards) bExpr2
+    constraints2 = extractConstraints' tc scalars selections defLhs tv vars ((negationNF $ enot bExpr2) : guards) bExpr1
+    in constraints1 `constraintUnion` constraints2
   BinaryExpression Eq expr1 expr2 -> let
     defs1 = extractDefsAtomic expr1 expr2
     defs2 = extractDefsAtomic expr2 expr1
     constraints = extractConstraintsAtomic
-    in foldr1 asUnion [defs1, defs2, constraints]
+    in foldr1 constraintUnion [defs1, defs2, constraints]
   _ -> extractConstraintsAtomic
   where
+  
     fvBody = freeVars body
     fvGuards = concatMap freeVars guards
     allFV = fvBody ++ fvGuards
@@ -1151,34 +1203,34 @@ extractConstraints' tc tv vars guards body = case (node body) of
     usedVars = [(v, t) | (v, t) <- vars, v `elem` allFV]
     boundTC = nestedContext M.empty vars tc { ctxTypeVars = tv }
   
-    extractDefsAtomic lhs rhs = case node lhs of
-      Var name -> addDefFor name [] rhs
-      MapSelection (Pos _ (Var name)) args -> addDefFor name args rhs
-      Application name args -> addDefFor (functionConst name) args rhs
-      _ -> M.empty
-    addDefFor name args rhs = let
+    extractDefsAtomic lhs rhs = case defLhs lhs of
+      Just (x, args) -> addDefFor x args rhs
+      Nothing -> M.empty
+    addDefFor x args rhs = let
         argTypes = map (exprType boundTC) args
         (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
         allGuards = concat argGuards ++ guards
         extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
       in if length formals == length args && null extraVars -- Only possible if all arguments are simple and there are no extra variables
-        then M.singleton name ([FDef tv (zip formals argTypes) (conjunction allGuards) rhs], [])
+        then M.singleton x ([Def tv (zip formals argTypes) (conjunction allGuards) rhs], [])
         else M.empty
     
-    extractConstraintsAtomic = case usedVars of -- This is a compromise: quantified expressions constrain names they mention of any arity but zero (ToDo: think about it)
-      [] -> foldr asUnion M.empty $ map addSimpleConstraintFor fvBody
-      _ -> foldr asUnion M.empty $ map addForallConstraintFor (freeSelections body ++ over (mapped._1) functionConst (applications body))
-    addSimpleConstraintFor name = M.singleton name ([], [guardWith guards body])
-    addForallConstraintFor (name, args) = let
+    -- We extract a parametrized constraint from an application if its argumnets contain at least one bound variable
+    extractConstraintsAtomic = case usedVars of
+      [] -> foldr constraintUnion M.empty $ map addSimpleConstraintFor (scalars body)   -- Constant application cannot contain any bound variable, so don't even try
+      _ -> foldr constraintUnion M.empty $ map addForallConstraintFor (selections body)
+    addSimpleConstraintFor x = M.singleton x ([], [guardWith guards body])
+    addForallConstraintFor (x, args) = let
         argTypes = map (exprType boundTC) args
         (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
         allArgGuards = concat argGuards
-        extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
+        (argVars, extraVars) = partition (\(v, t) -> v `elem` formals) usedVars
         constraint = if null extraVars
           then guardWith guards body
           else inheritPos (Quantified Forall tv extraVars) (guardWith guards body) -- outer guards are inserted into the body, because they might contain extraVars
-      in if length formals == length args -- Only possible if all arguments are simple
-        then M.singleton name ([], [inheritPos (Quantified Lambda tv (zip formals argTypes)) (guardWith allArgGuards constraint)])
+      in if not (null argVars) &&       -- argumnets contain bound variables
+          length formals == length args -- all arguments are simple
+        then M.singleton x ([], [inheritPos (Quantified Lambda tv (zip formals argTypes)) (guardWith allArgGuards constraint)])
         else M.empty
             
 -- | 'extractArgs' @vars args@: extract simple arguments from @args@;
@@ -1204,233 +1256,3 @@ extractArgs vars args = foldl extractArg [] (zip args [0..])
     varArgs = [v | (Pos p (Var v)) <- args]
     nonfixedBV = vars \\ varArgs    
        
-{- Quantification -}
-
--- | Sets of interval constraints on integer variables
-type IntervalConstraints = Map Id Interval
-            
--- | The set of domains for each variable in vars, outside which boolean expression boolExpr is always false.
--- Fails if any of the domains are infinite or cannot be found.
-domains :: (Monad m, Functor m) => Expression -> [Id] -> Execution m [Domain]
-domains boolExpr vars = do
-  initC <- foldM initConstraints M.empty vars
-  finalC <- inferConstraints boolExpr initC 
-  forM vars (domain finalC)
-  where
-    initConstraints c var = do
-      tc <- use envTypeContext
-      qbound <- use envQBound
-      case M.lookup var (allVars tc) of
-        Just BoolType         -> return c
-        Just (MapType _ _ _)  -> throwRuntimeFailure (UnsupportedConstruct $ text "quantification over a map") (position boolExpr)
-        Just t                -> return $ M.insert var (defaultDomain qbound t) c        
-    defaultDomain qbound t = case qbound of
-      Nothing -> top
-      Just n -> let 
-        (lower, upper) = case t of
-          IntType -> intInterval n
-          IdType _ _ -> natInterval n
-        in Interval (Finite lower) (Finite upper)
-    domain c var = do
-      tc <- use envTypeContext
-      case M.lookup var (allVars tc) of
-        Just BoolType -> return $ map BoolValue [True, False]
-        Just t -> do
-          case c ! var of
-            int | isBottom int -> return []
-            Interval (Finite l) (Finite u) -> return $ map (valueFromInteger t) [l..u]
-            int -> throwRuntimeFailure (InfiniteDomain var int) (position boolExpr)
-
--- | Starting from initial constraints, refine them with the information from boolExpr,
--- until fixpoint is reached or the domain for one of the variables is empty.
--- This function terminates because the interval for each variable can only become smaller with each iteration.
-inferConstraints :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Execution m IntervalConstraints
-inferConstraints boolExpr constraints = do
-  constraints' <- foldM refineVar constraints (M.keys constraints)
-  if bot `elem` M.elems constraints'
-    then return $ M.map (const bot) constraints'  -- if boolExpr does not have a satisfying assignment to one variable, then it has none to all variables
-    else if constraints == constraints'
-      then return constraints'                    -- if a fixpoint is reached, return it
-      else inferConstraints boolExpr constraints' -- otherwise do another iteration
-  where
-    refineVar :: (Monad m, Functor m) => IntervalConstraints -> Id -> Execution m IntervalConstraints
-    refineVar c id = do
-      int <- inferInterval boolExpr c id
-      return $ M.insert id (meet (c ! id) int) c 
-
--- | Infer an interval for variable x, outside which boolean expression booExpr is always false, 
--- assuming all other quantified variables satisfy constraints;
--- boolExpr has to be in negation-prenex normal form.
-inferInterval :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Id -> Execution m Interval
-inferInterval boolExpr constraints x = (case node boolExpr of
-  Literal (BoolValue False) -> return bot
-  BinaryExpression And be1 be2 -> liftM2 meet (inferInterval be1 constraints x) (inferInterval be2 constraints x)
-  BinaryExpression Or be1 be2 -> liftM2 join (inferInterval be1 constraints x) (inferInterval be2 constraints x)
-  BinaryExpression Eq ae1 ae2 -> do
-    (a, b) <- toLinearForm (ae1 |-| ae2) constraints x
-    if 0 <: a && 0 <: b
-      then return top
-      else return $ -b // a
-  BinaryExpression Leq ae1 ae2 -> do
-    (a, b) <- toLinearForm (ae1 |-| ae2) constraints x
-    if isBottom a || isBottom b
-      then return bot
-      else if 0 <: a && not (isBottom (meet b nonPositives))
-        then return top
-        else return $ join (lessEqual (-b // meet a positives)) (greaterEqual (-b // meet a negatives))
-  BinaryExpression Ls ae1 ae2 -> inferInterval (ae1 |<=| (ae2 |-| num 1)) constraints x
-  BinaryExpression Geq ae1 ae2 -> inferInterval (ae2 |<=| ae1) constraints x
-  BinaryExpression Gt ae1 ae2 -> inferInterval (ae2 |<=| (ae1 |-| num 1)) constraints x
-  -- Quantifier can only occur here if it is alternating with the enclosing one, hence no domain can be inferred 
-  _ -> return top
-  ) `catchError` handleNotLinear
-  where      
-    lessEqual int | isBottom int = bot
-                  | otherwise = Interval NegInf (upper int)
-    greaterEqual int  | isBottom int = bot
-                      | otherwise = Interval (lower int) Inf
-    handleNotLinear err = case rtfSource err of
-      InternalException NotLinear -> return top
-      _ -> throwError err                      
-
--- | Linear form (A, B) represents a set of expressions a*x + b, where a in A and b in B
-type LinearForm = (Interval, Interval)
-
--- | If possible, convert arithmetic expression aExpr into a linear form over variable x,
--- assuming all other quantified variables satisfy constraints.
-toLinearForm :: (Monad m, Functor m) => Expression -> IntervalConstraints -> Id -> Execution m LinearForm
-toLinearForm aExpr constraints x = case node aExpr of
-  Literal (IntValue n) -> return (0, fromInteger n)
-  Var y -> if x == y
-    then return (1, 0)
-    else case M.lookup y constraints of
-      Just int -> return (0, int)
-      Nothing -> const aExpr
-  Application name args -> if null $ M.keys constraints `intersect` freeVars aExpr
-    then const aExpr
-    else throwInternalException NotLinear
-  MapSelection m args -> if null $ M.keys constraints `intersect` freeVars aExpr
-    then const aExpr
-    else throwInternalException NotLinear
-  Old e -> old $ toLinearForm e constraints x
-  UnaryExpression Neg e -> do
-    (a, b) <- toLinearForm e constraints x
-    return (-a, -b)
-  BinaryExpression op e1 e2 -> do
-    left <- toLinearForm e1 constraints x
-    right <- toLinearForm e2 constraints x 
-    combineBinOp op left right
-  where
-    const e = do
-      v <- eval e
-      case v of
-        IntValue n -> return (0, fromInteger n)
-    combineBinOp Plus   (a1, b1) (a2, b2) = return (a1 + a2, b1 + b2)
-    combineBinOp Minus  (a1, b1) (a2, b2) = return (a1 - a2, b1 - b2)
-    combineBinOp Times  (a, b)   (0, k)   = return (k * a, k * b)
-    combineBinOp Times  (0, k)   (a, b)   = return (k * a, k * b)
-    combineBinOp _ _ _ = throwInternalException NotLinear
-    
-{- Map equality -}
-
--- | 'evalEquality' @v1 v2@ : Evaluate @v1 == v2@
-evalEquality :: (Monad m, Functor m) => Value -> Value -> Execution m Value
-evalEquality v1 v2 = do
-  h <- use $ envMemory.memHeap
-  case objectEq h v1 v2 of
-    Just b -> return $ BoolValue b
-    Nothing -> decideEquality v1 v2  -- No evidence yet if two maps are equal or not, make a non-deterministic choice
-  where
-    decideEquality (Reference _ r1) (Reference _ r2) = do
-      h <- use $ envMemory.memHeap
-      let (s1, vals1) = flattenMap h r1
-      let (s2, vals2) = flattenMap h r2
-      mustEqual <- generate genBool                     -- Decide if maps should be considered equal right away
-      if mustEqual
-        then do makeEq v1 v2; return $ BoolValue True               -- Make the maps equal and return True
-        else if s1 == s2                                            -- Otherwise: if the maps come from the same source
-          then decideOverrideEquality r1 vals1 r2 vals2               -- Then the difference must be in overrides
-          else if mustAgree h vals1 vals2                             -- Otherwise: if the difference cannot be in overrides
-            then do makeSourceNeq s1 s2; return $ BoolValue False       -- Then make the sources incompatible and return False
-            else do                                                     -- Otherwise we can freely choose if the difference is in the source or in the overrides
-              compareOverrides <- generate genBool                      -- Make a choice
-              if compareOverrides
-                then decideOverrideEquality r1 vals1 r2 vals2           -- decide equality based on overrides
-                else do makeSourceNeq s1 s2; return $ BoolValue False   -- otherwise make the sources incompatible and return False
-    decideOverrideEquality r1 vals1 r2 vals2 = 
-      let diff = if hasMapValues $ vals1 `M.intersection` vals2                               -- If there are maps stored at common indexes
-                    then vals1 `M.union` vals2                                                -- then even values at a common index might be different
-                    else (vals2 `M.difference` vals1) `M.union` (vals1 `M.difference` vals2)  -- otherwise only values at non-shared indexes might be different
-      in do
-        (i, val) <- (`M.elemAt` diff) <$> generate (`genIndex` M.size diff) -- Choose an index at which the values might be different
-        val1 <- lookupStored r1 i val
-        val2 <- lookupStored r2 i val
-        BoolValue answer <- evalEquality val1 val2
-        when answer $ makeEq v1 v2
-        return $ BoolValue answer 
-    hasMapValues m
-      | M.null m  = False
-      | otherwise = case M.findMin m of
-        (_, Reference _ _) -> True
-        _ -> False      
-    lookupStored r i template = do
-      h <- use $ envMemory.memHeap
-      let (s, vals) = flattenMap h r    
-      case M.lookup i vals of
-        Just v -> return v
-        Nothing -> do
-          v <- generateValue (valueType template) noPos
-          setMapValue s i v
-          return v
-    makeSourceNeq s1 s2 = do
-      setMapValue s1 [special s1, special s2] (special s1)
-      setMapValue s2 [special s1, special s2] (special s2)
-    special r = CustomValue refIdType $ fromIntegral r
-          
--- | Ensure that two compatible values are equal
-makeEq :: (Monad m, Functor m) => Value -> Value -> Execution m ()
-makeEq (Reference t r1) (Reference _ r2) = do
-  h <- use $ envMemory.memHeap
-  let (s1, vals1) = flattenMap h r1
-  let (s2, vals2) = flattenMap h r2
-  zipWithM_ makeEq (M.elems $ vals1 `M.intersection` vals2) (M.elems $ vals2 `M.intersection` vals1) -- Enforce that the values at shared indexes are equal
-  if s1 == s2
-    then do -- Same source; compatible, but nonequal overrides
-      mapM_ (uncurry $ setMapValue s1) (M.toList $ vals2 `M.difference` vals1) -- Store values only defined in r2 in the source
-      mapM_ (uncurry $ setMapValue s1) (M.toList $ vals1 `M.difference` vals2) -- Store values only defined in r1 in the source
-    else do -- Different sources
-      Reference _ newSource <- allocate . MapValue t . Source $ vals1 `M.union` vals2
-      mapM_ decRefCountValue (M.elems (vals2 `M.intersection` vals1)) -- Take care of references from vals2 that are no longer used
-      derive r1 newSource
-      derive r2 newSource
-      mergeConstraints s1 s2 newSource
-  where
-    derive r newSource = do
-      deriveBaseOf r newSource M.empty
-      envMemory.memHeap %= update r (MapValue t (Derived newSource M.empty))      
-      envMemory.memHeap %= incRefCount newSource      
-    deriveBaseOf r newSource diffR = do
-      MapValue t repr <- readHeap r
-      case repr of
-        Source _ -> return ()
-        Derived base override -> do
-          let diffBase = override `M.union` diffR -- The difference between base and newSource
-          h <- use $ envMemory.memHeap
-          let vals = mapValues h base
-          deriveBaseOf base newSource diffBase
-          newVals <- foldM addMissing (vals `M.intersection` diffBase) (M.toList $ diffBase `M.difference` vals) -- Choose arbitrary values for all keys in diffBase that are not defined for base
-          envMemory.memHeap %= update base (MapValue t (Derived newSource newVals))
-          envMemory.memHeap %= incRefCount newSource
-          envMemory.memHeap %= decRefCount base
-    addMissing vals (key, oldVal) = do
-      newVal <- generateValue (valueType oldVal) noPos
-      -- ToDo: checkMapConstraints needed here, but the arg types are missing
-      incRefCountValue newVal
-      return $ M.insert key newVal vals
-    mergeConstraints s1 s2 newSource = do
-      (defs1, constraints1) <- gets $ lookupValueConstraints s1
-      (defs2, constraints2) <- gets $ lookupValueConstraints s2
-      mapM_ (extendValueDefinition newSource) (defs1 ++ defs2)
-      mapM_ (extendValueConstraint newSource) (constraints1 ++ constraints2)
-makeEq (MapValue _ _) (MapValue _ _) = internalError $ text "Attempt to call makeEq on maps directly" 
-makeEq _ _ = return ()  
