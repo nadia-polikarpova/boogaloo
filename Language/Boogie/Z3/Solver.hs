@@ -1,4 +1,4 @@
-module Language.Boogie.Z3Solver where
+module Language.Boogie.Z3.Solver where
 
 import           Control.Monad
 import           Control.Monad.Stream
@@ -11,7 +11,7 @@ import           Data.Map (Map)
 import qualified Data.Map as Map
 
 import           Language.Boogie.AST
-import           Language.Boogie.ConstraintSolver
+import           Language.Boogie.Z3.Solution
 import           Language.Boogie.Heap
 import           Language.Boogie.Position
 import           Language.Boogie.TypeChecker

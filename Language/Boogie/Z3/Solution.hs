@@ -3,7 +3,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE BangPatterns #-}
 
-module Language.Boogie.ConstraintSolver where
+module Language.Boogie.Z3.Solution where
 
 import           Control.Applicative
 import           Control.Lens ((%=), _1, _2, over, uses, use, makeLenses)

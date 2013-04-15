@@ -27,7 +27,8 @@ flag tests
 
 library
   exposed-modules:
-      Language.Boogie.ConstraintSolver
+      Language.Boogie.Z3.Solver
+      Language.Boogie.Z3.Solution
       Language.Boogie.Util,
       Language.Boogie.TypeChecker,
       Language.Boogie.Tokens,
