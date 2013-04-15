@@ -37,11 +37,10 @@ module Language.Boogie.Environment (
   initEnv,
   lookupProcedure,
   lookupNameConstraints,
-  lookupValueConstraints,
+  lookupMapConstraints,
   lookupCustomCount,
   addProcedureImpl,
-  addGlobalDefinition,
-  addGlobalConstraint,
+  addNameConstraint,
   addMapDefinition,
   addMapConstraint,
   setCustomCount,
@@ -164,16 +163,16 @@ instance Pretty Memory where
   
 {- Constraint memory -}
 
--- | Symbolic memory: stores name and value constraints
+-- | Symbolic memory: stores name and map constraints
 data SymbolicMemory = SymbolicMemory {
   _symLocals :: NameConstraints,       -- ^ Local name constraints
   _symGlobals :: NameConstraints,      -- ^ Global name constraints
-  _symHeap :: MapConstraints           -- ^ Value constraints
+  _symHeap :: MapConstraints           -- ^ Map constraints
 }
 
 makeLenses ''SymbolicMemory
 
--- | Empty abstract memory
+-- | Symbolic memory with no constraints
 emptySymbolicMemory = SymbolicMemory {
   _symLocals = M.empty,
   _symGlobals = M.empty,
@@ -236,16 +235,16 @@ combineGetters f g1 g2 = to $ \env -> (env ^. g1) `f` (env ^. g2)
   
 -- Environment queries  
 lookupProcedure = lookupGetter envProcedures []  
-lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.symLocals) (envConstraints.symGlobals)) ([], [])
-lookupValueConstraints = lookupGetter (envConstraints.symHeap) ([], [])
+lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.symLocals) (envConstraints.symGlobals)) []
+lookupMapConstraints = lookupGetter (envConstraints.symHeap) ([], [])
 lookupCustomCount = lookupGetter envCustomCount 0
 
 -- Environment modifications  
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
-addGlobalDefinition name def env = over (envConstraints.symGlobals) (M.insert name (over _1 (++ [def]) (lookupGetter (envConstraints.symGlobals) ([], []) name env))) env
-addGlobalConstraint name con env = over (envConstraints.symGlobals) (M.insert name (over _2 (++ [con]) (lookupGetter (envConstraints.symGlobals) ([], []) name env))) env
-addMapDefinition r def env = over (envConstraints.symHeap) (M.insert r (over _1 (nub . (++ [def])) (lookupValueConstraints r env))) env
-addMapConstraint r con env = over (envConstraints.symHeap) (M.insert r (over _2 (nub. (++ [con])) (lookupValueConstraints r env))) env
+addNameConstraint :: Id -> SimpleLens (Environment m) NameConstraints -> Expression -> Environment m -> Environment m
+addNameConstraint name lens con env = over lens (M.insert name (lookupGetter lens [] name env ++ [con])) env
+addMapDefinition r def env = over (envConstraints.symHeap) (M.insert r (over _1 (nub . (++ [def])) (lookupMapConstraints r env))) env
+addMapConstraint r con env = over (envConstraints.symHeap) (M.insert r (over _2 (nub. (++ [con])) (lookupMapConstraints r env))) env
 setCustomCount t n = over envCustomCount (M.insert t n)
 withHeap f env = let (res, h') = f (env^.envMemory.memHeap) 
   in (res, set (envMemory.memHeap) h' env )

@@ -106,17 +106,17 @@ execSafely :: (Monad m, Functor m) => Execution m a -> (RuntimeFailure -> SafeEx
 execSafely computation handler = do
   eres <- runErrorT computation
   either handler return eres
-  
+
 -- | Computations that perform a cleanup at the end
 class Monad s => Finalizer s where
   finally :: s a -> s () -> s a
-    
+
 instance Monad m => Finalizer (StateT s m) where
   finally main cleanup = do
     res <- main
     cleanup
-    return res
-
+    return res  
+    
 instance (Error e, Monad m) => Finalizer (ErrorT e m) where
   finally main cleanup = do
     res <- main `catchError` (\err -> cleanup >> throwError err)
@@ -161,13 +161,13 @@ restoreOld callerMem = do
   envMemory.memModified %= ((callerMem^.memModified) `S.union`)
   
 -- | Execute computation in a local context
-executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> NameConstraints -> s a -> s a
-executeLocally localTC formals actuals localConstraints computation = do
+executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> [Expression] -> s a -> s a
+executeLocally localTC formals actuals localWhere computation = do
   oldEnv <- get
   envTypeContext %= localTC
   envMemory.memLocals .= M.empty
   zipWithM_ (setVar memLocals) formals actuals
-  envConstraints.symLocals .= localConstraints  
+  mapM_ (extendNameConstraint symLocals) localWhere
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
@@ -547,11 +547,16 @@ collectGarbage = do
   when (hasGarbage h) (do
     r <- state $ withHeap dealloc
     mapM_ decRefCountValue (M.elems $ h `at` r)
-    cs <- gets $ lookupValueConstraints r
+    cs <- gets $ lookupMapConstraints r
     let usedRefs = nub . concatMap mapRefs $ concatMap (\c -> [defGuard c, defBody c]) (fst cs) ++ snd cs 
     mapM_ (\r -> envMemory.memHeap %= decRefCount r) usedRefs    
     envConstraints.symHeap %= M.delete r
     collectGarbage)
+    
+-- | 'extendNameConstraint' @lens con@ : add @con@ as a constraint for all free variables in @con@ to @envConstraints.lens@
+extendNameConstraint :: (MonadState (Environment m) s, Finalizer s) => SimpleLens SymbolicMemory NameConstraints -> Expression -> s ()
+extendNameConstraint lens con = do
+  mapM_ (\name -> modify $ addNameConstraint name (envConstraints.lens) con) (freeVars con)
 
 -- | 'extendMapDefinition' @r def@ : add @def@ to the definiton of the map @r@
 extendMapDefinition r def = do
@@ -674,26 +679,16 @@ evalVar name pos = do
     evalVarWith t lens initOld = do
       s <- use $ envMemory.lens
       case M.lookup name s of         -- Lookup a cached value
-        Just val -> wellDefined val
-        Nothing -> do                 -- If not found, look for an applicable definition
-          definedValue <- checkNameDefinitions name pos
-          case definedValue of
-            Just val -> do
-              setVar lens name val
-              checkNameConstraints name pos
-              forgetVar lens name
-              return val
-            Nothing -> do             -- If not found, choose a value non-deterministically
-              chosenValue <- generateValue t pos
-              setVar lens name chosenValue
-              when initOld $ setVar memOld name chosenValue
-              checkNameConstraints name pos
-              return chosenValue
+        Just val -> return val
+        Nothing -> do                 -- If not found, choose a value non-deterministically
+          chosenValue <- generateValue t pos
+          setVar lens name chosenValue
+          when initOld $ setVar memOld name chosenValue
+          checkNameConstraints name pos
+          return chosenValue
               
 evalApplication :: (Monad m, Functor m) => Id -> [Expression] -> SourcePos -> Execution m Value  
-evalApplication name args pos = evalMapSelection (functionExpr name) args pos
-  where
-    functionExpr name = gen . Var $ functionConst name
+evalApplication name args pos = evalMapSelection (functionExpr name pos) args pos  
         
 rejectMapIndex pos idx = case idx of
   Reference _ r -> throwRuntimeFailure (UnsupportedConstruct $ text "map as an index") pos
@@ -859,15 +854,12 @@ execCallBySig sig lhss args pos = do
     selectDef tc defs = do
       i <- generate (`genIndex` length defs)
       return (sig, defs !! i)
-    params = psigParams sig
-    paramConstraints tc = M.filterWithKey (\k _ -> k `elem` map itwId params) $ foldr constraintUnion M.empty $ map (extractNameConstraints tc . itwWhere) params
     -- For procedures with no implementation: dummy definition that just havocs all modifiable globals
     dummyDef tc = PDef {
         pdefIns = map itwId (psigArgs sig),
         pdefOuts = map itwId (psigRets sig),
         pdefParamsRenamed = False,
         pdefBody = ([], (M.fromList . toBasicBlocks . singletonBlock . gen . Havoc . psigModifies) sig),
-        pdefConstraints = paramConstraints tc,
         pdefPos = noPos
       }
     addFrame err = addStackFrame (StackFrame pos (psigName sig)) err
@@ -893,7 +885,6 @@ execProcedure sig def args lhss callPos = let
   ins = pdefIns def
   outs = pdefOuts def
   blocks = snd (pdefBody def)
-  localConstraints = pdefConstraints def
   exitPoint pos = if pos == noPos 
     then pdefPos def  -- Fall off the procedure body: take the procedure definition location
     else pos          -- A return statement inside the body
@@ -905,7 +896,7 @@ execProcedure sig def args lhss callPos = let
   in do
     argsV <- mapM eval args
     mem <- saveOld
-    executeLocally (enterProcedure sig def args lhss) ins argsV localConstraints execBody `finally` restoreOld mem
+    executeLocally (enterProcedure sig def args lhss) ins argsV (map itwWhere (psigRets sig ++ fst (pdefBody def))) execBody `finally` restoreOld mem
     
 {- Specs -}
 
@@ -918,7 +909,7 @@ checkPreconditions sig def callPos = mapM_ (exec . attachPos callPos . Predicate
 checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predicate . subst sig) (psigEnsures sig)
   where 
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
-    
+
 {- Constraints and symbolic execution -}
 
 -- | 'symbolicEval' @expr@ : evaluate @expr@ modulo quantification
@@ -929,11 +920,7 @@ symbolicEval expr = symbolicEval' [] expr
       var@(Var name) -> if name `elem` vars
         then return var
         else Literal <$> evalVar name p
-      Application name args -> do
-        args' <- mapM (symbolicEval' vars) args
-        if all isLiteral args'
-          then Literal <$> evalApplication name args' p
-          else return $ Application name args'
+      Application name args -> node <$> symbolicEval' vars (attachPos p $ MapSelection (functionExpr name p) args)
       MapSelection m args -> do
         m' <- symbolicEval' vars m
         args' <- mapM (symbolicEval' vars) args
@@ -979,6 +966,11 @@ symbolicEvalDef def@(Def tv formals guard body) = do
 -- | 'wellDefined' @val@ : throw an exception if @val@ is under construction
 wellDefined (CustomValue t n) | t == ucType = throwInternalException $ UnderConstruction n
 wellDefined val = return val
+
+-- | 'checkNameConstraints' @name pos@ : execute where clause of variable @name@ at position @pos@
+checkNameConstraints name pos = do
+  cs <- gets $ lookupNameConstraints name
+  mapM_ (\c -> execPredicate (SpecClause Axiom True c) pos) cs
   
 -- | 'checkDefinitions' @myCode defs actuals pos@ : return the result of the first definition from @defs@ applicable to @actuals@;
 -- if none are applicable return 'Nothing', 
@@ -1021,28 +1013,12 @@ applyDefinition def@(Def tv formals guard body) actuals pos = do
     actualTypes = map valueType actuals
     locally = if null formals
         then id
-        else executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty
+        else executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []
     evalInDef expr = do
       oldInDef <- use envInDef
       envInDef .= True
       res <- locally (evalSub expr) `finally` (envInDef .= oldInDef)
       return res
-    
--- | 'checkNameDefinitions' @name pos@ : return a value for @name@ mentioned at @pos@, if there is an applicable definition.
--- Must be executed in the context of the definition.
-checkNameDefinitions :: (Monad m, Functor m) => Id -> SourcePos -> Execution m (Maybe Value)    
-checkNameDefinitions name pos = do
-  n <- gets $ lookupCustomCount ucType
-  resetAnyVar name $ CustomValue ucType n  
-  modify $ setCustomCount ucType (n + 1)
-  defs <- fst <$> gets (lookupNameConstraints name)
-  let simpleDefs = [simpleDef | simpleDef <- defs, null $ defArgs simpleDef] -- Ignore forall-definition, they will be attached to the map value by checkNameConstraints
-  checkDefinitions n simpleDefs [] pos `finally` cleanup n `catchError` addFrame
-  where  
-    cleanup n = do
-      forgetAnyVar name
-      modify $ setCustomCount ucType n
-    addFrame = addStackFrame (StackFrame pos name)
         
 -- | 'checkMapDefinitions' @r actuals pos@ : return a value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@, if there is an applicable definition 
@@ -1051,12 +1027,12 @@ checkMapDefinitions r actuals pos = do
   n <- gets $ lookupCustomCount ucType
   setMapValue r actuals $ CustomValue ucType n  
   modify $ setCustomCount ucType (n + 1)  
-  defs <- fst <$> gets (lookupValueConstraints r)
+  defs <- fst <$> gets (lookupMapConstraints r)
   checkDefinitions n defs actuals pos `finally` cleanup n
   where  
     cleanup n = do
       forgetMapValue r actuals
-      modify $ setCustomCount ucType n      
+      modify $ setCustomCount ucType n
 
 -- | 'applyConstraint' @c actuals pos@ : 
 -- return if @c (actuals)@ holds
@@ -1067,42 +1043,16 @@ applyConstraint c actuals pos = case node c of
       formalNames = map fst formals
       formalTypes = map snd formals
       actualTypes = map valueType actuals
-      locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals M.empty    
+      locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []    
     in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
       then return True
       else unValueBool <$> locally (evalSub body)
   _ -> unValueBool <$> evalSub c  
-    
--- | 'checkNameConstraints' @name pos@: assume all constraints of entity @name@ mentioned at @pos@;
--- is @name@ is of map type, attach all its forall-definitions and forall-contraints to the corresponding reference 
--- Must be executed in the context of the constraint.
-checkNameConstraints name pos = (do
-    (defs, constraints) <- gets $ lookupNameConstraints name
-    if any isParametrized constraints
-      then do -- name is a map and all constraints are parametrized
-        Reference _ r <- evalVar name pos
-        mapM_ (attachDefinition r) defs
-        mapM_ (attachConstraint r) constraints
-      else do -- name is a scalar and all constraints are simple
-        mc <- findM (\c -> not <$> applyConstraint c [] pos) constraints
-        when (isJust mc) (throwViolation (SpecClause Axiom True $ fromJust mc) pos)        
-  ) `catchError` addFrame
-  where
-    -- | Attach parametrized definition to the map value
-    attachDefinition r def = do
-        symVal <- symbolicEvalDef def
-        extendMapDefinition r symVal  
-    -- | Attach parametrized constraint to the map value
-    attachConstraint r c = do                                 
-        symVal <- symbolicEval c
-        extendMapConstraint r symVal  
-        return True
-    addFrame = addStackFrame (StackFrame pos name)
-      
+        
 -- | 'checkMapConstraints' @r actuals pos@ : assume all constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
 checkMapConstraints r actuals pos = do
-  constraints <- snd <$> gets (lookupValueConstraints r)
+  constraints <- snd <$> gets (lookupMapConstraints r)
   mc <- findM (\c -> not <$> applyConstraint c actuals pos) constraints
   when (isJust mc) (throwViolation (SpecClause Axiom True $ fromJust mc) pos)
   
@@ -1116,10 +1066,10 @@ preprocess (Program decls) = mapM_ processDecl decls
       FunctionDecl name _ args _ mBody -> processFunction name (map fst args) mBody
       ProcedureDecl name _ args rets _ (Just body) -> processProcedureBody name (position decl) (map noWhere args) (map noWhere rets) body
       ImplementationDecl name _ args rets bodies -> mapM_ (processProcedureBody name (position decl) args rets) bodies
-      AxiomDecl expr -> processAxiom expr
-      VarDecl vars -> mapM_ processAxiom (map itwWhere vars)
+      AxiomDecl expr -> extendNameConstraint symGlobals expr
+      VarDecl vars -> mapM_ (extendNameConstraint symGlobals) (map itwWhere vars)      
       _ -> return ()
-  
+      
 processFunction name argNames mBody = do
   sig@(MapType tv argTypes retType) <- funSig name <$> use envTypeContext
   let constName = functionConst name  
@@ -1127,12 +1077,11 @@ processFunction name argNames mBody = do
   case mBody of
     Nothing -> return ()
     Just body -> do
+      let pos = position body
       let formals = zip (map formalName argNames) argTypes
-      let def = Def tv formals (conjunction []) body
-      modify $ addGlobalDefinition constName def
-      let app = attachPos (position body) $ Application name (map (attachPos (position body) . Var . fst) formals)
-      let c = inheritPos (Quantified Lambda tv formals) (app |=| body)
-      modify $ addGlobalConstraint constName c
+      let app = attachPos pos $ Application name (map (attachPos pos . Var . fst) formals)
+      let axiom = inheritPos (Quantified Forall tv formals) (app |=| body)      
+      extendNameConstraint symGlobals axiom
   where        
     formalName Nothing = dummyFArg 
     formalName (Just n) = n
@@ -1143,50 +1092,31 @@ processProcedureBody name pos args rets body = do
   let paramsRenamed = map itwId params /= (argNames ++ retNames)    
   let flatBody = (map (mapItwType (resolve tc)) (concat $ fst body), M.fromList (toBasicBlocks $ snd body))
   let allLocals = params ++ fst flatBody
-  let localConstraints = M.filterWithKey (\k _ -> k `elem` map itwId allLocals) $ foldr constraintUnion M.empty $ map (extractNameConstraints tc . itwWhere) allLocals
-  modify $ addProcedureImpl name (PDef argNames retNames paramsRenamed flatBody localConstraints pos) 
+  modify $ addProcedureImpl name (PDef argNames retNames paramsRenamed flatBody pos) 
   where
     argNames = map fst args
     retNames = map fst rets
 
-processAxiom expr = do
-  tc <- use envTypeContext
-  envConstraints.symGlobals %= (`constraintUnion` extractNameConstraints tc expr)
-  
 {- Constant and function constraints -}
 
-extractNameConstraints tc = extractConstraints tc freeVars (\e -> freeSelections e ++ over (mapped._1) functionConst (applications e)) defLhs
-  where
-    defLhs e = case node e of
-      Var name -> Just (name, [])
-      MapSelection (Pos _ (Var name)) args -> Just (name, args)
-      Application name args -> Just (functionConst name, args)
-      _ -> Nothing
+-- | 'extractMapConstraints' @bExpr@ : extract definitions and constraints from @bExpr@
+-- @bExpr@ must not contain any free variables
+extractMapConstraints :: Expression -> MapConstraints
+extractMapConstraints bExpr = extractConstraints' [] [] [] (negationNF bExpr)
 
-extractMapConstraints = extractConstraints emptyContext mapRefs refSelections defLhs
-  where
-    defLhs e = case node e of
-      (Literal (Reference _ r)) -> Just (r, [])
-      MapSelection (Pos _ (Literal (Reference _ r))) args -> Just (r, args)
-      _ -> Nothing
-
--- | 'extractConstraints' @tc bExpr@ : extract definitions and constraints from @bExpr@ in type context @tc@
-extractConstraints :: Ord a => Context -> (Expression -> [a]) -> (Expression -> [(a, [Expression])]) -> (Expression -> Maybe (a, [Expression])) -> Expression -> Map a ConstraintSet
-extractConstraints tc scalars selections defLhs bExpr = extractConstraints' tc scalars selections defLhs [] [] [] (negationNF bExpr)
-
--- | 'extractConstraints'' @tc tv vars guards body@ : extract definitions and constraints from expression @guards@ ==> @body@
--- bound type variables @tv@ and bound variables @vars@ in type context @tc@
-extractConstraints' :: Ord a => Context -> (Expression -> [a]) -> (Expression -> [(a, [Expression])]) -> (Expression -> Maybe (a, [Expression])) -> [Id] -> [IdType] -> [Expression] -> Expression -> Map a ConstraintSet
-extractConstraints' tc scalars selections defLhs tv vars guards body = case (node body) of
-  Quantified Forall tv' vars' bExpr -> extractConstraints' tc scalars selections defLhs (tv ++ tv') (vars ++ vars') guards bExpr
+-- | 'extractConstraints'' @tv vars guards body@ : extract definitions and constraints from expression @guards@ ==> @body@
+-- bound type variables @tv@ and bound variables @vars@
+extractConstraints' :: [Id] -> [IdType] -> [Expression] -> Expression -> MapConstraints
+extractConstraints' tv vars guards body = case (node body) of
+  Quantified Forall tv' vars' bExpr -> extractConstraints' (tv ++ tv') (vars ++ vars') guards bExpr
   Quantified Exists _ _ _ -> M.empty -- ToDo: skolemize?
   BinaryExpression And bExpr1 bExpr2 -> let
-    constraints1 = extractConstraints' tc scalars selections defLhs tv vars guards bExpr1
-    constraints2 = extractConstraints' tc scalars selections defLhs tv vars guards bExpr2
+    constraints1 = extractConstraints' tv vars guards bExpr1
+    constraints2 = extractConstraints' tv vars guards bExpr2
     in constraints1 `constraintUnion` constraints2
   BinaryExpression Or bExpr1 bExpr2 -> let
-    constraints1 = extractConstraints' tc scalars selections defLhs tv vars ((negationNF $ enot bExpr1) : guards) bExpr2
-    constraints2 = extractConstraints' tc scalars selections defLhs tv vars ((negationNF $ enot bExpr2) : guards) bExpr1
+    constraints1 = extractConstraints' tv vars ((negationNF $ enot bExpr1) : guards) bExpr2
+    constraints2 = extractConstraints' tv vars ((negationNF $ enot bExpr2) : guards) bExpr1
     in constraints1 `constraintUnion` constraints2
   BinaryExpression Eq expr1 expr2 -> let
     defs1 = extractDefsAtomic expr1 expr2
@@ -1195,13 +1125,10 @@ extractConstraints' tc scalars selections defLhs tv vars guards body = case (nod
     in foldr1 constraintUnion [defs1, defs2, constraints]
   _ -> extractConstraintsAtomic
   where
-  
-    fvBody = freeVars body
-    fvGuards = concatMap freeVars guards
-    allFV = fvBody ++ fvGuards
     -- | Bound variables used in body or guards:
-    usedVars = [(v, t) | (v, t) <- vars, v `elem` allFV]
-    boundTC = nestedContext M.empty vars tc { ctxTypeVars = tv }
+    allFreeVars = freeVars body ++ concatMap freeVars guards
+    usedVars = [(v, t) | (v, t) <- vars, v `elem` allFreeVars]
+    boundTC = emptyContext { ctxTypeVars = tv, ctxLocals = M.fromList vars }
   
     extractDefsAtomic lhs rhs = case defLhs lhs of
       Just (x, args) -> addDefFor x args rhs
@@ -1215,12 +1142,9 @@ extractConstraints' tc scalars selections defLhs tv vars guards body = case (nod
         then M.singleton x ([Def tv (zip formals argTypes) (conjunction allGuards) rhs], [])
         else M.empty
     
-    -- We extract a parametrized constraint from an application if its argumnets contain at least one bound variable
-    extractConstraintsAtomic = case usedVars of
-      [] -> foldr constraintUnion M.empty $ map addSimpleConstraintFor (scalars body)   -- Constant application cannot contain any bound variable, so don't even try
-      _ -> foldr constraintUnion M.empty $ map addForallConstraintFor (selections body)
-    addSimpleConstraintFor x = M.singleton x ([], [guardWith guards body])
-    addForallConstraintFor (x, args) = let
+    -- We extract a parametrized constraint from an application if its arguments contain at least one bound variable
+    extractConstraintsAtomic = foldr constraintUnion M.empty $ map addConstraintFor (refSelections body)
+    addConstraintFor (x, args) = let
         argTypes = map (exprType boundTC) args
         (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
         allArgGuards = concat argGuards
@@ -1232,6 +1156,10 @@ extractConstraints' tc scalars selections defLhs tv vars guards body = case (nod
           length formals == length args -- all arguments are simple
         then M.singleton x ([], [inheritPos (Quantified Lambda tv (zip formals argTypes)) (guardWith allArgGuards constraint)])
         else M.empty
+        
+    defLhs e = case node e of
+      MapSelection (Pos _ (Literal (Reference _ r))) args -> Just (r, args)
+      _ -> Nothing        
             
 -- | 'extractArgs' @vars args@: extract simple arguments from @args@;
 -- an argument is simple if it is either one of variables in @vars@ or does not contain any of @vars@;

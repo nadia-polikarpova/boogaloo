@@ -16,8 +16,6 @@ module Language.Boogie.Util (
   VarBinding,
   exprSubst,
   paramSubst,
-  freeSelections,
-  applications,
   mapRefs,
   refSelections,
   -- * Specs
@@ -49,7 +47,6 @@ module Language.Boogie.Util (
   psigEnsures,
   psigType,
   PDef (..),
-  pdefLocals,
   -- * Code generation
   num, eneg, enot,
   (|+|), (|-|), (|*|), (|/|), (|%|), (|=|), (|!=|), (|<|), (|<=|), (|>|), (|>=|), (|&|), (|||), (|=>|), (|<=>|),
@@ -59,11 +56,12 @@ module Language.Boogie.Util (
   assume,
   -- * Special names
   nullaryType,
-  noType,
+  noneType,
   anyType,
   tupleType,
   ucType,  
   functionConst,
+  functionExpr,
   functionFromConst,
   -- * Misc
   fromRight,
@@ -202,19 +200,18 @@ forallUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= len
 
 -- | Free variables in an expression, referred to in current state and old state
 freeVarsTwoState :: Expression -> ([Id], [Id])
-freeVarsTwoState e = freeVarsTwoState' (node e)
-
-freeVarsTwoState' (Literal _) = ([], [])
-freeVarsTwoState' (Var x) = ([x], [])
-freeVarsTwoState' (Application name args) = over both (nub . concat) (unzip (map freeVarsTwoState args))
-freeVarsTwoState' (MapSelection m args) =  over both (nub . concat) (unzip (map freeVarsTwoState (m : args)))
-freeVarsTwoState' (MapUpdate m args val) =  over both (nub . concat) (unzip (map freeVarsTwoState (val : m : args)))
-freeVarsTwoState' (Old e) = let (state, old) = freeVarsTwoState e in ([], state ++ old)
-freeVarsTwoState' (IfExpr cond e1 e2) = over both (nub . concat) (unzip [freeVarsTwoState cond, freeVarsTwoState e1, freeVarsTwoState e2])
-freeVarsTwoState' (Coercion e _) = freeVarsTwoState e
-freeVarsTwoState' (UnaryExpression _ e) = freeVarsTwoState e
-freeVarsTwoState' (BinaryExpression _ e1 e2) = over both (nub . concat) (unzip [freeVarsTwoState e1, freeVarsTwoState e2])
-freeVarsTwoState' (Quantified _ _ boundVars e) = let (state, old) = freeVarsTwoState e in (state \\ map fst boundVars, old)
+freeVarsTwoState e = case node e of
+  Literal _ -> ([], [])
+  Var x -> ([x], [])
+  Application name args -> freeVarsTwoState $ attachPos (position e) $ MapSelection (functionExpr name (position e)) args
+  MapSelection m args ->  over both (nub . concat) (unzip (map freeVarsTwoState (m : args)))
+  MapUpdate m args val ->  over both (nub . concat) (unzip (map freeVarsTwoState (val : m : args)))
+  Old e -> let (state, old) = freeVarsTwoState e in ([], state ++ old)
+  IfExpr cond e1 e2 -> over both (nub . concat) (unzip [freeVarsTwoState cond, freeVarsTwoState e1, freeVarsTwoState e2])
+  Coercion e _ -> freeVarsTwoState e
+  UnaryExpression _ e -> freeVarsTwoState e
+  BinaryExpression _ e1 e2 -> over both (nub . concat) (unzip [freeVarsTwoState e1, freeVarsTwoState e2])
+  Quantified _ _ boundVars e -> let (state, old) = freeVarsTwoState e in (state \\ map fst boundVars, old)
 
 -- | Free variables in an expression, in current state
 freeVars = fst . freeVarsTwoState
@@ -260,40 +257,6 @@ paramSubst :: PSig -> PDef -> Expression -> Expression
 paramSubst sig def = if not (pdefParamsRenamed def) 
   then id 
   else exprSubst (paramBinding sig def)
-  
--- | 'freeSelections' @expr@ : all named map selections that occur in @expr@, where the map is a free variable
-freeSelections :: Expression -> [(Id, [Expression])]
-freeSelections expr = case node expr of
-  Literal _ -> []
-  Var x -> []
-  Application name args -> nub . concat $ map freeSelections args
-  MapSelection m args -> case node m of 
-   Var name -> (name, args) : (nub . concat $ map freeSelections args)
-   MapUpdate m' args' val -> freeSelections (gen $ MapSelection m' args) ++ concatMap freeSelections (val : args')
-   _ -> nub . concat $ map freeSelections (m : args)
-  MapUpdate m args val ->  nub . concat $ map freeSelections (val : m : args)
-  Old e -> internalError $ text "freeSelections should only be applied in single-state context"
-  IfExpr cond e1 e2 -> nub . concat $ [freeSelections cond, freeSelections e1, freeSelections e2]
-  Coercion e _ -> freeSelections e
-  UnaryExpression _ e -> freeSelections e
-  BinaryExpression _ e1 e2 -> nub . concat $ [freeSelections e1, freeSelections e2]
-  Quantified _ _ boundVars e -> let boundVarNames = map fst boundVars 
-    in [(m, args) | (m, args) <- freeSelections e, m `notElem` boundVarNames]
-  
--- | 'applications' @expr@ : all function applications that occur in @expr@
-applications :: Expression -> [(Id, [Expression])]
-applications expr = case node expr of
-  Literal _ -> []
-  Var x -> []
-  Application name args -> (name, args) : (nub . concat $ map applications args)
-  MapSelection m args -> nub . concat $ map applications (m : args)
-  MapUpdate m args val ->  nub . concat $ map applications (val : m : args)
-  Old e -> internalError $ text "applications should only be applied in single-state context"
-  IfExpr cond e1 e2 -> nub . concat $ [applications cond, applications e1, applications e2]
-  Coercion e _ -> applications e
-  UnaryExpression _ e -> applications e
-  BinaryExpression _ e1 e2 -> nub . concat $ [applications e1, applications e2]
-  Quantified _ _ _ e -> applications e  
 
 -- | 'mapRefs' @expr@ : all map references that occur in @expr@
 mapRefs :: Expression -> [Ref]
@@ -404,21 +367,21 @@ constraintSetDoc :: ConstraintSet -> Doc
 constraintSetDoc cs = vsep (map pretty (fst cs)) $+$ vsep (map pretty (snd cs))
 
 -- | Mapping from names to their constraints
-type NameConstraints = Map Id ConstraintSet
+type NameConstraints = Map Id [Expression]
 
--- | Union of constraints (values at the same key are concatenated)
-constraintUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2
-
--- | Pretty-printed abstract store
+-- | Pretty-printed variable constraints
 nameConstraintsDoc :: NameConstraints -> Doc
 nameConstraintsDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (name, cs) = nest 2 (text name <+> constraintSetDoc cs)
+  where varDoc (name, c) = nest 2 (text name <+> pretty c)
 
 -- | Mapping from map references to their parametrized constraints
 type MapConstraints = Map Ref ConstraintSet
 
 mapConstraintsDoc heap = vsep $ map valDoc (M.toList heap)
   where valDoc (r, cs) = nest 2 (refDoc r <+> constraintSetDoc cs)
+  
+-- | Union of constraints (values at the same key are concatenated)
+constraintUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2  
 
 {- Procedures -}
      
@@ -456,12 +419,8 @@ data PDef = PDef {
     pdefOuts :: [Id],                 -- ^ Out-parameter names (in the same order as 'psigRets' in the corresponding signature)
     pdefParamsRenamed :: Bool,        -- ^ Are any parameter names in this definition different for the procedure signature? (used for optimizing parameter renaming, True is a safe default)
     pdefBody :: BasicBody,            -- ^ Body
-    pdefConstraints :: NameConstraints, -- ^ Constraints on local names
     pdefPos :: SourcePos              -- ^ Location of the (first line of the) procedure definition in the source
   }
-  
--- | All local names of a procedure definition  
-pdefLocals def = pdefIns def ++ pdefOuts def ++ map itwId (fst (pdefBody def))
 
 {- Code generation -}
 
@@ -505,7 +464,7 @@ guardWith gs e = conjunction gs |=>| e
 nullaryType id = IdType id []
 
 -- | Dummy type used during type checking to denote error
-noType = nullaryType ("NONE" ++ [nonIdChar])
+noneType = nullaryType ("NONE" ++ [nonIdChar])
 
 -- | Dummy type used when the type does not matter
 anyType = nullaryType ("ANY" ++ [nonIdChar])
@@ -521,6 +480,8 @@ functionFrefix = "function "
 -- | 'functionConst' @name@ : name of a map constant that corresponds function @name@
 -- (must be distinct from all global names)
 functionConst name = functionFrefix ++ name
+
+functionExpr name pos = attachPos pos . Var $ functionConst name
 
 -- | 'functionFromConst' @name@ : reverse of 'functionConst', returns Nothing if @name@ does not have the right form
 functionFromConst name = let (prefix, suffix) = splitAt (length functionFrefix) name

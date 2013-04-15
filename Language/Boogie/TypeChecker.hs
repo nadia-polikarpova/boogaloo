@@ -276,8 +276,8 @@ withFreshTV tv types = do
 -- (type binding is returned in terms of original type variables of @sig@, so that types of locals can be calculated)
 pInstance :: PSig -> [Expression] -> [Expression] -> Typing TypeBinding
 pInstance sig actuals lhss = do
-  actualTypes <- mapAccum (locally . checkExpression) noType actuals
-  lhssTypes <- mapAccum (locally . checkExpression) noType lhss
+  actualTypes <- mapAccum (locally . checkExpression) noneType actuals
+  lhssTypes <- mapAccum (locally . checkExpression) noneType lhss
   let name = psigName sig
   let tv = psigTypeVars sig
   let argTypes = psigArgTypes sig
@@ -324,7 +324,7 @@ checkApplication name args = do
   case M.lookup name functions of
     Nothing -> throwTypeError (text "Not in scope: function" <+> text name)
     Just (MapType tv argTypes retType) -> do
-      actualTypes <- mapAccum (locally . checkExpression) noType args
+      actualTypes <- mapAccum (locally . checkExpression) noneType args
       (_, newRetType : newArgTypes) <- withFreshTV tv (retType : argTypes)
       case unifier [] newArgTypes actualTypes of
         Nothing -> typeMismatch (text "formal argument types") argTypes (text "actual argument types") actualTypes (text "in the call to" <+> text name)
@@ -333,7 +333,7 @@ checkApplication name args = do
 checkMapSelection :: Expression -> [Expression] -> Typing Type
 checkMapSelection m args = do
   mType <- locally $ checkExpression m
-  selectTypes <- mapAccum (locally . checkExpression) noType args
+  selectTypes <- mapAccum (locally . checkExpression) noneType args
   case mType of
     MapType tv domainTypes rangeType -> do
       (_, newRangeType : newDomainTypes) <- withFreshTV tv (rangeType : domainTypes)
@@ -351,7 +351,7 @@ checkMapSelection m args = do
 checkMapUpdate :: Expression -> [Expression] -> Expression -> Typing Type
 checkMapUpdate m args val = do
   mType <- locally $ checkExpression m
-  selectTypes <- mapAccum (locally . checkExpression) noType args
+  selectTypes <- mapAccum (locally . checkExpression) noneType args
   updateType <- locally $ checkExpression val
   case mType of
     MapType tv domainTypes rangeType -> do
@@ -468,7 +468,7 @@ checkStatement (Pos pos s) = do
 checkAssign :: [(Id , [[Expression]])] -> [Expression] -> Typing ()
 checkAssign lhss rhss = do
   locally $ checkLefts (map fst lhss) (length rhss)
-  rTypes <- mapAccum (locally . checkExpression) noType rhss
+  rTypes <- mapAccum (locally . checkExpression) noneType rhss
   cpos <- gets ctxPos
   let selectExpr (id, selects) = foldl mapSelectExpr (attachPos cpos (Var id)) selects
   zipWithAccum_ (\t e -> locally $ checkMatch (text "assignment left-hand side") t e) rTypes (map selectExpr lhss)

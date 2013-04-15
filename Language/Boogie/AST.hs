@@ -236,7 +236,9 @@ data IdTypeWhere = IdTypeWhere {
   } deriving Eq
   
 -- | Strip the where clause  
-noWhere itw = (itwId itw, itwType itw)  
+noWhere itw = (itwId itw, itwType itw)
+-- | Strip the type
+noType itw = (itwId itw, itwWhere itw)  
   
 -- | Formal argument of a function  
 type FArg = (Maybe Id, Type)

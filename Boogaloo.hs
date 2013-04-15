@@ -20,7 +20,6 @@ import Data.Time.Calendar
 import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
-import Control.Monad.State
 import Control.Monad.Stream
 import Control.Lens hiding (Context, at)
 import Text.ParserCombinators.Parsec (parse, parseFromFile)
@@ -199,9 +198,9 @@ printDoc Html doc = putStr (showDocHtml (renderPretty 0.4 100 doc))
 {- Helpers for testing internal functions -}      
       
 -- | Harness for testing various internal functions
-harness file = runOnFile printOutcome file defaultFormat
-  where
-    printOutcome p context = do
-      let env = head (toList (execStateT (preprocess p) (initEnv context (exhaustiveGenerator (Just defaultBranch)) (Just defaultBranch))))
-      -- print $ memoryDoc True (env^.envMemory)
-      print $ nameConstraintsDoc (env ^. envConstraints . symGlobals)
+-- harness file = runOnFile printOutcome file defaultFormat
+  -- where
+    -- printOutcome p context = do
+      -- let env = head (toList (execStateT (runErrorT (preprocess p)) (initEnv context (exhaustiveGenerator (Just defaultBranch)) (Just defaultBranch))))
+      -- -- print $ memoryDoc True (env^.envMemory)
+      -- print $ nameConstraintsDoc (env ^. envConstraints . symGlobals)
