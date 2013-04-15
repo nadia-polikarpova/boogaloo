@@ -35,6 +35,7 @@ instance Pretty Type where
 -- | Binding power of an expression
 power :: BareExpression -> Int
 power (Literal _) = 10
+power (LogicalVar _ _) = 10
 power (Var _) = 10
 power (Application _ _) = 10
 power (Old _) = 10
@@ -61,6 +62,7 @@ exprDocAt :: Int -> Expression -> Doc
 exprDocAt n (Pos _ e) = condParens (n' <= n) (
   case e of
     Literal v -> pretty v
+    LogicalVar t r -> text "log" <> pretty r
     Var id -> text id
     Application id args -> text id <> parens (commaSep (map exprDoc args))
     MapSelection m args -> exprDocAt n' m <> brackets (commaSep (map exprDoc args))
@@ -264,9 +266,12 @@ idTypeWhereDoc (IdTypeWhere id t w) = idpretty (id, t) <+> case w of
 
 instance Pretty a => Pretty (Pos a) where
   pretty (Pos _ x) = pretty x
-  
+
 instance Show BareExpression where
     show = show . pretty
 
 instance Show Type where
+    show = show . pretty
+
+instance Show Value where
     show = show . pretty

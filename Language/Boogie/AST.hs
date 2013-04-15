@@ -3,7 +3,6 @@
 -- | Abstract syntax tree for Boogie 2
 module Language.Boogie.AST where
 
-import Language.Boogie.Pretty
 import Language.Boogie.Position
 import Language.Boogie.Heap
 import Data.Map (Map)
@@ -74,6 +73,7 @@ type Expression = Pos BareExpression
 data BareExpression = 
   Literal Value |
   Var Id |                                        -- ^ 'Var' @name@
+  LogicalVar Type Ref |                           -- ^ A logical variable
   Application Id [Expression] |                   -- ^ 'Application' @f args@
   MapSelection Expression [Expression] |          -- ^ 'MapSelection' @map indexes@
   MapUpdate Expression [Expression] Expression |  -- ^ 'MapUpdate' @map indexes rhs@
@@ -191,9 +191,7 @@ data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
   CustomValue Type Int |         -- ^ Value of a user-defined type
   MapValue Type MapRepr |        -- ^ Partial instance of a map
-  Reference Type Ref  |          -- ^ Map reference
-  LogicalVar Type Ref            -- ^ Logical variable with a type and name
-  
+  Reference Type Ref             -- ^ Map reference
   deriving (Eq, Ord)
   
 -- | Type of a value
@@ -203,14 +201,7 @@ valueType (BoolValue _) = BoolType
 valueType (CustomValue t _) = t
 valueType (MapValue t _) = t
 valueType (Reference t _) = t
-valueType (LogicalVar t _) = t
-
--- | Name of a value, undefined if the value isn't a reference or
--- logical variable.
-valueName :: Value -> String
-valueName (Reference _ r) = "map_" ++ show r
-valueName (LogicalVar _ r) = "logic_" ++ show r
-
+  
 -- | 'valueFromInteger' @t n@: value of type @t@ with an integer code @n@
 valueFromInteger :: Type -> Integer -> Value  
 valueFromInteger IntType n        = IntValue n
