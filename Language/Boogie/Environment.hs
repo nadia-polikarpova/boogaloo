@@ -32,7 +32,6 @@ module Language.Boogie.Environment (
   envCustomCount,
   envQBound,
   envInOld,
-  envInDef,
   envLastTerm,
   initEnv,
   lookupProcedure,
@@ -41,7 +40,6 @@ module Language.Boogie.Environment (
   lookupCustomCount,
   addProcedureImpl,
   addNameConstraint,
-  addMapDefinition,
   addMapConstraint,
   setCustomCount,
   withHeap,
@@ -122,9 +120,9 @@ visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (m
 
 -- | Clear cached values if maps that have guard-less definitions
 clearDefinedCache :: MapConstraints -> Heap MapRepr -> Heap MapRepr
-clearDefinedCache symHeap heap = foldr (\r -> update r emptyMap) heap definedRefs
-  where
-    definedRefs = [r | (r, (defs, _)) <- M.toList symHeap, any (\def -> node (defGuard def) == tt) defs]
+clearDefinedCache symHeap heap = heap --foldr (\r -> update r emptyMap) heap definedRefs -- ToDo: fix!
+  -- where
+    -- definedRefs = [r | (r, (defs, _)) <- M.toList symHeap, any (\def -> node (defGuard def) == tt) defs]
 
 -- | 'userStore' @symMem mem@ : @mem@ with all reference values completely dereferenced and cache of defined maps removed 
 userMemory :: SymbolicMemory -> Memory -> Memory
@@ -205,7 +203,6 @@ data Environment m = Environment
     _envCustomCount :: Map Type Int,        -- ^ For each user-defined type, number of distinct values of this type already generated
     _envQBound :: Maybe Integer,            -- ^ Maximum number of values to try for a quantified variable (unbounded if Nothing)
     _envInOld :: Bool,                      -- ^ Is an old expression currently being evaluated?
-    _envInDef :: Bool,                      -- ^ Is a definition currently being evaluated?
     _envLastTerm :: Maybe Expression        -- ^ Last evaluated term (used to determine which part of short-circuit expression determined its result)
   }
   
@@ -222,7 +219,6 @@ initEnv tc gen qbound = Environment
     _envCustomCount = M.empty,
     _envQBound = qbound,
     _envInOld = False,
-    _envInDef = False,
     _envLastTerm = Nothing
   }
   
@@ -236,15 +232,14 @@ combineGetters f g1 g2 = to $ \env -> (env ^. g1) `f` (env ^. g2)
 -- Environment queries  
 lookupProcedure = lookupGetter envProcedures []  
 lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.symLocals) (envConstraints.symGlobals)) []
-lookupMapConstraints = lookupGetter (envConstraints.symHeap) ([], [])
+lookupMapConstraints = lookupGetter (envConstraints.symHeap) []
 lookupCustomCount = lookupGetter envCustomCount 0
 
 -- Environment modifications  
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
 addNameConstraint :: Id -> SimpleLens (Environment m) NameConstraints -> Expression -> Environment m -> Environment m
-addNameConstraint name lens con env = over lens (M.insert name (lookupGetter lens [] name env ++ [con])) env
-addMapDefinition r def env = over (envConstraints.symHeap) (M.insert r (over _1 (nub . (++ [def])) (lookupMapConstraints r env))) env
-addMapConstraint r con env = over (envConstraints.symHeap) (M.insert r (over _2 (nub. (++ [con])) (lookupMapConstraints r env))) env
+addNameConstraint name lens con env = over lens (M.insert name (nub $ lookupGetter lens [] name env ++ [con])) env
+addMapConstraint r con env = over (envConstraints.symHeap) (M.insert r (nub $ lookupMapConstraints r env ++ [con])) env
 setCustomCount t n = over envCustomCount (M.insert t n)
 withHeap f env = let (res, h') = f (env^.envMemory.memHeap) 
   in (res, set (envMemory.memHeap) h' env )

@@ -25,18 +25,11 @@ module Language.Boogie.Util (
   assumePreconditions,
   assumePostconditions,
   -- * Constraints
-  Def (..),
-  defBodyLambda,
-  defGuardLambda,
-  ConstraintSet,
-  isParametrized,
-  isParametrizedDef,
-  constraintSetDoc,
   NameConstraints,
-  constraintUnion,
   nameConstraintsDoc,
   MapConstraints,
   mapConstraintsDoc,
+  constraintUnion,  
   -- * Functions and procedures
   PSig (..),
   psigParams,
@@ -59,7 +52,6 @@ module Language.Boogie.Util (
   noneType,
   anyType,
   tupleType,
-  ucType,  
   functionConst,
   functionExpr,
   functionFromConst,
@@ -330,58 +322,22 @@ assumePostconditions sig = sig { psigContracts = map assumePostcondition (psigCo
     
 {- Constraints -}
 
--- | Definition (lambda expression with a guard)
-data Def = Def {
-    defTV    :: [Id],          -- ^ Type variables
-    defArgs  :: [IdType],      -- ^ Arguments
-    defGuard :: Expression,    -- ^ Condition under which the definition applies
-    defBody  :: Expression     -- ^ Body 
-  } deriving Eq
-
--- | Lambda expression that corresponds to definition guard
-defGuardLambda (Def tv args guard _) = attachPos (position guard) $ Quantified Lambda tv args guard  
--- | Lambda expression that corresponds to definition body  
-defBodyLambda (Def tv args _ body) = attachPos (position body) $ Quantified Lambda tv args body  
-    
-instance Pretty Def where
-  pretty (Def tv formals guard expr) = 
-    text "lambda" <+>
-    option (not (null tv)) (angles (commaSep (map text tv))) <+> 
-    option (not (null formals)) (parens (commaSep (map idpretty formals))) <+> 
-    option (node guard /= tt) (text "|" <+> pretty guard) <+> 
-    text "::" <+> pretty expr
-
--- | Constraint set: contains a list of definitions and a list of constraints
-type ConstraintSet = ([Def], [Expression])
-
--- | 'isParametrized' @expr@: is @expr@ a parametrized constraint?
-isParametrized (Pos _ (Quantified Lambda _ _ _)) = True
-isParametrized (Pos _ _) = False
-
--- | 'isParametrizedDef' @def@: is @def@ a parametrized definition?
-isParametrizedDef (Def[] [] _ _) = False
-isParametrizedDef _ = True
-
--- | Pretty-printed constraint set  
-constraintSetDoc :: ConstraintSet -> Doc   
-constraintSetDoc cs = vsep (map pretty (fst cs)) $+$ vsep (map pretty (snd cs))
-
 -- | Mapping from names to their constraints
 type NameConstraints = Map Id [Expression]
 
 -- | Pretty-printed variable constraints
 nameConstraintsDoc :: NameConstraints -> Doc
 nameConstraintsDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (name, c) = nest 2 (text name <+> pretty c)
+  where varDoc (name, cs) = nest 2 (text name <+> pretty cs)
 
 -- | Mapping from map references to their parametrized constraints
-type MapConstraints = Map Ref ConstraintSet
+type MapConstraints = Map Ref [Expression]
 
 mapConstraintsDoc heap = vsep $ map valDoc (M.toList heap)
-  where valDoc (r, cs) = nest 2 (refDoc r <+> constraintSetDoc cs)
+  where valDoc (r, cs) = nest 2 (refDoc r <+> pretty cs)
   
 -- | Union of constraints (values at the same key are concatenated)
-constraintUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2  
+constraintUnion s1 s2 = M.unionWith (++) s1 s2  
 
 {- Procedures -}
      
@@ -471,9 +427,6 @@ anyType = nullaryType ("ANY" ++ [nonIdChar])
 
 -- | Dummy type used to represent procedure returns as a single type
 tupleType = IdType ("TUPLE" ++ [nonIdChar])
-
--- | Dummy type used to mark entities whose definitions are currently being evaluated
-ucType = nullaryType ("UC" ++ [nonIdChar])
 
 functionFrefix = "function "
 

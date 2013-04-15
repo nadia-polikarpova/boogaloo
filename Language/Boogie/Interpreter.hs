@@ -548,7 +548,7 @@ collectGarbage = do
     r <- state $ withHeap dealloc
     mapM_ decRefCountValue (M.elems $ h `at` r)
     cs <- gets $ lookupMapConstraints r
-    let usedRefs = nub . concatMap mapRefs $ concatMap (\c -> [defGuard c, defBody c]) (fst cs) ++ snd cs 
+    let usedRefs = (nub . concatMap mapRefs) cs 
     mapM_ (\r -> envMemory.memHeap %= decRefCount r) usedRefs    
     envConstraints.symHeap %= M.delete r
     collectGarbage)
@@ -557,12 +557,6 @@ collectGarbage = do
 extendNameConstraint :: (MonadState (Environment m) s, Finalizer s) => SimpleLens SymbolicMemory NameConstraints -> Expression -> s ()
 extendNameConstraint lens con = do
   mapM_ (\name -> modify $ addNameConstraint name (envConstraints.lens) con) (freeVars con)
-
--- | 'extendMapDefinition' @r def@ : add @def@ to the definiton of the map @r@
-extendMapDefinition r def = do
-  modify $ addMapDefinition r def
-  let usedRefs = nub $ mapRefs (defGuard def) ++ mapRefs (defBody def)
-  mapM_ (\r -> envMemory.memHeap %= incRefCount r) usedRefs    
 
 -- | 'extendMapConstraint' @r c@ : add @c@ to the consraints of the map @r@  
 extendMapConstraint r c = do
@@ -701,25 +695,16 @@ evalMapSelection m args pos = do
       argsV <- mapM evalSub args
       h <- use $ envMemory.memHeap
       case M.lookup argsV (h `at` r) of    -- Lookup a cached value
-        Just val -> wellDefined val
-        Nothing -> do                           -- If not found, look for an applicable definition          
-          tc <- use envTypeContext          
-          definedValue <- checkMapDefinitions r argsV pos
-          case definedValue of
-            Just val -> do
-              inDef <- use envInDef
-              cache r argsV val (not inDef)
-            Nothing -> do                       -- If not found, choose a value non-deterministically
-              mapM_ (rejectMapIndex pos) argsV
-              let rangeType = exprType tc (gen $ MapSelection m args)
-              chosenValue <- generateValue rangeType pos
-              cache r argsV chosenValue True
+        Just val -> return val
+        Nothing -> do                       -- If not found, choose a value non-deterministically
+          tc <- use envTypeContext
+          mapM_ (rejectMapIndex pos) argsV
+          let rangeType = exprType tc (gen $ MapSelection m args)
+          chosenValue <- generateValue rangeType pos
+          setMapValue r argsV chosenValue
+          checkMapConstraints r argsV pos
+          return chosenValue          
     _ -> return mV -- function without arguments (ToDo: is this how it should be handled?)
-  where
-    cache r argsV val check = do              
-      setMapValue r argsV val
-      when check $ checkMapConstraints r argsV pos
-      return val
         
 evalMapUpdate m args new pos = do
   mVal@(Reference t r) <- evalSub m
@@ -740,8 +725,6 @@ evalMapUpdate m args new pos = do
       constraint = inheritPos (Quantified Lambda tv bv) (guard |=>| (appOld |=| appNew))
   extendMapConstraint r constraint
   extendMapConstraint r' constraint  
-  extendMapDefinition r (Def tv bv guard appNew)
-  extendMapDefinition r' (Def tv bv guard appOld)
   return newMVal
   
 evalIf cond e1 e2 = do
@@ -772,13 +755,11 @@ evalLambda tv vars e pos = do
   let t = exprType tc (lambda e)
   val@(Reference _ r) <- generateValue t pos
   (Quantified Lambda _ _ symBody) <- node <$> symbolicEval (lambda e)
-  extendMapDefinition r (def symBody)
   let app = attachPos pos $ MapSelection (attachPos pos $ Literal val) (map (attachPos pos . Var . fst) vars)
   extendMapConstraint r (lambda $ app |=| symBody)
   return val
   where
     lambda = attachPos pos . Quantified Lambda tv vars
-    def = Def tv vars (conjunction [])
     
 evalForall :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> SourcePos -> Execution m Value
 evalForall tv vars e pos = do  
@@ -786,13 +767,12 @@ evalForall tv vars e pos = do
   let mc = extractMapConstraints symExpr
   BoolValue <$> allM evalForMap (M.toList mc)
   where
-    evalForMap (r, (defs, constraints)) = do      
+    evalForMap (r, constraints) = do      
       satCache <- allM (checkCached r) constraints
       if not satCache  -- If any cached values do not satisfy the constraint
         then return False   -- found evidence that the constraint does not hold
         else do             -- no evidence yet if the constraint holds for all arguments, make a non-deterministic choice for every constraint           
           satDecide <- allM (decideConstraint r) constraints 
-          when satDecide $ mapM_ (extendMapDefinition r) defs
           when satDecide $ mapM_ (extendMapConstraint r) constraints
           return satDecide          
     checkCached r c = do
@@ -955,85 +935,12 @@ symbolicEval expr = symbolicEval' [] expr
           then Literal <$> evalBinary op e1' e2'
           else return $ BinaryExpression op e1' e2'
       Quantified qop tv bv e -> Quantified qop tv bv <$> symbolicEval' (vars ++ map fst bv) e
-      
--- | Evaluate all free variables in a definiton
-symbolicEvalDef :: (Monad m, Functor m) => Def -> Execution m Def
-symbolicEvalDef def@(Def tv formals guard body) = do
-  (Quantified Lambda _ _ guard') <- node <$> symbolicEval (defGuardLambda def)
-  (Quantified Lambda _ _ body') <- node <$> symbolicEval (defBodyLambda def)
-  return $ Def tv formals guard' body'      
-        
--- | 'wellDefined' @val@ : throw an exception if @val@ is under construction
-wellDefined (CustomValue t n) | t == ucType = throwInternalException $ UnderConstruction n
-wellDefined val = return val
-
+              
 -- | 'checkNameConstraints' @name pos@ : execute where clause of variable @name@ at position @pos@
 checkNameConstraints name pos = do
   cs <- gets $ lookupNameConstraints name
   mapM_ (\c -> execPredicate (SpecClause Axiom True c) pos) cs
   
--- | 'checkDefinitions' @myCode defs actuals pos@ : return the result of the first definition from @defs@ applicable to @actuals@;
--- if none are applicable return 'Nothing', 
--- unless an under construction value different from @myCode@ has been evaluated, in which case rethrow the UnderConstruction exception;
--- @pos@ is the position of the definition invocation
-checkDefinitions :: (Monad m, Functor m) => Int -> [Def] -> [Value] -> SourcePos -> Execution m (Maybe Value)
-checkDefinitions myCode defs actuals pos = checkDefinitions' myCode Nothing defs actuals pos
-
-checkDefinitions' _ Nothing     [] _ _ = return Nothing
-checkDefinitions' _ (Just code) [] _ _ = throwInternalException (UnderConstruction code)
-checkDefinitions' myCode mCode (def : defs) actuals pos = tryDefinitions `catchError` ucHandler
-  where
-    tryDefinitions = do      
-      mVal <- applyDefinition def actuals pos
-      case mVal of
-        Just val -> return mVal
-        Nothing -> checkDefinitions' myCode mCode defs actuals pos 
-    ucHandler err = case rtfSource err of
-      InternalException (UnderConstruction code) -> if code == myCode
-        then checkDefinitions' myCode mCode defs actuals pos
-        else checkDefinitions' myCode (Just code) defs actuals pos
-      _ -> throwError err      
-      
--- | 'applyDefinition' @def actuals pos@ : 
--- if @guard (actuals)@ return the result of @body (actuals)@,
--- otherwise return 'Nothing'
--- (@pos@ is the position of the definition invocation)      
-applyDefinition def@(Def tv formals guard body) actuals pos = do
-  if isNothing $ unifier tv formalTypes actualTypes -- Is the definition applicable to these types?
-    then return Nothing
-    else do
-      applicable <- unValueBool <$> evalInDef guard -- Is the definition applicable to these values?
-      res <- if not applicable
-        then return Nothing
-        else Just <$> evalInDef body
-      return res
-  where
-    formalNames = map fst formals
-    formalTypes = map snd formals
-    actualTypes = map valueType actuals
-    locally = if null formals
-        then id
-        else executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []
-    evalInDef expr = do
-      oldInDef <- use envInDef
-      envInDef .= True
-      res <- locally (evalSub expr) `finally` (envInDef .= oldInDef)
-      return res
-        
--- | 'checkMapDefinitions' @r actuals pos@ : return a value at index @actuals@ 
--- in the map referenced by @r@ mentioned at @pos@, if there is an applicable definition 
-checkMapDefinitions :: (Monad m, Functor m) => Ref -> [Value] -> SourcePos -> Execution m (Maybe Value)    
-checkMapDefinitions r actuals pos = do  
-  n <- gets $ lookupCustomCount ucType
-  setMapValue r actuals $ CustomValue ucType n  
-  modify $ setCustomCount ucType (n + 1)  
-  defs <- fst <$> gets (lookupMapConstraints r)
-  checkDefinitions n defs actuals pos `finally` cleanup n
-  where  
-    cleanup n = do
-      forgetMapValue r actuals
-      modify $ setCustomCount ucType n
-
 -- | 'applyConstraint' @c actuals pos@ : 
 -- return if @c (actuals)@ holds
 -- (@pos@ is the position of the constraint invocation)      
@@ -1052,7 +959,7 @@ applyConstraint c actuals pos = case node c of
 -- | 'checkMapConstraints' @r actuals pos@ : assume all constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
 checkMapConstraints r actuals pos = do
-  constraints <- snd <$> gets (lookupMapConstraints r)
+  constraints <- gets $ lookupMapConstraints r
   mc <- findM (\c -> not <$> applyConstraint c actuals pos) constraints
   when (isJust mc) (throwViolation (SpecClause Axiom True $ fromJust mc) pos)
   
@@ -1099,13 +1006,13 @@ processProcedureBody name pos args rets body = do
 
 {- Constant and function constraints -}
 
--- | 'extractMapConstraints' @bExpr@ : extract definitions and constraints from @bExpr@
+-- | 'extractMapConstraints' @bExpr@ : extract parametrized constraints from @bExpr@
 -- @bExpr@ must not contain any free variables
 extractMapConstraints :: Expression -> MapConstraints
 extractMapConstraints bExpr = extractConstraints' [] [] [] (negationNF bExpr)
 
--- | 'extractConstraints'' @tv vars guards body@ : extract definitions and constraints from expression @guards@ ==> @body@
--- bound type variables @tv@ and bound variables @vars@
+-- | 'extractConstraints'' @tv vars guards body@ : extract parametrized constraints from expression @guards@ ==> @body@
+-- with bound type variables @tv@ and bound variables @vars@
 extractConstraints' :: [Id] -> [IdType] -> [Expression] -> Expression -> MapConstraints
 extractConstraints' tv vars guards body = case (node body) of
   Quantified Forall tv' vars' bExpr -> extractConstraints' (tv ++ tv') (vars ++ vars') guards bExpr
@@ -1118,11 +1025,6 @@ extractConstraints' tv vars guards body = case (node body) of
     constraints1 = extractConstraints' tv vars ((negationNF $ enot bExpr1) : guards) bExpr2
     constraints2 = extractConstraints' tv vars ((negationNF $ enot bExpr2) : guards) bExpr1
     in constraints1 `constraintUnion` constraints2
-  BinaryExpression Eq expr1 expr2 -> let
-    defs1 = extractDefsAtomic expr1 expr2
-    defs2 = extractDefsAtomic expr2 expr1
-    constraints = extractConstraintsAtomic
-    in foldr1 constraintUnion [defs1, defs2, constraints]
   _ -> extractConstraintsAtomic
   where
     -- | Bound variables used in body or guards:
@@ -1130,18 +1032,6 @@ extractConstraints' tv vars guards body = case (node body) of
     usedVars = [(v, t) | (v, t) <- vars, v `elem` allFreeVars]
     boundTC = emptyContext { ctxTypeVars = tv, ctxLocals = M.fromList vars }
   
-    extractDefsAtomic lhs rhs = case defLhs lhs of
-      Just (x, args) -> addDefFor x args rhs
-      Nothing -> M.empty
-    addDefFor x args rhs = let
-        argTypes = map (exprType boundTC) args
-        (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
-        allGuards = concat argGuards ++ guards
-        extraVars = [(v, t) | (v, t) <- usedVars, v `notElem` formals]
-      in if length formals == length args && null extraVars -- Only possible if all arguments are simple and there are no extra variables
-        then M.singleton x ([Def tv (zip formals argTypes) (conjunction allGuards) rhs], [])
-        else M.empty
-    
     -- We extract a parametrized constraint from an application if its arguments contain at least one bound variable
     extractConstraintsAtomic = foldr constraintUnion M.empty $ map addConstraintFor (refSelections body)
     addConstraintFor (x, args) = let
@@ -1154,7 +1044,7 @@ extractConstraints' tv vars guards body = case (node body) of
           else inheritPos (Quantified Forall tv extraVars) (guardWith guards body) -- outer guards are inserted into the body, because they might contain extraVars
       in if not (null argVars) &&       -- argumnets contain bound variables
           length formals == length args -- all arguments are simple
-        then M.singleton x ([], [inheritPos (Quantified Lambda tv (zip formals argTypes)) (guardWith allArgGuards constraint)])
+        then M.singleton x [inheritPos (Quantified Lambda tv (zip formals argTypes)) (guardWith allArgGuards constraint)]
         else M.empty
         
     defLhs e = case node e of
