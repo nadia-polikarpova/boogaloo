@@ -211,15 +211,9 @@ executeGlobally computation = do
 {- Runtime failures -}
 
 data FailureSource = 
-  SpecViolation SpecClause (Maybe Expression) | -- ^ Violation of user-defined specification
-  UnsupportedConstruct Doc |                    -- ^ Language construct is not yet supported (should disappear in later versions)
-  InternalException InternalCode                -- ^ Must be cought inside the interpreter and never reach the user
-  
-instance Eq FailureSource where
-  SpecViolation clause1 lt1 == SpecViolation clause2 lt2  = clause1 == clause2 && maybe2 True samePos lt1 lt2
-  UnsupportedConstruct doc1 == UnsupportedConstruct doc2  = doc1 == doc2
-  InternalException code1 == InternalException code2      = code1 == code2
-  _ == _                                                  = False
+  SpecViolation SpecClause |      -- ^ Violation of user-defined specification
+  UnsupportedConstruct Doc        -- ^ Language construct is not yet supported (should disappear in later versions)
+  deriving Eq
   
 -- | Information about a procedure or function call  
 data StackFrame = StackFrame {
@@ -246,9 +240,7 @@ throwRuntimeFailure source pos = do
 addStackFrame frame (RuntimeFailure source pos mem trace) = throwError (RuntimeFailure source pos mem (frame : trace))
 
 -- | Throw a spec violation
-throwViolation specClause pos = do
-  lt <- use envLastTerm
-  throwRuntimeFailure (SpecViolation specClause lt) pos
+throwViolation specClause pos = throwRuntimeFailure (SpecViolation specClause) pos
 
 -- | Kinds of run-time failures
 data FailureKind = Error | -- ^ Error state reached (assertion violation)
@@ -259,8 +251,8 @@ data FailureKind = Error | -- ^ Error state reached (assertion violation)
 -- | Kind of a run-time failure
 failureKind :: RuntimeFailure -> FailureKind
 failureKind err = case rtfSource err of
-  SpecViolation (SpecClause _ True _) _ -> Unreachable
-  SpecViolation (SpecClause _ False _) _ -> Error
+  SpecViolation (SpecClause _ True _) -> Unreachable
+  SpecViolation (SpecClause _ False _) -> Error
   _ -> Nonexecutable
   
 instance Error RuntimeFailure where
@@ -275,8 +267,7 @@ runtimeFailureDoc debug err =
     (nest 2 $ option (not (isEmpty sDoc)) (text "with") $+$ sDoc) $+$
     vsep (map stackFrameDoc (reverse (rtfTrace err)))
   where
-    failureSourceDoc (SpecViolation (SpecClause specType isFree e) lt) = text (clauseName specType isFree) <+> dquotes (pretty e) <+> defPosition specType e <+>
-      lastTermDoc lt <+>
+    failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> dquotes (pretty e) <+> defPosition specType e <+>
       text "violated"
     failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> s
     
@@ -290,13 +281,9 @@ runtimeFailureDoc debug err =
     defPosition Inline _ = empty
     defPosition LoopInvariant _ = empty
     defPosition _ e = text "defined" <+> posDoc (position e)
-    
-    lastTermDoc lt = case lt of
-      Nothing -> empty
-      Just t -> parens (text "last evaluated term:" <+> dquotes (pretty t) <+> posDoc (position t))
-    
+        
     isRelevant k = case rtfSource err of
-      SpecViolation (SpecClause _ _ expr) _ -> k `elem` freeVars expr
+      SpecViolation (SpecClause _ _ expr) -> k `elem` freeVars expr
       _ -> False
     
     stackFrameDoc f = text "in call to" <+> text (callName f) <+> posDoc (callPos f)
@@ -311,12 +298,6 @@ instance Pretty RuntimeFailure where pretty err = runtimeFailureDoc True err
 -- or, for preconditions, for the same caller   
 instance Eq RuntimeFailure where
   f == f' = rtfSource f == rtfSource f' && rtfPos f == rtfPos f'
-    
--- | Internal error codes 
-data InternalCode = NotLinear | UnderConstruction Int
-  deriving Eq
-
-throwInternalException code = throwRuntimeFailure (InternalException code) noPos
 
 {- Execution results -}
     
@@ -634,20 +615,15 @@ evalEquality v1 v2 _ = return $ BoolValue (v1 == v2)
 -- | Evaluate an expression;
 -- can have a side-effect of initializing variables that were not previously defined
 eval :: (Monad m, Functor m) => Expression -> Execution m Value
-eval expr = do
-  envLastTerm .= Nothing
-  evalSub expr
-
--- | Evaluate a sub-epression (this should be called instead of eval from inside expression evaluation)  
-evalSub expr = case node expr of
+eval expr = case node expr of
   Literal v -> return v
   Var name -> evalVar name (position expr)
   Application name args -> evalApplication name args (position expr)
   MapSelection m args -> evalMapSelection m args (position expr)
   MapUpdate m args new -> evalMapUpdate m args new (position expr)
-  Old e -> old $ evalSub e
+  Old e -> old $ eval e
   IfExpr cond e1 e2 -> evalIf cond e1 e2
-  Coercion e t -> evalSub e
+  Coercion e t -> eval e
   UnaryExpression op e -> evalUnary op e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
   Quantified Lambda tv vars e -> evalLambda tv vars e (position expr)
@@ -689,10 +665,10 @@ rejectMapIndex pos idx = case idx of
   _ -> return ()
       
 evalMapSelection m args pos = do  
-  mV <- evalSub m
+  mV <- eval m
   case mV of
     Reference _ r -> do
-      argsV <- mapM evalSub args
+      argsV <- mapM eval args
       h <- use $ envMemory.memHeap
       case M.lookup argsV (h `at` r) of    -- Lookup a cached value
         Just val -> return val
@@ -707,10 +683,10 @@ evalMapSelection m args pos = do
     _ -> return mV -- function without arguments (ToDo: is this how it should be handled?)
         
 evalMapUpdate m args new pos = do
-  mVal@(Reference t r) <- evalSub m
-  argsVals <- mapM evalSub args
+  mVal@(Reference t r) <- eval m
+  argsVals <- mapM eval args
   mapM_ (rejectMapIndex pos) argsVals
-  newVal <- evalSub new
+  newVal <- eval new
   repr <- readHeap r
   newMVal@(Reference _ r') <- allocate t (M.insert argsVals newVal repr)
   let lit = attachPos pos . Literal    
@@ -728,26 +704,24 @@ evalMapUpdate m args new pos = do
   return newMVal
   
 evalIf cond e1 e2 = do
-  v <- evalSub cond
+  v <- eval cond
   case v of
-    BoolValue True -> evalSub e1    
-    BoolValue False -> evalSub e2    
+    BoolValue True -> eval e1    
+    BoolValue False -> eval e2    
     
-evalUnary op e = unOp op <$> evalSub e    
+evalUnary op e = unOp op <$> eval e    
       
 evalBinary op e1 e2 = if op `elem` shortCircuitOps
   then do -- Keep track of which terms got evaluated
-    envLastTerm .= Just e1
-    left <- evalSub e1
+    left <- eval e1
     case binOpLazy op left of
       Just result -> return result
       Nothing -> do
-        envLastTerm .= Just e2
-        right <- evalSub e2
+        right <- eval e2
         binOp (position e1) op left right
   else do
-    left <- evalSub e1
-    right <- evalSub e2
+    left <- eval e1
+    right <- eval e2
     binOp (position e1) op left right
     
 evalLambda tv vars e pos = do
@@ -953,8 +927,8 @@ applyConstraint c actuals pos = case node c of
       locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []    
     in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
       then return True
-      else unValueBool <$> locally (evalSub body)
-  _ -> unValueBool <$> evalSub c  
+      else unValueBool <$> locally (eval body)
+  _ -> unValueBool <$> eval c  
         
 -- | 'checkMapConstraints' @r actuals pos@ : assume all constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
