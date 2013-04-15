@@ -3,8 +3,6 @@
 -- | Execution state for the interpreter
 module Language.Boogie.Environment ( 
   deepDeref,
-  objectEq,
-  mustDisagree,
   Store,
   emptyStore,
   userStore,
@@ -73,27 +71,6 @@ deepDeref h v = deepDeref' v
   where
     deepDeref' (Reference t r) = MapValue t $ M.map deepDeref' (M.mapKeys (map deepDeref') (h `at` r)) -- Dereference all keys and values
     deepDeref' v = v
-
--- | 'objectEq' @h v1 v2@: is @v1@ equal to @v2@ in the Boogie semantics? Nothing if cannot be determined.
-objectEq :: Heap MapRepr -> Value -> Value -> Maybe Bool
-objectEq h (Reference t1 r1) (Reference t2 r2) = if r1 == r2
-  then Just True -- Equal references point to equal maps
-  else if t1 /= t2 -- Different types can occur in a generic context
-    then Just False
-    else let 
-      vals1 = h `at` r1
-      vals2 = h `at` r2
-      in if mustDisagree h vals1 vals2
-          then Just False
-          else Nothing
-objectEq _ (MapValue _ _) (MapValue _ _) = internalError $ text "Attempt to compare two maps"
-objectEq _ v1 v2 = Just $ v1 == v2
-
-mustNeq h v1 v2 = case objectEq h v1 v2 of
-  Just False -> True
-  _ -> False  
-
-mustDisagree h vals1 vals2 = M.foldl (||) False $ (M.intersectionWith (mustNeq h) vals1 vals2)
   
 {- Store -}  
 
