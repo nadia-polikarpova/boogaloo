@@ -31,7 +31,7 @@ ex1 = show (take 10 $ toList fcrs)
       v0 = p0 (LogicalVar IntType 57)
       m0 = p0 (Literal $ Reference (MapType [] [IntType, IntType] IntType) 50)
       sel0 = p0 (MapSelection m0 [int 42, int 100])
-      constrs = [ p0 (BinaryExpression Eq 
+      constrs = [ p0 (BinaryExpression Gt 
                        (p0 (BinaryExpression Plus v0 v0))
                        (int 4))
                 , p0 (BinaryExpression Gt sel0 v0)
