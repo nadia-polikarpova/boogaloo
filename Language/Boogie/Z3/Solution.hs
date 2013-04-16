@@ -13,6 +13,7 @@ import           Control.Applicative
 import           Control.Lens ((%=), _1, _2, over, uses)
 import           Control.Monad
 
+import           Data.Generics
 import           Data.List (intercalate)
 import qualified Data.Set as Set
 import           Data.Set (Set)
@@ -236,3 +237,9 @@ reconstruct model =
              return (ref, x)
       reconLogicRef tr _ast = 
           error $ "reconLogicRef: not a logical ref" ++ show tr
+
+Getoldcustom :: [Expression] -> Set Int
+getOldCustom = everything Set.union (mkQ Set.empty getCustom)
+    where
+      getCustom (CustomValue _t i) = Set.singleton i
+      getCustom _ = Set.empty

@@ -1,10 +1,12 @@
 {-# LANGUAGE StandaloneDeriving, FlexibleInstances, TypeSynonymInstances #-}
-
+{-# LANGUAGE DeriveDataTypeable #-}
 -- | Abstract syntax tree for Boogie 2
 module Language.Boogie.AST where
 
 import Language.Boogie.Position
 import Language.Boogie.Heap
+
+import Data.Data
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.List
@@ -23,6 +25,7 @@ data GenType fv =
   IntType |                                 -- ^ int
   MapType [fv] [GenType fv] (GenType fv) |  -- 'MapType' @type_vars domains range@ : arrow type (used for maps, function and procedure signatures)
   IdType Id [GenType fv]                    -- 'IdType' @name args@: type denoted by an identifier (either type constructor, possibly with arguments, or a type variable)
+  deriving (Data, Typeable)
   
 -- | Regular types with free variables represented as identifiers 
 type Type = GenType Id
@@ -56,15 +59,15 @@ instance Ord Type where
 
 -- | Unary operators
 data UnOp = Neg | Not
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Data, Typeable)
 
 -- | Binary operators  
 data BinOp = Plus | Minus | Times | Div | Mod | And | Or | Implies | Explies | Equiv | Eq | Neq | Lc | Ls | Leq | Gt | Geq
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Data, Typeable)
 
 -- | Quantifiers
 data QOp = Forall | Exists | Lambda
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Data, Typeable)
   
 -- | Expression with a source position attached  
 type Expression = Pos BareExpression
@@ -83,7 +86,7 @@ data BareExpression =
   UnaryExpression UnOp Expression |
   BinaryExpression BinOp Expression Expression |
   Quantified QOp [Id] [IdType] Expression         -- ^ 'Quantified' @qop type_vars bound_vars expr@
-  deriving Eq -- syntactic equality
+  deriving (Eq, Data, Typeable)  -- syntactic equality
   
 -- | 'mapSelectExpr' @m args@ : map selection expression with position of @m@ attached
 mapSelectExpr m args = attachPos (position m) (MapSelection m args)  
@@ -192,7 +195,7 @@ data Value = IntValue Integer |  -- ^ Integer value
   CustomValue Type Int |         -- ^ Value of a user-defined type
   MapValue Type MapRepr |        -- ^ Partial instance of a map
   Reference Type Ref             -- ^ Map reference
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Data, Typeable)
   
 -- | Type of a value
 valueType :: Value -> Type

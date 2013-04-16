@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveDataTypeable #-}
 -- | Utility for attaching source code positions to AST nodes
 module Language.Boogie.Position 
     (Pos (..)
@@ -18,14 +19,15 @@ module Language.Boogie.Position
     ) where
 
 import Control.Monad
+import Data.Data
 import Text.ParserCombinators.Parsec
 import Text.Parsec.Pos
 
 -- | Anything with a source position attached 
 data Pos a = Pos {
-  position :: SourcePos,
-  node :: a
-}
+      position :: SourcePos,
+      node :: a
+    } deriving (Data, Typeable)
 
 instance Eq a => Eq (Pos a) where
     (==) p1 p2 = node p1 == node p2
