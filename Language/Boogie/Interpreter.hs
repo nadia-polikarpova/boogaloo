@@ -3,6 +3,7 @@
 -- | Interpreter for Boogie 2
 module Language.Boogie.Interpreter (
   -- * Executing programs
+  Execution,
   executeProgramDet,
   executeProgram,
   executeProgramGeneric,
