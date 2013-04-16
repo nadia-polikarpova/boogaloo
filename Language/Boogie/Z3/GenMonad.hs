@@ -3,7 +3,7 @@
 module Language.Boogie.Z3.GenMonad where
 
 import           Control.Applicative
-import           Control.Lens ((%=), view, _1, uses, makeLenses)
+import           Control.Lens ((%=), view, _1, _2, _3, uses, makeLenses)
 import           Control.Monad.Trans.State
 import           Control.Monad.Trans
 
@@ -11,6 +11,8 @@ import           Data.List (intercalate)
 import           Data.Maybe
 import qualified Data.Map as Map
 import           Data.Map (Map)
+import qualified Data.Set as Set
+import           Data.Set (Set)
 
 import           Z3.Monad
 
@@ -39,6 +41,11 @@ data Z3Env = Z3Env
                 (Sort, FuncDecl, FuncDecl)    -- ^ Map from identifier and
                                               -- type arguments to a 
                                               -- an uninterpreted type
+    , _oldCustoms :: Set Int                  -- ^ A set of custom
+                                              -- values that were sent
+                                              -- into Z3. These will be used to
+                                              -- determine if new values were
+                                              -- generated or not.
     }
 
 makeLenses ''Z3Env
@@ -50,7 +57,7 @@ instance MonadZ3 Z3Gen where
 type Z3Gen = StateT Z3Env Z3
 
 emptyEnv :: Z3Env
-emptyEnv = Z3Env Map.empty Map.empty Map.empty Map.empty Map.empty
+emptyEnv = Z3Env Map.empty Map.empty Map.empty Map.empty Map.empty Set.empty
 
 evalZ3Gen :: Z3Gen a -> IO a
 evalZ3Gen act = evalZ3 $ evalStateT act emptyEnv
@@ -102,8 +109,14 @@ lookupCustomType ident types =
             let res = (sort, ctor, proj)
             customMap %= Map.insert (ident, types) res
             return res
-                        
-            
+
+lookupCustomCtor :: Id -> [Type] -> Z3Gen FuncDecl
+lookupCustomCtor ident types =
+    view _2 <$> lookupCustomType ident types
+
+lookupCustomProj :: Id -> [Type] -> Z3Gen FuncDecl
+lookupCustomProj ident types =
+    view _3 <$> lookupCustomType ident types
 
 lookupTupleSort :: [Type] -> Z3Gen Sort
 lookupTupleSort types = ( \ (a,_,_) -> a) <$> lookupCtor types

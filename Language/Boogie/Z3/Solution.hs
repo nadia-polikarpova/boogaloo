@@ -147,9 +147,15 @@ extract model t ast =
                 case bMb of
                   Just b -> return $ BoolValue b
                   Nothing -> error "solveConstr.reconstruct.extract: not bool"
+         IdType ident types ->
+             do proj <- lookupCustomProj ident types
+                extr <- mkApp proj [ast']
+                Just evald <- eval model extr
+                int <- getInt evald
+                return (CustomValue t $ fromIntegral int)
          _ ->
              error $ concat [ "solveConstr.reconstruct.extract: can't "
-                            , "extract for type "
+                            , "extract maptypes like "
                             , show t
                             ]
 

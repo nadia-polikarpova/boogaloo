@@ -40,9 +40,12 @@ evalExpr expr = debug ("evalExpr: " ++ show expr) >>
             BoolValue True  -> mkTrue
             BoolValue False -> mkFalse
             Reference t ref -> uses refMap (lookup' "evalValue" (MapRef t ref))
-            CustomValue _t _i -> 
-                error "evalValue: FIXME: add custom value to custom value map"
+            CustomValue (IdType ident types) ref ->
+                do ctor <- lookupCustomCtor ident types
+                   refAst <- mkInt ref
+                   mkApp ctor [refAst]
             MapValue _ _    -> error "evalValue: map value found"
+            _ -> error $ "evalValue: can't handle value: " ++ show v
 
       go = evalExpr
 
