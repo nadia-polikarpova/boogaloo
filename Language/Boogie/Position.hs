@@ -34,6 +34,9 @@ instance Eq a => Eq (Pos a) where
     
 samePos (Pos p1 _) (Pos p2 _) = p1 == p2    
 
+instance Ord a => Ord (Pos a) where
+    compare p1 p2 = compare (node p1) (node p2)
+
 instance Show a => Show (Pos a) where
     show p = show (node p)
 
