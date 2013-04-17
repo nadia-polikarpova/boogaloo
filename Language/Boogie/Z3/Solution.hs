@@ -10,10 +10,10 @@ module Language.Boogie.Z3.Solution
     ) where
 
 import           Control.Applicative
-import           Control.Lens ((%=), _1, _2, over, uses)
+import           Control.Lens ((%=), (.=), _1, _2, over, use, uses)
 import           Control.Monad
 
-import           Data.Generics
+import           Data.Generics (everything, mkQ)
 import           Data.List (intercalate)
 import qualified Data.Set as Set
 import           Data.Set (Set)
@@ -100,12 +100,10 @@ data MapWithElse = MapWithElse
 (!) :: MapWithElse -> [Value] -> Value
 (!) (MapWithElse m el) i = maybe el id (Map.lookup i m)
 
-data NewCustomVal = NewCustomVal Type Int
-
 data Solution = Solution 
     { solnLogical :: Map Ref Value
     , solnMaps    :: Map Ref MapWithElse
-    , solnCustoms :: Set NewCustomVal
+    , solnCustoms :: Set Custom
     }
 
 instance Show Solution where
@@ -123,17 +121,14 @@ instance Show Solution where
 -- only logical variables and map variables.
 
 solveConstr :: [Expression] -> Z3Gen (Model, Solution)
-solveConstr constrs = checkConstraints
-    where
-      -- | Produce a the result in the Z3 monad, to be extracted later.
-      checkConstraints :: Z3Gen (Model, Solution)
-      checkConstraints = 
-          do updateRefMap constrs
-             mapM_ (evalExpr >=> assertCnstr) constrs
-             (_result, modelMb) <- getModel
-             case modelMb of
-               Just model -> (model,) <$> reconstruct model
-               Nothing -> error "solveConstr.evalZ3: no model"
+solveConstr constrs = 
+    do updateRefMap constrs
+       setOldCustoms constrs
+       mapM_ (evalExpr >=> assertCnstr) constrs
+       (_result, modelMb) <- getModel
+       case modelMb of
+         Just model -> (model,) <$> reconstruct model
+         Nothing -> error "solveConstr.evalZ3: no model"
 
 
 -- | Extracts a particular type from an AST node, evaluating
@@ -153,6 +148,9 @@ extract model t ast =
                 extr <- mkApp proj [ast']
                 Just evald <- eval model extr
                 int <- getInt evald
+                let custom = Custom t (fromIntegral int)
+                isInOld <- uses oldCustoms (Set.member custom)
+                when (not isInOld) (newCustoms %= Set.insert custom)
                 return (CustomValue t $ fromIntegral int)
          _ ->
              error $ concat [ "solveConstr.reconstruct.extract: can't "
@@ -195,8 +193,8 @@ reconstruct model =
           error "reconstruct.extractEntry: argument should be a single tuple"
 
       -- | Extract the new custom values from the model.
-      customSet :: Z3Gen (Set NewCustomVal)
-      customSet = return (Set.singleton (error "customSet"))
+      customSet :: Z3Gen (Set Custom)
+      customSet = use newCustoms
 
       -- | Reconstruct all maps
       reconMaps :: Z3Gen (Map Ref Value, Map Ref MapWithElse)
@@ -238,8 +236,11 @@ reconstruct model =
       reconLogicRef tr _ast = 
           error $ "reconLogicRef: not a logical ref" ++ show tr
 
-Getoldcustom :: [Expression] -> Set Int
+getOldCustom :: [Expression] -> Set Custom
 getOldCustom = everything Set.union (mkQ Set.empty getCustom)
     where
-      getCustom (CustomValue _t i) = Set.singleton i
+      getCustom (CustomValue t i) = Set.singleton (Custom t i)
       getCustom _ = Set.empty
+
+setOldCustoms :: [Expression] -> Z3Gen ()
+setOldCustoms exprs = oldCustoms .= getOldCustom exprs

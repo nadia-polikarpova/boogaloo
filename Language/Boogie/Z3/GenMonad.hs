@@ -25,6 +25,10 @@ data TaggedRef
     | MapRef Type Ref
       deriving (Eq, Ord, Show)
 
+data Custom = Custom Type Int
+            deriving (Eq, Ord, Show)
+
+
 data Z3Env = Z3Env
     { _ctorMap :: 
           Map [Type] 
@@ -41,11 +45,15 @@ data Z3Env = Z3Env
                 (Sort, FuncDecl, FuncDecl)    -- ^ Map from identifier and
                                               -- type arguments to a 
                                               -- an uninterpreted type
-    , _oldCustoms :: Set Int                  -- ^ A set of custom
+    , _oldCustoms :: Set Custom               -- ^ A set of custom
                                               -- values that were sent
                                               -- into Z3. These will be used to
                                               -- determine if new values were
                                               -- generated or not.
+    , _newCustoms :: Set Custom               -- ^ A set of the new custom
+                                              -- values that are generated
+                                              -- by Z3, not given in the
+                                              -- constraints.
     }
 
 makeLenses ''Z3Env
@@ -57,7 +65,8 @@ instance MonadZ3 Z3Gen where
 type Z3Gen = StateT Z3Env Z3
 
 emptyEnv :: Z3Env
-emptyEnv = Z3Env Map.empty Map.empty Map.empty Map.empty Map.empty Set.empty
+emptyEnv = Z3Env Map.empty Map.empty Map.empty Map.empty Map.empty
+                 Set.empty Set.empty
 
 evalZ3Gen :: Z3Gen a -> IO a
 evalZ3Gen act = evalZ3 $ evalStateT act emptyEnv
