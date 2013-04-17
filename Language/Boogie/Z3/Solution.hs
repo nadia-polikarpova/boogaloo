@@ -48,15 +48,12 @@ updateRefMap = mapM_ addRefs
           where
             valueT = everything Set.union (mkQ Set.empty valueRef)
             exprT = everything Set.union (mkQ Set.empty go)
+
             go (LogicalVar t ref) = Set.singleton (LogicRef t ref)
             go e                  = Set.unions (gmapQ (mkQ Set.empty go) e)
 
-      -- | Get the value from a ref
-      valueRef :: Value -> Set TaggedRef
-      valueRef v =
-          case v of
-            Reference t r   -> Set.singleton (MapRef t r)
-            _ -> Set.empty
+            valueRef (Reference t r) = Set.singleton (MapRef t r)
+            valueRef _ = Set.empty
 
       refStr :: TaggedRef -> String
       refStr (LogicRef _ r) = "logical_" ++ show r
