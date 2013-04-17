@@ -13,7 +13,7 @@ import           Control.Applicative
 import           Control.Lens ((%=), (.=), _1, _2, over, use, uses)
 import           Control.Monad
 
-import           Data.Generics (everything, mkQ)
+import           Data.Generics (everything, mkQ, gmapQ)
 import           Data.List (intercalate)
 import qualified Data.Set as Set
 import           Data.Set (Set)
@@ -24,7 +24,6 @@ import           Z3.Monad
 
 import           Language.Boogie.AST
 import           Language.Boogie.Heap
-import           Language.Boogie.Position
 import           Language.Boogie.PrettyAST ()
 import           Language.Boogie.Z3.Eval
 import           Language.Boogie.Z3.GenMonad
@@ -45,31 +44,18 @@ updateRefMap = mapM_ addRefs
 
       -- | Get the values from a single expression.
       refs :: Expression -> Set TaggedRef
-      refs expr =
-          case node expr of
-            Literal v                -> valueRef v
-            LogicalVar t ref         -> Set.singleton (LogicRef t ref)
-            MapSelection e es        -> refUnion (e:es)
-            MapUpdate e1 es e2       -> refUnion (e1:e2:es)
-            Old e                    -> refs e
-            IfExpr c e1 e2           -> refUnion [c,e1,e2]
-            UnaryExpression _ e      -> refs e
-            BinaryExpression _ e1 e2 -> refUnion [e1, e2]
-            Quantified _ _ _ e       -> refs e
-            e -> error $ "solveConstr.refs: " ++ show e
-
-      -- | Get the refs of a list of expressions
-      refUnion :: [Expression] -> Set TaggedRef
-      refUnion = Set.unions . map refs
+      refs expr = valueT expr `Set.union` exprT expr
+          where
+            valueT = everything Set.union (mkQ Set.empty valueRef)
+            exprT = everything Set.union (mkQ Set.empty go)
+            go (LogicalVar t ref) = Set.singleton (LogicRef t ref)
+            go e                  = Set.unions (gmapQ (mkQ Set.empty go) e)
 
       -- | Get the value from a ref
       valueRef :: Value -> Set TaggedRef
       valueRef v =
           case v of
             Reference t r   -> Set.singleton (MapRef t r)
-            MapValue _ repr -> Set.unions . map go . Map.toList $ repr
-                where
-                  go (vals, val) = Set.unions (map valueRef (val:vals))
             _ -> Set.empty
 
       refStr :: TaggedRef -> String

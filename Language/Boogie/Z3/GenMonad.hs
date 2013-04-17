@@ -1,5 +1,6 @@
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 module Language.Boogie.Z3.GenMonad where
 
 import           Control.Applicative
@@ -8,6 +9,7 @@ import           Control.Monad.Trans.State
 import           Control.Monad.Trans
 
 import           Data.List (intercalate)
+import           Data.Generics
 import           Data.Maybe
 import qualified Data.Map as Map
 import           Data.Map (Map)
@@ -23,7 +25,7 @@ import           Language.Boogie.PrettyAST ()
 data TaggedRef 
     = LogicRef Type Ref 
     | MapRef Type Ref
-      deriving (Eq, Ord, Show)
+      deriving (Eq, Ord, Show, Data, Typeable)
 
 data Custom = Custom Type Int
             deriving (Eq, Ord, Show)
