@@ -10,6 +10,7 @@ import Language.Boogie.TypeChecker
 import Language.Boogie.Pretty
 import Language.Boogie.Environment
 import Language.Boogie.Interpreter
+import qualified Language.Boogie.Z3.Solver as Z3
 import System.Environment
 import System.Console.CmdArgs
 import System.Console.ANSI
@@ -146,7 +147,7 @@ executeFromFile file proc_ branch_max random seed exec_max invalid nexec pass fa
         rGen <- case seed of
           Nothing -> getStdGen
           Just s -> return $ mkStdGen s      
-        let solver = undefined
+        let solver = Z3.solve
         let outs = maybeTake out_max . filter keep . maybeTake exec_max $ executeProgram p context solver proc_
         if summary
           then printDoc format $ sessionSummaryDoc debug outs

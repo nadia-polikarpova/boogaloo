@@ -15,14 +15,17 @@ import           Language.Boogie.Z3.GenMonad
 import           System.IO.Unsafe
 
 solve :: (MonadPlus m, Foldable m) => [Expression] -> m Solution
-solve constrs = return solution `mplus` solve (neq : constrs)
-    where
-      (solution, neq) = stepConstrs constrs
+solve constrs = 
+    case stepConstrs constrs of
+      Just (soln, neq) -> return soln `mplus` solve (neq : constrs)
+      Nothing -> mzero
 
-stepConstrs :: [Expression] -> (Solution, Expression)
+stepConstrs :: [Expression] -> Maybe (Solution, Expression)
 stepConstrs constrs = unsafePerformIO $ evalZ3Gen $
-    do (_model, soln) <- solveConstr constrs
-       return (soln, newConstraint soln)
+    do solnMb <- solveConstr constrs
+       case solnMb of
+         Just soln -> return $ Just (soln, newConstraint soln)
+         Nothing -> return Nothing
 
 newConstraint :: Solution -> Expression
 newConstraint soln = not' (and' logicEqs)

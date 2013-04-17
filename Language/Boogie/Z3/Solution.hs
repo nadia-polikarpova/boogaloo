@@ -26,7 +26,6 @@ import           Language.Boogie.Solver
 import           Language.Boogie.Z3.Eval
 import           Language.Boogie.Z3.GenMonad
 
-
 -- | Update the state's reference map with the references in the
 -- supplied expressions. This requires that the sorts already be
 -- in place in the state.
@@ -65,15 +64,14 @@ updateRefMap = mapM_ addRefs
 -- The constraint expressions will have no regular variables,
 -- only logical variables and map variables.
 
-solveConstr :: [Expression] -> Z3Gen (Model, Solution)
+solveConstr :: [Expression] -> Z3Gen (Maybe Solution)
 solveConstr constrs = 
     do updateRefMap constrs
-       -- setOldCustoms constrs
        mapM_ (evalExpr >=> assertCnstr) constrs
        (_result, modelMb) <- getModel
        case modelMb of
-         Just model -> (model,) <$> reconstruct model
-         Nothing -> error "solveConstr.evalZ3: no model"
+         Just model -> Just <$> reconstruct model
+         Nothing -> return Nothing
 
 
 -- | Extracts a particular type from an AST node, evaluating
@@ -93,9 +91,6 @@ extract model t ast =
                 extr <- mkApp proj [ast']
                 Just evald <- eval model extr
                 int <- getInt evald
-                -- let custom = Custom t (fromIntegral int)
-                -- isInOld <- uses oldCustoms (Set.member custom)
-                -- when (not isInOld) (newCustoms %= Set.insert custom)
                 return (CustomValue t $ fromIntegral int)
          _ ->
              error $ concat [ "solveConstr.reconstruct.extract: can't "
@@ -119,10 +114,8 @@ reconstruct model =
           do refAssoc <- uses refMap Map.toList 
              foldM go Map.empty refAssoc
           where go m (tRef, ast) =
-                    case tRef of
-                      LogicRef _ _ ->
-                          do (r, v) <- reconLogicRef tRef ast
-                             return (Map.insert r v m)
+                    do (r, v) <- reconLogicRef tRef ast
+                       return (Map.insert r v m)
 
       -- | Reconstruct a ref/value pair for a logical reference.
       reconLogicRef :: TaggedRef -> AST -> Z3Gen (Ref, Value)
@@ -130,12 +123,3 @@ reconstruct model =
           do Just ast' <- eval model ast
              x <- extract' t ast'
              return (ref, x)
-
--- getOldCustom :: [Expression] -> Set Custom
--- getOldCustom = everything Set.union (mkQ Set.empty getCustom)
---     where
---       getCustom (CustomValue t i) = Set.singleton (Custom t i)
---       getCustom _ = Set.empty
-
--- setOldCustoms :: [Expression] -> Z3Gen ()
--- setOldCustoms exprs = oldCustoms .= getOldCustom exprs
