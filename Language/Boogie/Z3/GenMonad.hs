@@ -1,7 +1,26 @@
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE DeriveDataTypeable #-}
-module Language.Boogie.Z3.GenMonad where
+module Language.Boogie.Z3.GenMonad
+    ( Z3Gen
+    , evalZ3Gen
+    , TaggedRef(..)
+    , sortMap
+    , ctorMap
+    , refMap
+    , debug
+    , lookup'
+    , justElse
+    , justElseM
+    , lookupSort
+    , lookupCustomType
+    , lookupCustomCtor
+    , lookupCustomProj
+    , lookupTupleSort
+    , lookupCtor
+    , tupleSymbol
+    , customSymbol
+    ) where
 
 import           Control.Applicative
 import           Control.Lens ((%=), view, _1, _2, _3, uses, makeLenses)
@@ -13,19 +32,14 @@ import           Data.Generics
 import           Data.Maybe
 import qualified Data.Map as Map
 import           Data.Map (Map)
-import qualified Data.Set as Set
-import           Data.Set (Set)
 
 import           Z3.Monad
 
 import           Language.Boogie.AST
-import           Language.Boogie.Heap
 import           Language.Boogie.PrettyAST ()
 
-data TaggedRef 
-    = LogicRef Type Ref 
-    | MapRef Type Ref
-      deriving (Eq, Ord, Show, Data, Typeable)
+data TaggedRef = LogicRef Type Ref 
+                 deriving (Eq, Ord, Show, Data, Typeable)
 
 data Custom = Custom Type Int
             deriving (Eq, Ord, Show)
@@ -40,22 +54,12 @@ data Z3Env = Z3Env
     , _sortMap :: Map Type Sort               -- ^ Maps types to sorts
     , _refMap  :: Map TaggedRef AST           -- ^ Maps references to their
                                               -- Z3 AST node.
-    , _customVals :: Map Int AST              -- ^ Map custom value tags to
-                                              -- their AST.
     , _customMap :: 
         Map (Id,[Type])
                 (Sort, FuncDecl, FuncDecl)    -- ^ Map from identifier and
                                               -- type arguments to a 
                                               -- an uninterpreted type
-    , _oldCustoms :: Set Custom               -- ^ A set of custom
-                                              -- values that were sent
-                                              -- into Z3. These will be used to
-                                              -- determine if new values were
-                                              -- generated or not.
-    , _newCustoms :: Set Custom               -- ^ A set of the new custom
-                                              -- values that are generated
-                                              -- by Z3, not given in the
-                                              -- constraints.
+
     }
 
 makeLenses ''Z3Env
@@ -67,8 +71,7 @@ instance MonadZ3 Z3Gen where
 type Z3Gen = StateT Z3Env Z3
 
 emptyEnv :: Z3Env
-emptyEnv = Z3Env Map.empty Map.empty Map.empty Map.empty Map.empty
-                 Set.empty Set.empty
+emptyEnv = Z3Env Map.empty Map.empty Map.empty Map.empty
 
 evalZ3Gen :: Z3Gen a -> IO a
 evalZ3Gen act = evalZ3 $ evalStateT act emptyEnv
@@ -153,7 +156,6 @@ tupleSymbol ts = intercalate "_" (map typeString ts) ++ "SYMBOL"
 -- | Type name for the symbol for the sort
 customSymbol :: Id -> [Type] -> String
 customSymbol ident ts = intercalate "_" (ident : map typeString ts) ++ "_CUSTOM"
-
 
 -- | Symbol name for a type
 typeString :: Type -> String

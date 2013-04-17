@@ -18,7 +18,7 @@ evalExpr :: Expression -- ^ Expression to evaluate
 evalExpr expr = debug ("evalExpr: " ++ show expr) >>
     case node expr of
       Literal v -> evalValue v
-      LogicalVar t ref -> uses refMap (lookup' "evalExpr" (LogicRef t ref))
+      Logical t ref -> uses refMap (lookup' "evalExpr" (LogicRef t ref))
       MapSelection m args ->
           do m' <- go m
              arg <- tupleArg args
@@ -39,12 +39,10 @@ evalExpr expr = debug ("evalExpr: " ++ show expr) >>
             IntValue i      -> mkInt i
             BoolValue True  -> mkTrue
             BoolValue False -> mkFalse
-            Reference t ref -> uses refMap (lookup' "evalValue" (MapRef t ref))
             CustomValue (IdType ident types) ref ->
                 do ctor <- lookupCustomCtor ident types
                    refAst <- mkInt ref
                    mkApp ctor [refAst]
-            MapValue _ _    -> error "evalValue: map value found"
             _ -> error $ "evalValue: can't handle value: " ++ show v
 
       go = evalExpr
