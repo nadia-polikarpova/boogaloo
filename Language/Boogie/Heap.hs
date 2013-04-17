@@ -3,8 +3,6 @@
 -- | Generic heap with reference counting.
 -- This module provides relatively low-level interface to the heap data structure, while keeping its internal representation hidden and consistent.
 module Language.Boogie.Heap (
-  Ref,
-  refDoc,
   Heap,
   emptyHeap,
   at,
@@ -24,19 +22,12 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Control.Lens hiding (Context, at)
 
--- | Reference (index in the heap)
-type Ref = Int
-
--- | Pretty-printed reference
-refDoc :: Ref -> Doc
-refDoc r = text "r'" <> int r
-
 -- | Heap
-data Heap a = Heap {
-    _hValCounts :: Map Ref (a, Int),   -- ^ Mapping of references of values and reference counts
-    _hGarbage :: Set Ref,              -- ^ Set of unused references (exactly those references for which snd hValCounts = 0, stored for efficiency)
-    _hFree :: Set Ref,                 -- ^ Set of references that have been removed from the heap and are ready to be reused (stored for efficiency)
-    _hFresh :: Ref                     -- ^ Smallest reference that has never been used
+data Heap ref a = Heap {
+    _hValCounts :: Map ref (a, Int),   -- ^ Mapping of references of values and reference counts
+    _hGarbage :: Set ref,              -- ^ Set of unused references (exactly those references for which snd hValCounts = 0, stored for efficiency)
+    _hFree :: Set ref,                 -- ^ Set of references that have been removed from the heap and are ready to be reused (stored for efficiency)
+    _hFresh :: ref                     -- ^ Smallest reference that has never been used
   } deriving Eq
   
 makeLenses ''Heap  
@@ -44,6 +35,7 @@ makeLenses ''Heap
 {- Initialization -}
 
 -- | Empty heap
+emptyHeap :: Num ref => Heap ref a
 emptyHeap = Heap {
   _hValCounts = M.empty,
   _hGarbage = S.empty,
@@ -54,19 +46,19 @@ emptyHeap = Heap {
 {- Access -}
 
 -- | 'at' @h r@: value of @r@ in heap @h@
-at :: Heap a -> Ref -> a
+at :: (Pretty ref, Ord ref) => Heap ref a -> ref -> a
 at h r = case M.lookup r (h^.hValCounts) of
-  Nothing -> internalError $ text "Cannot find reference" <+> refDoc r <+> text "in the heap"
+  Nothing -> internalError $ text "Cannot find reference" <+> pretty r <+> text "in the heap"
   Just (v, c) -> v
   
 -- | Does the heap have any garbage?
-hasGarbage :: Heap a -> Bool
+hasGarbage :: Heap ref a -> Bool
 hasGarbage h = h ^. hGarbage . to S.null . to not
 
 {- Modification -}  
   
 -- | 'alloc' @v h@ : choose a free reference in heap @h@ and store value @v@ in there; return the reference and the updated heap
-alloc :: a -> Heap a -> (Ref, Heap a)
+alloc :: (Ord ref, Num ref) => a -> Heap ref a -> (ref, Heap ref a)
 alloc v h = let (r, h') = getFreshRef h in (r, insert r v h')
   where
     getFreshRef h = if h ^. hFree . to S.null
@@ -76,7 +68,7 @@ alloc v h = let (r, h') = getFreshRef h in (r, insert r v h')
 
 -- | Collect some garbage reference in the heap and return that reference and the new heap;
 -- the heap must have garbage
-dealloc :: Heap a -> (Ref, Heap a)
+dealloc :: Ord ref => Heap ref a -> (ref, Heap ref a)
 dealloc h = let (r, g') = S.deleteFindMin (h^.hGarbage) in (r, 
   h & (over hValCounts (M.delete r)) .
       (hGarbage .~ g') .
@@ -85,12 +77,12 @@ dealloc h = let (r, g') = S.deleteFindMin (h^.hGarbage) in (r,
     
 -- | 'update' @r v h@ : set the value at reference @r@ to @v@ in @h@;
 -- @r@ must be present in @h@
-update :: Ref -> a -> Heap a -> Heap a
+update :: Ord ref => ref -> a -> Heap ref a -> Heap ref a
 update r v = over hValCounts (M.adjust (over _1 (const v)) r)
 
 -- | 'incRefCount' @r h@ : increase reference count of @r@ in @h@;
 -- @r@ must be present in @h@
-incRefCount :: Ref -> Heap a -> Heap a
+incRefCount :: Ord ref => ref -> Heap ref a -> Heap ref a
 incRefCount r h = let (v, c) = (h^.hValCounts) ! r
   in h & (over hValCounts (M.insert r (v, c + 1))) .
          (over hGarbage (if c == 0 then S.delete r else id)
@@ -98,7 +90,7 @@ incRefCount r h = let (v, c) = (h^.hValCounts) ! r
 
 -- | 'decRefCount' @r h@ : decrease reference count of @r@ in @h@;
 -- @r@ must be present in @h@          
-decRefCount :: Ref -> Heap a -> Heap a
+decRefCount :: Ord ref => ref -> Heap ref a -> Heap ref a
 decRefCount r h = let (v, c) = (h^.hValCounts) ! r
   in h & (over hValCounts (M.insert r (v, c - 1))) .
          (over hGarbage (if c == 1 then S.insert r else id))
@@ -106,12 +98,12 @@ decRefCount r h = let (v, c) = (h^.hValCounts) ! r
 {- Ouput -}          
 
 -- | Pretty-printed heap
-heapDoc :: Pretty a => Heap a -> Doc
+heapDoc :: (Pretty ref, Pretty a) => Heap ref a -> Doc
 heapDoc h = (vsep $ map entryDoc (M.toList (h^.hValCounts)))
   -- $+$ text "Garbage" <+> braces (commaSep (map refDoc (S.toList (h^.hGarbage))))
   -- $+$ text "Free" <+> braces (commaSep (map refDoc (S.toList (h^.hFree))))
-  where entryDoc (ref, (val, count)) = refDoc ref <> braces (int count) <+> text "->" <+> pretty val
+  where entryDoc (ref, (val, count)) = pretty ref <> braces (int count) <+> text "->" <+> pretty val
   
-instance Pretty a => Pretty (Heap a) where
+instance (Pretty ref, Pretty a) => Pretty (Heap ref a) where
   pretty h = heapDoc h
   

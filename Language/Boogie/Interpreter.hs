@@ -27,10 +27,11 @@ module Language.Boogie.Interpreter (
   preprocess
   ) where
 
-import Language.Boogie.Environment  
+import Language.Boogie.Solver  
+import Language.Boogie.Environment
 import Language.Boogie.AST
 import Language.Boogie.Util
-import Language.Boogie.Heap
+import Language.Boogie.Heap hiding (Heap)
 import Language.Boogie.Position
 import Language.Boogie.Tokens (nonIdChar)
 import Language.Boogie.Pretty

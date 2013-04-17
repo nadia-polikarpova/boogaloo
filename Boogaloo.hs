@@ -8,7 +8,6 @@ import Language.Boogie.Position
 import qualified Language.Boogie.Parser as Parser (program)
 import Language.Boogie.TypeChecker
 import Language.Boogie.Pretty
-import Language.Boogie.Heap
 import Language.Boogie.Environment
 import Language.Boogie.Interpreter
 import System.Environment

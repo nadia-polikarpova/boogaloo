@@ -4,7 +4,6 @@
 module Language.Boogie.AST where
 
 import Language.Boogie.Position
-import Language.Boogie.Heap
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.List
@@ -184,6 +183,9 @@ data BareDecl =
   
 {- Values -}
 
+-- | Reference (gives identity to things)
+type Ref = Int
+
 -- | Representation of a map value
 type MapRepr = Map [Value] Value
   
@@ -193,7 +195,7 @@ emptyMap = M.empty
 -- | Run-time value
 data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
-  CustomValue Type Int |         -- ^ Value of a user-defined type
+  CustomValue Type Ref |         -- ^ Value of a user-defined type
   Reference Type Ref             -- ^ Map reference
   deriving (Eq, Ord)
   

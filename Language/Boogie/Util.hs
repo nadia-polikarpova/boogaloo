@@ -65,7 +65,6 @@ module Language.Boogie.Util (
 ) where
 
 import Language.Boogie.AST
-import Language.Boogie.Heap (Ref, refDoc)
 import Language.Boogie.Position
 import Language.Boogie.Tokens
 import Language.Boogie.Pretty

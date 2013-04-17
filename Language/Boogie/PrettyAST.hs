@@ -2,12 +2,12 @@
 
 -- | Pretty printing of AST nodes
 module Language.Boogie.PrettyAST (
-  idpretty
+  idpretty,
+  refDoc
 ) where
 
 import Language.Boogie.Pretty
 import Language.Boogie.AST
-import Language.Boogie.Heap
 import Language.Boogie.Position
 import Language.Boogie.Tokens
 import Data.Maybe
@@ -230,6 +230,10 @@ implementationDoc name fv args rets bodies =
   vsep (map bodyDoc bodies)
   
 {- Values -}
+
+-- | Pretty-printed reference
+refDoc :: Ref -> Doc
+refDoc r = text "r'" <> int r
     
 -- | Pretty-printed value
 instance Pretty Value where

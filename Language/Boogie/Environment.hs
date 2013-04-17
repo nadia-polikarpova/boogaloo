@@ -8,7 +8,6 @@ module Language.Boogie.Environment (
   userStore,
   storeDoc,
   MapCache,
-  Solution,
   Memory,
   StoreLens,
   memLocals,
@@ -22,8 +21,6 @@ module Language.Boogie.Environment (
   visibleVariables,
   userMemory,
   memoryDoc,
-  ConstraintSet,
-  Solver,
   NameConstraints,
   nameConstraintsDoc,
   MapConstraints,
@@ -60,9 +57,12 @@ module Language.Boogie.Environment (
 import Language.Boogie.Util
 import Language.Boogie.Position
 import Language.Boogie.AST
-import Language.Boogie.Heap
+import Language.Boogie.Solver
+import Language.Boogie.Heap hiding (Heap)
+import qualified Language.Boogie.Heap as H
 import Language.Boogie.TypeChecker (Context, ctxGlobals)
 import Language.Boogie.Pretty
+import Language.Boogie.PrettyAST
 import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
@@ -73,7 +73,7 @@ import Control.Lens hiding (Context, at)
 {- Map operations -}
 
 -- -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
--- deepDeref :: Heap MapCache -> Value -> Value
+-- deepDeref :: Heap -> Value -> Value
 -- deepDeref h v = deepDeref' v
   -- where
     -- deepDeref' (Reference t r) = MapValue t $ M.map deepDeref' (M.mapKeys (map deepDeref') (h `at` r)) -- Dereference all keys and values
@@ -93,7 +93,7 @@ storeDoc vars = vsep $ map varDoc (M.toList vars)
   where varDoc (id, val) = pretty id <+> text "=" <+> pretty val
     
 -- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@
-userStore :: Heap MapCache -> Store -> Store
+userStore :: Heap -> Store -> Store
 userStore heap store = store-- M.map (deepDeref heap . fromLiteral) store    
 
 -- | Partial map instance
@@ -104,20 +104,21 @@ instance Pretty MapCache where
       keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
       itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> pretty v
     in brackets (commaSep (map itemDoc (M.toList cache)))
-        
-type Solution = Map Ref Thunk
+    
+-- | Heap: stores partial map instances    
+type Heap = H.Heap Ref (MapCache)    
 
 {- Memory -}
 
 -- | Memory: stores thunks associated with names, map references and logical variables
 data Memory = Memory {
-  _memLocals :: Store,          -- ^ Local variable store
-  _memGlobals :: Store,         -- ^ Global variable store
-  _memOld :: Store,             -- ^ Old global variable store (in two-state contexts)
-  _memModified :: Set Id,       -- ^ Set of global variables, which have been modified since the beginning of the current procedure  
-  _memConstants :: Store,       -- ^ Constant store  
-  _memMaps :: Heap MapCache,    -- ^ Partial instances of maps
-  _memLogical :: Solution       -- ^ Logical variable store
+  _memLocals :: Store,      -- ^ Local variable store
+  _memGlobals :: Store,     -- ^ Global variable store
+  _memOld :: Store,         -- ^ Old global variable store (in two-state contexts)
+  _memModified :: Set Id,   -- ^ Set of global variables, which have been modified since the beginning of the current procedure  
+  _memConstants :: Store,   -- ^ Constant store  
+  _memMaps :: Heap,         -- ^ Partial instances of maps
+  _memLogical :: Solution   -- ^ Logical variable store
 } deriving Eq
 
 makeLenses ''Memory
@@ -141,7 +142,7 @@ visibleVariables :: Memory -> Store
 visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (mem^.memConstants)
 
 -- | Clear cached values if maps that have guard-less definitions
-clearDefinedCache :: MapConstraints -> Heap MapCache -> Heap MapCache
+clearDefinedCache :: MapConstraints -> Heap -> Heap
 clearDefinedCache conMaps heap = heap --foldr (\r -> update r emptyMap) heap definedRefs -- ToDo: fix!
   -- where
     -- definedRefs = [r | (r, (defs, _)) <- M.toList conMaps, any (\def -> node (defGuard def) == tt) defs]
@@ -183,12 +184,6 @@ instance Pretty Memory where
   pretty mem = memoryDoc [] [] mem
   
 {- Constraint memory -}
-
--- | Set of constraints
-type ConstraintSet = [Expression]
-
--- | Solver: produces solutions of constraint sets
-type Solver m = ConstraintSet -> m Solution
 
 -- | Mapping from names to their constraints
 type NameConstraints = Map Id ConstraintSet
