@@ -45,17 +45,37 @@ library
       Language.Boogie.BasicBlocks,
       Language.Boogie.AST
   -- other-modules:       
-  build-depends:       base ==4.*, random ==1.0.*, containers >=0.4 && <0.6, mtl ==2.1.*, ansi-wl-pprint ==0.6.*, html ==1.*, parsec ==3.1.*, transformers ==0.3.*, stream-monad ==0.4.*, random ==1.0.*, lens ==3.7.*, z3 >=0.3
+  build-depends:
+      base ==4.*,
+      random ==1.0.*,
+      containers >=0.4 && <0.6,
+      mtl ==2.1.*,
+      ansi-wl-pprint ==0.6.*,
+      html ==1.*,
+      parsec ==3.1.*,
+      transformers ==0.3.*,
+      stream-monad ==0.4.*,
+      random ==1.0.*,
+      syb >=0.1,
+      lens ==3.7.*,
+      z3 >=0.3
     
 executable boogaloo
   main-is:             Boogaloo.hs             
-  build-depends:       base ==4.*, language-boogie ==0.2.*, containers >=0.4 && <0.6, parsec ==3.1.*, cmdargs ==0.10.*, random ==1.0.*, time ==1.4.*, mtl ==2.1.*, ansi-wl-pprint ==0.6.*, html ==1.*, transformers ==0.3.*, stream-monad ==0.4.*, ansi-terminal ==0.5.*, random ==1.0.*, lens ==3.7.*, z3 >=0.3
+  build-depends:
+      language-boogie ==0.2.*,
+      cmdargs ==0.10.*,
+      time ==1.4.*,
+      ansi-terminal ==0.5.*
   If !flag(boogaloo)
     buildable: False  
   
 executable boogaloo-tests
   main-is:             Tests.hs
-  build-depends:       base ==4.*, language-boogie ==0.2.*, containers >=0.4 && <0.6, filepath ==1.3.*, parsec ==3.1.*, HUnit ==1.2.*, mtl ==2.1.*, ansi-wl-pprint ==0.6.*, html ==1.*, transformers ==0.3.*, stream-monad ==0.4.*, random ==1.0.*, lens ==3.7.*, z3 >=0.3
+  build-depends:
+      language-boogie ==0.2.*,
+      filepath ==1.3.*,
+      HUnit ==1.2.*
   If !flag(tests)
     buildable: False  
   
