@@ -931,8 +931,15 @@ solveAll constraints = do
 solveConstraints :: (Monad m, Functor m) => Execution m ()
 solveConstraints = do
   constraints <- use $ envConstraints.conLogical
-  solveAll constraints
+  instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps) 
+  solveAll $ constraints ++ instanceConstraints
   envConstraints.conLogical .= []
+  where
+    constraintsFromMap (r, inst) = map (pointConstraint r) (M.toList inst)
+    pointConstraint r (args, val) = let
+        mapType = MapType [] (map thunkType args) (thunkType val)
+        mapExpr = gen $ Literal $ Reference mapType r
+      in gen (MapSelection mapExpr args) |=| val
   
 -- | 'genIndex' @n@ : return an intereg in [0, n)  
 genIndex :: (Monad m, Functor m) => Int -> Execution m Int
