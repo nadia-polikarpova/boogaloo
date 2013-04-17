@@ -48,7 +48,7 @@ module Language.Boogie.Environment (
   addProcedureImpl,
   addNameConstraint,
   addMapConstraint,
-  addConstraints,
+  addLogicalConstraint,
   setCustomCount,
   withHeap,
   markModified
@@ -97,7 +97,7 @@ userStore :: Heap -> Store -> Store
 userStore heap store = store-- M.map (deepDeref heap . fromLiteral) store    
 
 -- | Partial map instance
-type MapCache = Map [Value] Thunk
+type MapCache = Map [Thunk] Thunk
 
 instance Pretty MapCache where
   pretty cache = let
@@ -280,9 +280,9 @@ lookupCustomCount = lookupGetter envCustomCount 0
 -- Environment modifications  
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
 addNameConstraint :: Id -> SimpleLens (Environment m) NameConstraints -> Expression -> Environment m -> Environment m
-addNameConstraint name lens con env = over lens (M.insert name (nub $ lookupGetter lens [] name env ++ [con])) env
-addMapConstraint r con env = over (envConstraints.conMaps) (M.insert r (nub $ lookupMapConstraints r env ++ [con])) env
-addConstraints cs = over (envConstraints.conLogical) (++ cs)
+addNameConstraint name lens c env = over lens (M.insert name (nub $ c : lookupGetter lens [] name env)) env
+addMapConstraint r c env = over (envConstraints.conMaps) (M.insert r (nub $ c : lookupMapConstraints r env)) env
+addLogicalConstraint c = over (envConstraints.conLogical) (nub . (c :))
 setCustomCount t n = over envCustomCount (M.insert t n)
 withHeap f env = let (res, h') = f (env^.envMemory.memMaps) 
   in (res, set (envMemory.memMaps) h' env )

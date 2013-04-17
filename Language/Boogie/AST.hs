@@ -85,7 +85,7 @@ data BareExpression =
   UnaryExpression UnOp Expression |
   BinaryExpression BinOp Expression Expression |
   Quantified QOp [Id] [IdType] Expression         -- ^ 'Quantified' @qop type_vars bound_vars expr@
-  deriving (Eq, Data, Typeable)  -- syntactic equality
+  deriving (Eq, Ord, Data, Typeable)  -- syntactic equality
   
 -- | 'mapSelectExpr' @m args@ : map selection expression with position of @m@ attached
 mapSelectExpr m args = attachPos (position m) (MapSelection m args)  
