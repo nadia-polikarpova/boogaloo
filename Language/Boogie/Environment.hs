@@ -7,6 +7,7 @@ module Language.Boogie.Environment (
   emptyStore,
   userStore,
   storeDoc,
+  MapInstance,
   MapCache,
   Memory,
   StoreLens,
@@ -38,6 +39,7 @@ module Language.Boogie.Environment (
   envTypeContext,
   envSolver,
   envCustomCount,
+  envMapCount,
   envLogicalCount,
   envInOld,
   initEnv,
@@ -50,7 +52,6 @@ module Language.Boogie.Environment (
   addMapConstraint,
   addLogicalConstraint,
   setCustomCount,
-  withHeap,
   markModified
 ) where
 
@@ -58,8 +59,6 @@ import Language.Boogie.Util
 import Language.Boogie.Position
 import Language.Boogie.AST
 import Language.Boogie.Solver
-import Language.Boogie.Heap hiding (Heap)
-import qualified Language.Boogie.Heap as H
 import Language.Boogie.TypeChecker (Context, ctxGlobals)
 import Language.Boogie.Pretty
 import Language.Boogie.PrettyAST
@@ -69,15 +68,6 @@ import qualified Data.Map as M
 import Data.Set (Set)
 import qualified Data.Set as S
 import Control.Lens hiding (Context, at)
-  
-{- Map operations -}
-
--- -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
--- deepDeref :: Heap -> Value -> Value
--- deepDeref h v = deepDeref' v
-  -- where
-    -- deepDeref' (Reference t r) = MapValue t $ M.map deepDeref' (M.mapKeys (map deepDeref') (h `at` r)) -- Dereference all keys and values
-    -- deepDeref' v = v
   
 {- Store -}  
 
@@ -93,20 +83,27 @@ storeDoc vars = vsep $ map varDoc (M.toList vars)
   where varDoc (id, val) = pretty id <+> text "=" <+> pretty val
     
 -- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@
-userStore :: Heap -> Store -> Store
+userStore :: MapCache -> Store -> Store
 userStore heap store = store-- M.map (deepDeref heap . fromLiteral) store    
 
 -- | Partial map instance
-type MapCache = Map [Thunk] Thunk
+type MapInstance = Map [Thunk] Thunk
 
-instance Pretty MapCache where
-  pretty cache = let
+instance Pretty MapInstance where
+  pretty inst = let
       keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
       itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> pretty v
-    in brackets (commaSep (map itemDoc (M.toList cache)))
+    in brackets (commaSep (map itemDoc (M.toList inst)))
     
--- | Heap: stores partial map instances    
-type Heap = H.Heap Ref (MapCache)    
+-- | MapCache: stores partial map instances    
+type MapCache = Map Ref MapInstance
+  
+emptyCache = M.empty  
+  
+instance Pretty MapCache where
+  pretty cache = let
+      entryDoc (ref, val) = pretty ref <+> text "->" <+> pretty val
+    in vsep $ map entryDoc (M.toList cache)
 
 {- Memory -}
 
@@ -117,7 +114,7 @@ data Memory = Memory {
   _memOld :: Store,         -- ^ Old global variable store (in two-state contexts)
   _memModified :: Set Id,   -- ^ Set of global variables, which have been modified since the beginning of the current procedure  
   _memConstants :: Store,   -- ^ Constant store  
-  _memMaps :: Heap,         -- ^ Partial instances of maps
+  _memMaps :: MapCache,         -- ^ Partial instances of maps
   _memLogical :: Solution   -- ^ Logical variable store
 } deriving Eq
 
@@ -133,7 +130,7 @@ emptyMemory = Memory {
   _memOld = emptyStore,
   _memModified = S.empty,
   _memConstants = emptyStore,
-  _memMaps = emptyHeap,
+  _memMaps = emptyCache,
   _memLogical = M.empty
 }
 
@@ -142,7 +139,7 @@ visibleVariables :: Memory -> Store
 visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (mem^.memConstants)
 
 -- | Clear cached values if maps that have guard-less definitions
-clearDefinedCache :: MapConstraints -> Heap -> Heap
+clearDefinedCache :: MapConstraints -> MapCache -> MapCache
 clearDefinedCache conMaps heap = heap --foldr (\r -> update r emptyMap) heap definedRefs -- ToDo: fix!
   -- where
     -- definedRefs = [r | (r, (defs, _)) <- M.toList conMaps, any (\def -> node (defGuard def) == tt) defs]
@@ -155,7 +152,7 @@ userMemory conMem mem = let heap' = clearDefinedCache (_conMaps conMem) (mem^.me
      over memOld (userStore heap') $
      over memModified (const S.empty) $
      over memConstants (userStore heap') $
-     over memMaps (const emptyHeap)
+     over memMaps (const emptyCache)
      mem
 
 -- | 'memoryDoc' @inNames outNames mem@ : pretty-printed @mem@ where
@@ -169,7 +166,7 @@ memoryDoc inNames outNames mem = vsep $
   docNonEmpty ((mem^.memGlobals) `M.union` (mem^.memConstants)) (labeledStoreDoc "Globals") ++
   docNonEmpty (mem^.memOld) (labeledStoreDoc "Old globals") ++
   docWhen (not (S.null $ mem^.memModified)) (text "Modified:" <+> commaSep (map text (S.toList $ mem^.memModified))) ++
-  docWhen (mem^.memMaps /= emptyHeap) (text "Maps:" <+> align (heapDoc (mem^.memMaps))) ++
+  docWhen (mem^.memMaps /= emptyCache) (text "Maps:" <+> align (pretty (mem^.memMaps))) ++
   docNonEmpty (mem^.memLogical) (labeledStoreDoc "Logical")
   where
     allLocals = mem^.memLocals
@@ -244,6 +241,7 @@ data Environment m = Environment
     _envProcedures :: Map Id [PDef],        -- ^ Procedure implementations
     _envTypeContext :: Context,             -- ^ Type context
     _envSolver :: Solver m,                 -- ^ Constraint solver
+    _envMapCount :: Int,                    -- ^ Number of map references currently in use
     _envLogicalCount :: Int,                -- ^ Number of logical varibles currently in use
     _envCustomCount :: Map Type Int,        -- ^ For each user-defined type, number of distinct values of this type already generated
     _envInOld :: Bool                       -- ^ Is an old expression currently being evaluated?
@@ -260,6 +258,7 @@ initEnv tc s = Environment
     _envTypeContext = tc,
     _envSolver = s,
     _envCustomCount = M.empty,
+    _envMapCount = 0,
     _envLogicalCount = 0,
     _envInOld = False
   }
@@ -284,8 +283,6 @@ addNameConstraint name lens c env = over lens (M.insert name (nub $ c : lookupGe
 addMapConstraint r c env = over (envConstraints.conMaps) (M.insert r (nub $ c : lookupMapConstraints r env)) env
 addLogicalConstraint c = over (envConstraints.conLogical) (nub . (c :))
 setCustomCount t n = over envCustomCount (M.insert t n)
-withHeap f env = let (res, h') = f (env^.envMemory.memMaps) 
-  in (res, set (envMemory.memMaps) h' env )
 markModified name env = if M.member name (env^.envTypeContext.to ctxGlobals) 
   then over (envMemory.memModified) (S.insert name) env
   else env

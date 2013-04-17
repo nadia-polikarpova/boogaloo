@@ -32,7 +32,6 @@ import Language.Boogie.Solver
 import Language.Boogie.Environment
 import Language.Boogie.AST
 import Language.Boogie.Util
-import Language.Boogie.Heap hiding (Heap)
 import Language.Boogie.Position
 import Language.Boogie.Tokens (nonIdChar)
 import Language.Boogie.Pretty
@@ -45,6 +44,7 @@ import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Data.Set (Set)
 import qualified Data.Set as S
+import qualified Data.Traversable as T
 import Control.Monad.Error hiding (join)
 import Control.Applicative hiding (empty)
 import Control.Monad.State hiding (join)
@@ -407,9 +407,13 @@ freshLogical = do
   envLogicalCount %= (+ 1)
   return l
   
--- | 'freshMapRef' @cache@: store @cache@ at a fresh map reference and return it
-freshMapRef :: (Monad m, Functor m) => MapCache -> Execution m Ref
-freshMapRef cache = (state . withHeap . alloc) cache  
+-- | 'freshMapRef' @inst@: store @inst@ at a fresh map reference and return it
+freshMapRef :: (Monad m, Functor m) => MapInstance -> Execution m Ref
+freshMapRef inst = do
+  r <- use envMapCount
+  envMapCount %= (+ 1)
+  envMemory.memMaps %= M.insert r inst
+  return r
       
 -- | 'generateValue' @t pos@ : choose a value of type @t@ at source position @pos@;
 -- fail if @t@ is a type variable
@@ -447,21 +451,21 @@ forgetAnyVar name = do
       then forgetVar memGlobals name
       else forgetVar memConstants name
       
--- | 'getMapCache' @r@: current cache of map @r@
-getMapCache r = flip at r <$> use (envMemory.memMaps)      
+-- | 'getMapInstance' @r@: current instance of map @r@
+getMapInstance r = (! r) <$> use (envMemory.memMaps)      
       
 -- | 'setMapValue' @r index val@ : map @index@ to @val@ in the map referenced by @r@
 setMapValue r index val = do
-  vals <- getMapCache r
-  envMemory.memMaps %= update r (M.insert index val vals)
+  inst <- getMapInstance r
+  envMemory.memMaps %= M.insert r (M.insert index val inst)
   
 -- | 'forgetMapValue' @r index@ : forget value at @index@ in the map referenced by @r@  
 -- (@r@ has to be a source map)
 forgetMapValue r index = do
-  vals <- getMapCache r
-  case M.lookup index vals of
+  inst <- getMapInstance r
+  case M.lookup index inst of
     Nothing -> return ()
-    Just val -> envMemory.memMaps %= update r (M.delete index vals)
+    Just val -> envMemory.memMaps %= M.insert r (M.delete index inst)
 
 {- Expressions -}
          
@@ -528,8 +532,8 @@ evalMapSelection m args pos = do
     Reference _ r -> do
       args' <- mapM eval args
       mapM_ (rejectMapIndex pos) args'
-      mCache <- getMapCache r
-      case M.lookup args' mCache of    -- Lookup a cached value
+      inst <- getMapInstance r
+      case M.lookup args' inst of    -- Lookup a cached value
         Just val -> return val
         Nothing -> do                       -- If not found, choose a value non-deterministically
           let rangeType = thunkType (gen $ MapSelection m' args')
@@ -545,7 +549,6 @@ evalMapUpdate m args new pos = do
   args' <- mapM eval args
   mapM_ (rejectMapIndex pos) args'
   new' <- eval new    
-  mRepr <- getMapCache r
   newM' <- generateValue t pos
   let Reference _ r' = fromLiteral newM'
   let var = attachPos pos . Var
@@ -675,15 +678,16 @@ evalForall tv vars e pos = do
   symExpr <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)
   res <- generateValue BoolType pos
   samples <- mapM (evalForMap res) (M.toList $ extractMapConstraints symExpr)
-  extendLogicalConstaints $ res |=| conjunction samples
+  sampleRes <- eval $ conjunction samples
+  extendLogicalConstaints $ res |=| sampleRes
   return res
   where
     evalForMap res (r, constraints) = do
       samples <- mapM (evalConstraint res r) constraints
       return $ conjunction samples
     evalConstraint res r c = do       
-      cache <- getMapCache r
-      cacheRs <- mapM (\actuals -> applyMapConstraint c actuals pos) (M.keys cache)
+      inst <- getMapInstance r
+      cacheRs <- mapM (\actuals -> applyMapConstraint c actuals pos) (M.keys inst)
       newR <- decideConstraint r c
       addGuardedConstraint res r c
       return $ conjunction (cacheRs ++ [newR])
@@ -905,9 +909,17 @@ solveAll [] = return ()
 solveAll constraints = do
   solution <- solve constraints
   envMemory.memLogical %= M.union solution
+  updateMapCache
   newConstraints <- catMaybes <$> mapM checkConstraint constraints
   solveAll newConstraints
   where
+    updateMapCache = do
+      maps <- use $ envMemory.memMaps
+      newMapCache <- T.mapM (\inst -> M.fromList <$> mapM evalPoint (M.toList inst)) maps
+      envMemory.memMaps .= newMapCache    
+    evalPoint (args, val) = do
+      val' : args' <- mapM eval (val : args)
+      return (args', val')
     checkConstraint c = do
       res <- eval c
       case node res of
