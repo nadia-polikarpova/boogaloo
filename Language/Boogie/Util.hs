@@ -24,12 +24,6 @@ module Language.Boogie.Util (
   modifies,
   assumePreconditions,
   assumePostconditions,
-  -- * Constraints
-  NameConstraints,
-  nameConstraintsDoc,
-  MapConstraints,
-  mapConstraintsDoc,
-  constraintUnion,  
   -- * Functions and procedures
   PSig (..),
   psigParams,
@@ -71,7 +65,6 @@ module Language.Boogie.Util (
 ) where
 
 import Language.Boogie.AST
-import Language.Boogie.Heap (Ref, refDoc)
 import Language.Boogie.Position
 import Language.Boogie.Tokens
 import Language.Boogie.Pretty
@@ -194,6 +187,7 @@ forallUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= len
 freeVarsTwoState :: Expression -> ([Id], [Id])
 freeVarsTwoState e = case node e of
   Literal _ -> ([], [])
+  Logical _ _ -> ([], [])
   Var x -> ([x], [])
   Application name args -> freeVarsTwoState $ attachPos (position e) $ MapSelection (functionExpr name (position e)) args
   MapSelection m args ->  over both (nub . concat) (unzip (map freeVarsTwoState (m : args)))
@@ -255,6 +249,7 @@ mapRefs :: Expression -> [Ref]
 mapRefs expr = case node expr of
   Literal (Reference _ r) -> [r]
   Literal _ -> []
+  Logical _ _ -> []
   Var x -> []
   Application name args -> nub . concat $ map mapRefs args
   MapSelection m args -> nub . concat $ map mapRefs (m : args)
@@ -270,6 +265,7 @@ mapRefs expr = case node expr of
 refSelections :: Expression -> [(Ref, [Expression])]
 refSelections expr = case node expr of
   Literal _ -> []
+  Logical _ _ -> []
   Var x -> []
   Application name args -> nub . concat $ map refSelections args
   MapSelection m args -> case node m of 
@@ -319,25 +315,6 @@ assumePostconditions sig = sig { psigContracts = map assumePostcondition (psigCo
   where
     assumePostcondition (Ensures _ e) = Ensures True e
     assumePostcondition c = c
-    
-{- Constraints -}
-
--- | Mapping from names to their constraints
-type NameConstraints = Map Id [Expression]
-
--- | Pretty-printed variable constraints
-nameConstraintsDoc :: NameConstraints -> Doc
-nameConstraintsDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (name, cs) = nest 2 (text name <+> pretty cs)
-
--- | Mapping from map references to their parametrized constraints
-type MapConstraints = Map Ref [Expression]
-
-mapConstraintsDoc heap = vsep $ map valDoc (M.toList heap)
-  where valDoc (r, cs) = nest 2 (refDoc r <+> pretty cs)
-  
--- | Union of constraints (values at the same key are concatenated)
-constraintUnion s1 s2 = M.unionWith (++) s1 s2  
 
 {- Procedures -}
      

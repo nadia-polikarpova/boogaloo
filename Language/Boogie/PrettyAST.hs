@@ -2,12 +2,12 @@
 
 -- | Pretty printing of AST nodes
 module Language.Boogie.PrettyAST (
-  idpretty
+  idpretty,
+  refDoc
 ) where
 
 import Language.Boogie.Pretty
 import Language.Boogie.AST
-import Language.Boogie.Heap
 import Language.Boogie.Position
 import Language.Boogie.Tokens
 import Data.Maybe
@@ -35,7 +35,7 @@ instance Pretty Type where
 -- | Binding power of an expression
 power :: BareExpression -> Int
 power (Literal _) = 10
-power (LogicalVar _ _) = 10
+power (Logical _ _) = 10
 power (Var _) = 10
 power (Application _ _) = 10
 power (Old _) = 10
@@ -62,7 +62,7 @@ exprDocAt :: Int -> Expression -> Doc
 exprDocAt n (Pos _ e) = condParens (n' <= n) (
   case e of
     Literal v -> pretty v
-    LogicalVar t r -> text "log" <> pretty r
+    Logical t r -> text "l'" <> pretty r
     Var id -> text id
     Application id args -> text id <> parens (commaSep (map exprDoc args))
     MapSelection m args -> exprDocAt n' m <> brackets (commaSep (map exprDoc args))
@@ -231,19 +231,15 @@ implementationDoc name fv args rets bodies =
   
 {- Values -}
 
--- | Pretty-printed map representation  
-instance Pretty MapRepr where
-  pretty repr = let
-      keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
-      itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> pretty v
-    in brackets (commaSep (map itemDoc (M.toList repr)))
+-- | Pretty-printed reference
+refDoc :: Ref -> Doc
+refDoc r = text "r'" <> int r
     
 -- | Pretty-printed value
 instance Pretty Value where
   pretty (IntValue n) = integer n
   pretty (BoolValue False) = text "false"
   pretty (BoolValue True) = text "true"
-  pretty (MapValue _ repr) = pretty repr
   pretty (CustomValue t n) = pretty t <+> int n
   pretty (Reference _ r) = refDoc r  
   

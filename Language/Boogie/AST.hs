@@ -4,7 +4,6 @@
 module Language.Boogie.AST where
 
 import Language.Boogie.Position
-import Language.Boogie.Heap
 
 import Data.Data
 import Data.Map (Map)
@@ -76,7 +75,7 @@ type Expression = Pos BareExpression
 data BareExpression = 
   Literal Value |
   Var Id |                                        -- ^ 'Var' @name@
-  LogicalVar Type Ref |                           -- ^ A logical variable
+  Logical Type Ref |                              -- ^ Logical variable
   Application Id [Expression] |                   -- ^ 'Application' @f args@
   MapSelection Expression [Expression] |          -- ^ 'MapSelection' @map indexes@
   MapUpdate Expression [Expression] Expression |  -- ^ 'MapUpdate' @map indexes rhs@
@@ -97,10 +96,14 @@ numeral n = Literal (IntValue n)
 
 isLiteral (Pos _ (Literal _)) = True
 isLiteral _ = False
+fromLiteral (Pos _ (Literal v)) = v
   
 -- | Wildcard or expression  
 data WildcardExpression = Wildcard | Expr Expression
   deriving Eq
+  
+-- | Expressions without free variables  
+type Thunk = Expression  
   
 {- Statements -}
 
@@ -183,6 +186,9 @@ data BareDecl =
   
 {- Values -}
 
+-- | Reference (gives identity to things)
+type Ref = Int
+
 -- | Representation of a map value
 type MapRepr = Map [Value] Value
   
@@ -192,8 +198,7 @@ emptyMap = M.empty
 -- | Run-time value
 data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
-  CustomValue Type Int |         -- ^ Value of a user-defined type
-  MapValue Type MapRepr |        -- ^ Partial instance of a map
+  CustomValue Type Ref |         -- ^ Value of a user-defined type
   Reference Type Ref             -- ^ Map reference
   deriving (Eq, Ord, Data, Typeable)
   
@@ -202,7 +207,6 @@ valueType :: Value -> Type
 valueType (IntValue _) = IntType
 valueType (BoolValue _) = BoolType
 valueType (CustomValue t _) = t
-valueType (MapValue t _) = t
 valueType (Reference t _) = t
   
 -- | 'valueFromInteger' @t n@: value of type @t@ with an integer code @n@
@@ -211,10 +215,8 @@ valueFromInteger IntType n        = IntValue n
 valueFromInteger t@(IdType _ _) n = CustomValue t (fromInteger n)
 valueFromInteger _ _              = error "cannot create a boolean or map value from integer" 
   
+unValueInt (IntValue n) = n  
 unValueBool (BoolValue b) = b
-vnot (BoolValue b) = BoolValue (not b)
-isEmptyMap (MapValue _ repr) = repr == emptyMap
-isEmptyMap _ = False  
     
 {- Misc -}
 

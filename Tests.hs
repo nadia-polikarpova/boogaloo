@@ -6,7 +6,6 @@ import Language.Boogie.PrettyAST
 import Language.Boogie.TypeChecker
 import Language.Boogie.Interpreter hiding (TestCase)
 import qualified Language.Boogie.Interpreter as I
-import Language.Boogie.Generator
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import System.FilePath
@@ -102,7 +101,7 @@ interpreterSuccess file = do
     Left parseErr -> assertFailure (show parseErr)
     Right p -> case typeCheckProgram p of
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
-      Right context -> case (head . filter (not . isInvalid)) (executeProgram p context (exhaustiveGenerator Nothing) Nothing entryPoint) of
+      Right context -> case (head . filter (not . isInvalid)) (executeProgram p context undefined Nothing entryPoint) of
         I.TestCase _ _ _ (Just err) -> assertFailure (show $ pretty err)
         otherwise -> return ()
 
