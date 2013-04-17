@@ -3,9 +3,7 @@
 -- | Interpreter for Boogie 2
 module Language.Boogie.Interpreter (
   -- * Executing programs
-  executeProgramDet,
   executeProgram,
-  executeProgramGeneric,
   -- * Run-time failures
   FailureSource (..),
   -- InternalCode,
@@ -33,7 +31,6 @@ import Language.Boogie.Environment
 import Language.Boogie.AST
 import Language.Boogie.Util
 import Language.Boogie.Heap
-import Language.Boogie.Generator
 import Language.Boogie.Position
 import Language.Boogie.Tokens (nonIdChar)
 import Language.Boogie.Pretty
@@ -54,26 +51,12 @@ import Control.Monad.Stream
 import Control.Lens hiding (Context, at)
 
 {- Interface -}
-
--- | 'executeProgram' @p tc entryPoint@ :
--- Execute program @p@ /non-deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
--- and return an infinite list of possible outcomes (each either runtime failure or the final variable store).
--- Whenever a value is unspecified, all values of the required type are tried exhaustively.
-executeProgram :: Program -> Context -> Generator Stream -> Maybe Integer -> Id -> [TestCase]
-executeProgram p tc gen qbound entryPoint = toList $ executeProgramGeneric p tc gen qbound entryPoint
-
--- | 'executeProgramDet' @p tc entryPoint@ :
--- Execute program @p@ /deterministically/ in type context @tc@ starting from procedure @entryPoint@ 
--- and return a single outcome.
--- Whenever a value is unspecified, a default value of the required type is used.
-executeProgramDet :: Program -> Context -> Maybe Integer -> Id -> TestCase
-executeProgramDet p tc qbound entryPoint = runIdentity $ executeProgramGeneric p tc defaultGenerator qbound entryPoint
       
--- | 'executeProgramGeneric' @p tc generator qbound entryPoint@ :
--- Execute program @p@ in type context @tc@ with input generator @generator@, starting from procedure @entryPoint@,
--- and return the outcome(s) embedded into the generator's monad.
-executeProgramGeneric :: (Monad m, Functor m) => Program -> Context -> Generator m -> Maybe Integer -> Id -> m (TestCase)
-executeProgramGeneric p tc generator qbound entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc generator qbound)
+-- | 'executeProgram' @p tc solver entryPoint@ :
+-- Execute program @p@ in type context @tc@ with solver @solver@, starting from procedure @entryPoint@,
+-- and return the outcome(s) embedded into the solver's monad.
+executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Id -> m (TestCase)
+executeProgram p tc solver entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver)
   where
     programExecution = do
       execUnsafely $ preprocess p
@@ -147,7 +130,6 @@ saveOld = do
   callerMem <- use envMemory
   let globals = callerMem^.memGlobals
   envMemory.memOld .= globals
-  mapM_ incRefCountValue (M.elems globals) -- Each value stored in globals is now pointed by an additional (old) variable
   envMemory.memModified .= S.empty
   return $ callerMem
 
@@ -157,26 +139,24 @@ restoreOld callerMem = do
   -- Among the callee's old values, those that had not been modified by the caller are "clean" (should be propagated back to the caller)
   (dirtyOlds, cleanOlds) <- uses (envMemory.memOld) $ partitionDomain (callerMem^.memModified)
   envMemory.memOld .= (callerMem^.memOld) `M.union` cleanOlds
-  mapM_ decRefCountValue (M.elems dirtyOlds) -- Dirty old values go out of scope
   envMemory.memModified %= ((callerMem^.memModified) `S.union`)
   
 -- | Execute computation in a local context
-executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Value] -> [Expression] -> s a -> s a
+executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Thunk] -> [Expression] -> s a -> s a
 executeLocally localTC formals actuals localWhere computation = do
   oldEnv <- get
   envTypeContext %= localTC
   envMemory.memLocals .= M.empty
   zipWithM_ (setVar memLocals) formals actuals
-  mapM_ (extendNameConstraint symLocals) localWhere
+  mapM_ (extendNameConstraint conLocals) localWhere
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
     unwind oldEnv = do
       locals <- use $ envMemory.memLocals
-      mapM_ decRefCountValue (M.elems locals)
       envTypeContext .= oldEnv^.envTypeContext
       envMemory.memLocals .= oldEnv^.envMemory.memLocals
-      envConstraints.symLocals .= oldEnv^.envConstraints.symLocals
+      envConstraints.conLocals .= oldEnv^.envConstraints.conLocals
       
 -- | Exucute computation in a nested context      
 executeNested :: (MonadState (Environment m) s, Finalizer s) => TypeBinding -> [IdType] -> s a -> s a
@@ -190,7 +170,6 @@ executeNested inst locals computation = do
     localNames = map fst locals
     unwind oldEnv = do      
       envTypeContext .= oldEnv^.envTypeContext
-      mapM_ (unsetVar memLocals) localNames
       envMemory.memLocals %= (`M.union` (oldEnv^.envMemory.memLocals)) . deleteAll localNames
      
 -- | Execute computation in a global context     
@@ -199,14 +178,14 @@ executeGlobally computation = do
   oldEnv <- get
   envTypeContext %= globalContext
   envMemory.memLocals .= M.empty
-  envConstraints.symLocals .= M.empty
+  envConstraints.conLocals .= M.empty
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
     unwind oldEnv = do
       envTypeContext .= oldEnv^.envTypeContext
       envMemory.memLocals .= oldEnv^.envMemory.memLocals
-      envConstraints.symLocals .= oldEnv^.envConstraints.symLocals  
+      envConstraints.conLocals .= oldEnv^.envConstraints.conLocals  
                               
 {- Runtime failures -}
 
@@ -239,9 +218,6 @@ throwRuntimeFailure source pos = do
 -- | Push frame on the stack trace of a runtime failure
 addStackFrame frame (RuntimeFailure source pos mem trace) = throwError (RuntimeFailure source pos mem (frame : trace))
 
--- | Throw a spec violation
-throwViolation specClause pos = throwRuntimeFailure (SpecViolation specClause) pos
-
 -- | Kinds of run-time failures
 data FailureKind = Error | -- ^ Error state reached (assertion violation)
   Unreachable | -- ^ Unreachable state reached (assumption violation)
@@ -261,7 +237,7 @@ instance Error RuntimeFailure where
   
 -- | Pretty-printed run-time failure
 runtimeFailureDoc debug err = 
-  let store = (if debug then id else userStore ((rtfMemory err)^.memHeap)) (M.filterWithKey (\k _ -> isRelevant k) (visibleVariables (rtfMemory err)))
+  let store = (if debug then id else userStore ((rtfMemory err)^.memMaps)) (M.filterWithKey (\k _ -> isRelevant k) (visibleVariables (rtfMemory err)))
       sDoc = storeDoc store 
   in failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) <+> 
     (nest 2 $ option (not (isEmpty sDoc)) (text "with") $+$ sDoc) $+$
@@ -305,7 +281,7 @@ instance Eq RuntimeFailure where
 data TestCase = TestCase {
   tcProcedure :: PSig,                -- ^ Root procedure (entry point) of the execution
   tcMemory :: Memory,                 -- ^ Final memory state (at the exit from the root procedure) 
-  tcSymbolicMemory :: SymbolicMemory, -- ^ Final symbolic memory state (at the exit from the root procedure) 
+  tcSymbolicMemory :: ConstraintMemory, -- ^ Final symbolic memory state (at the exit from the root procedure) 
   tcFailure :: Maybe RuntimeFailure   -- ^ Failure the execution eded with, or Nothing if the execution ended in a valid state
 }
 
@@ -331,7 +307,7 @@ isFail :: TestCase -> Bool
 isFail tc = not (isPass tc || isInvalid tc || isNonexecutable tc)
 
 -- | Remove empty maps from a store
-removeEmptyMaps = M.filter $ not . isEmptyMap
+removeEmptyMaps = id -- M.filter $ not . isEmptyMap
 
 -- | 'testCaseDoc' @debug header n tc@ : Pretty printed @tc@',
 -- displayed in user or debug format depending on 'debug'
@@ -346,12 +322,12 @@ testCaseDoc debug header n tc =
     Nothing -> finalStateDoc debug tc  
 
 -- | 'testCaseSummary' @debug tc@ : Summary of @tc@'s inputs and outcome
-testCaseSummary debug tc@(TestCase sig mem symMem mErr) = (text (psigName sig) <> 
+testCaseSummary debug tc@(TestCase sig mem conMem mErr) = (text (psigName sig) <> 
   parens (commaSep (map (inDoc . itwId) (psigArgs sig))) <>
   (option (not $ M.null globalInputs) ((tupled . map globDoc . M.toList) globalInputs))) <+>
   outcomeDoc tc
   where
-    mem' = if debug then mem else userMemory symMem mem
+    mem' = if debug then mem else userMemory conMem mem
     globalInputs = removeEmptyMaps $ (mem'^.memOld) `M.union` (mem'^.memConstants)
     inDoc name = pretty $ (mem'^.memLocals) ! name
     globDoc (name, val) = text name <+> text "=" <+> pretty val
@@ -364,14 +340,14 @@ testCaseSummary debug tc@(TestCase sig mem symMem mErr) = (text (psigName sig) <
 -- | 'finalStateDoc' @debug tc@ : outputs of @tc@, 
 -- displayed in user or debug format depending on 'debug' 
 finalStateDoc :: Bool -> TestCase -> Doc
-finalStateDoc debug tc@(TestCase sig mem symMem mErr) = memoryDoc [] outNames finalMem $+$
-  if debug then pretty symMem else empty
+finalStateDoc debug tc@(TestCase sig mem conMem mErr) = memoryDoc [] outNames finalMem $+$
+  if debug then pretty conMem else empty
   where
     finalMem =  over memLocals (removeEmptyMaps . restrictDomain (S.fromList outNames)) $ 
                 over memOld (const M.empty) $
                 over memGlobals removeEmptyMaps $
                 over memConstants removeEmptyMaps $
-                if debug then mem else userMemory symMem mem
+                if debug then mem else userMemory conMem mem
     outNames = map itwId (psigRets sig)
     
 -- | Test cases are considered equivalent from a user perspective
@@ -421,72 +397,39 @@ sessionSummaryDoc debug tcs = let sum = testSessionSummary tcs
     zipWith (testCaseDoc debug "Failure") [0..] (sUniqueFailures sum)
 
 {- Basic executions -}      
-
--- | 'generate' @f@ : computation that extracts @f@ from the generator
-generate :: (Monad m, Functor m) => (Generator m -> m a) -> Execution m a
-generate f = do    
-  gen <- use envGenerator
-  lift (lift (f gen))
+  
+-- | 'generateLogical' @t pos@ : generate a new logical variable of type @t@ at source position @pos@
+generateLogical t pos = do
+  l <- (attachPos pos . Logical t) <$> use envLogicalCount
+  envLogicalCount %= (+ 1)
+  return l
       
 -- | 'generateValue' @t pos@ : choose a value of type @t@ at source position @pos@;
 -- fail if @t@ is a type variable
-generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Value
+generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Thunk
 generateValue t pos = case t of
   IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct (text "choice of a value from unknown type" <+> pretty t)) pos
   -- Maps are initializaed lazily, allocate an empty map on the heap:
-  t@(MapType _ _ _) -> allocate t emptyMap
-  BoolType -> BoolValue <$> generate genBool
-  IntType -> IntValue <$> generate genInteger
-  t@(IdType _ _) -> do
-    n <- gets $ lookupCustomCount t
-    i <- generate (`genIndex` (n + 1))
-    when (i == n) $ modify (setCustomCount t (n + 1))
-    return $ CustomValue t i
-          
--- | 'incRefCountValue' @val@ : if @val@ is a reference, increase its count
-incRefCountValue val = case val of
-  Reference _ r -> envMemory.memHeap %= incRefCount r
-  _ -> return ()    
-
--- | 'decRefCountValue' @val@ : if @val@ is a reference, decrease its count  
-decRefCountValue val = case val of
-  Reference _ r -> envMemory.memHeap %= decRefCount r
-  _ -> return ()     
-    
--- | 'unsetVar' @getter name@ : if @name@ was associated with a reference in @getter@, decrease its reference count
-unsetVar getter name = do
-  store <- use $ envMemory.getter
-  case M.lookup name store of    
-    Just (Reference _ r) -> do          
-      envMemory.memHeap %= decRefCount r
-    _ -> return ()
-
+  t@(MapType _ _ _) -> (attachPos pos . Literal . Reference t) <$> allocate emptyMap
+  t -> generateLogical t pos
+              
 -- | 'setVar' @setter name val@ : set value of variable @name@ to @val@ using @setter@
 setVar setter name val = do
-  incRefCountValue val
   envMemory.setter %= M.insert name val
-
--- | 'resetVar' @lens name val@ : set value of variable @name@ to @val@ using @lens@;
--- if @name@ was associated with a reference, decrease its reference count
-resetVar :: (Monad m, Functor m) => StoreLens -> Id -> Value -> Execution m ()  
-resetVar lens name val = do
-  unsetVar lens name
-  setVar lens name val
-            
+  
 -- | 'resetAnyVar' @name val@ : set value of a constant, global or local variable @name@ to @val@
-resetAnyVar name val = do
+setAnyVar name val = do
   tc <- use envTypeContext
   if M.member name (localScope tc)
-    then resetVar memLocals name val
+    then setVar memLocals name val
     else if M.member name (ctxGlobals tc)
-      then resetVar memGlobals name val
-      else resetVar memConstants name val
+      then setVar memGlobals name val
+      else setVar memConstants name val  
       
 -- | 'forgetVar' @lens name@ : forget value of variable @name@ in @lens@;
 -- if @name@ was associated with a reference, decrease its reference count      
 forgetVar :: (Monad m, Functor m) => StoreLens -> Id -> Execution m ()
 forgetVar lens name = do
-  unsetVar lens name
   envMemory.lens %= M.delete name
       
 -- | 'forgetAnyVar' @name@ : forget value of a constant, global or local variable @name@
@@ -501,8 +444,7 @@ forgetAnyVar name = do
 -- | 'setMapValue' @r index val@ : map @index@ to @val@ in the map referenced by @r@
 setMapValue r index val = do
   vals <- readHeap r
-  envMemory.memHeap %= update r (M.insert index val vals)
-  incRefCountValue val
+  envMemory.memMaps %= update r (M.insert index val vals)
   
 -- | 'forgetMapValue' @r index@ : forget value at @index@ in the map referenced by @r@  
 -- (@r@ has to be a source map)
@@ -510,127 +452,49 @@ forgetMapValue r index = do
   vals <- readHeap r
   case M.lookup index vals of
     Nothing -> return ()
-    Just val -> do
-      decRefCountValue val
-      envMemory.memHeap %= update r (M.delete index vals)
+    Just val -> envMemory.memMaps %= update r (M.delete index vals)
       
 -- | 'readHeap' @r@: current value of reference @r@ in the heap
-readHeap r = flip at r <$> use (envMemory.memHeap)
+readHeap r = flip at r <$> use (envMemory.memMaps)
     
 -- | 'allocate': store an empty map of type @t@ at a fresh location in the heap
-allocate :: (Monad m, Functor m) => Type -> MapRepr -> Execution m Value
-allocate t repr = Reference t <$> (state . withHeap . alloc) repr
-  
--- | Remove all unused references from the heap  
-collectGarbage :: (Monad m, Functor m) => Execution m ()  
-collectGarbage = do
-  h <- use $ envMemory.memHeap
-  when (hasGarbage h) (do
-    r <- state $ withHeap dealloc
-    mapM_ decRefCountValue (M.elems $ h `at` r)
-    cs <- gets $ lookupMapConstraints r
-    let usedRefs = (nub . concatMap mapRefs) cs 
-    mapM_ (\r -> envMemory.memHeap %= decRefCount r) usedRefs    
-    envConstraints.symHeap %= M.delete r
-    collectGarbage)
-    
+allocate :: (Monad m, Functor m) => MapCache -> Execution m Ref
+allocate cache = (state . withHeap . alloc) cache
+      
 -- | 'extendNameConstraint' @lens con@ : add @con@ as a constraint for all free variables in @con@ to @envConstraints.lens@
-extendNameConstraint :: (MonadState (Environment m) s, Finalizer s) => SimpleLens SymbolicMemory NameConstraints -> Expression -> s ()
-extendNameConstraint lens con = do
-  mapM_ (\name -> modify $ addNameConstraint name (envConstraints.lens) con) (freeVars con)
+extendNameConstraint :: (MonadState (Environment m) s, Finalizer s) => SimpleLens ConstraintMemory NameConstraints -> Expression -> s ()
+extendNameConstraint lens con = mapM_ (\name -> modify $ addNameConstraint name (envConstraints.lens) con) (freeVars con)
 
 -- | 'extendMapConstraint' @r c@ : add @c@ to the consraints of the map @r@  
-extendMapConstraint r c = do
-  modify $ addMapConstraint r c
-  mapM_ (\r -> envMemory.memHeap %= incRefCount r) (mapRefs c)
+extendMapConstraint r c = modify $ addMapConstraint r c
   
 {- Expressions -}
-
--- | Semantics of unary operators
-unOp :: UnOp -> Value -> Value
-unOp Neg (IntValue n)   = IntValue (-n)
-unOp Not (BoolValue b)  = BoolValue (not b)
-
--- | Short-circuit boolean operators
-shortCircuitOps = [And, Or, Implies, Explies]
-
--- | Short-circuit semantics of binary operators:
--- 'binOpLazy' @op lhs@ : returns the value of @lhs op@ if already defined, otherwise Nothing 
-binOpLazy :: BinOp -> Value -> Maybe Value
-binOpLazy And     (BoolValue False) = Just $ BoolValue False
-binOpLazy Or      (BoolValue True)  = Just $ BoolValue True
-binOpLazy Implies (BoolValue False) = Just $ BoolValue True
-binOpLazy Explies (BoolValue True)  = Just $ BoolValue True
-binOpLazy _ _                       = Nothing
-
--- | Strict semantics of binary operators
-binOp :: (Monad m, Functor m) => SourcePos -> BinOp -> Value -> Value -> Execution m Value 
-binOp pos Plus    (IntValue n1) (IntValue n2)   = return $ IntValue (n1 + n2)
-binOp pos Minus   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 - n2)
-binOp pos Times   (IntValue n1) (IntValue n2)   = return $ IntValue (n1 * n2)
-binOp pos Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then generateValue IntType pos
-                                                else return $ IntValue (fst (n1 `euclidean` n2))
-binOp pos Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
-                                                then generateValue IntType pos
-                                                else return $ IntValue (snd (n1 `euclidean` n2))
-binOp pos Leq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 <= n2)
-binOp pos Ls      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 < n2)
-binOp pos Geq     (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 >= n2)
-binOp pos Gt      (IntValue n1) (IntValue n2)   = return $ BoolValue (n1 > n2)
-binOp pos And     (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 && b2)
-binOp pos Or      (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 || b2)
-binOp pos Implies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 <= b2)
-binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 >= b2)
-binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ BoolValue (b1 == b2)
-binOp pos Eq      v1 v2                         = evalEquality v1 v2 pos
-binOp pos Neq     v1 v2                         = vnot <$> evalEquality v1 v2 pos
-binOp pos Lc      v1 v2                         = throwRuntimeFailure (UnsupportedConstruct $ text "orders") pos
-
--- | Euclidean division used by Boogie for integer division and modulo
-euclidean :: Integer -> Integer -> (Integer, Integer)
-a `euclidean` b =
-  case a `quotRem` b of
-    (q, r) | r >= 0    -> (q, r)
-           | b >  0    -> (q - 1, r + b)
-           | otherwise -> (q + 1, r - b)
-           
--- | 'evalEquality' @v1 v2 pos@ : Evaluate @v1 == v2@ at position @pos@
-evalEquality :: (Monad m, Functor m) => Value -> Value -> SourcePos -> Execution m Value
-evalEquality v1@(Reference t1 r1) v2@(Reference t2 r2) pos = if r1 == r2
-  then return (BoolValue True) -- Equal references point to equal maps
-  else if t1 /= t2 -- Different types can occur in a generic context
-    then return (BoolValue False)
-    else let
-        MapType tv domains range = t1
-        freshVarNames = map (\i -> nonIdChar : show i) [0..]
-        vars = zip freshVarNames domains
-        lit = attachPos pos . Literal
-        var = attachPos pos . Var
-        app m = attachPos pos $ MapSelection (lit m) (map (var . fst) vars)
-      in evalForall tv vars (app v1 |=| app v2) pos
-evalEquality (MapValue _ _) (MapValue _ _) _ = internalError $ text "Attempt to compare two maps"
-evalEquality v1 v2 _ = return $ BoolValue (v1 == v2)           
          
 -- | Evaluate an expression;
--- can have a side-effect of initializing variables that were not previously defined
-eval :: (Monad m, Functor m) => Expression -> Execution m Value
-eval expr = case node expr of
-  Literal v -> return v
-  Var name -> evalVar name (position expr)
-  Application name args -> evalApplication name args (position expr)
-  MapSelection m args -> evalMapSelection m args (position expr)
-  MapUpdate m args new -> evalMapUpdate m args new (position expr)
+-- can have a side-effect of initializing variables and map points that were not previously defined
+eval :: (Monad m, Functor m) => Expression -> Execution m Thunk
+eval expr@(Pos pos e) = case e of
+  Literal v -> return expr
+  Var name -> evalVar name pos
+  Logical t r -> evalLogical t r pos
+  Application name args -> evalApplication name args pos
+  MapSelection m args -> evalMapSelection m args pos
+  MapUpdate m args new -> evalMapUpdate m args new pos
   Old e -> old $ eval e
   IfExpr cond e1 e2 -> evalIf cond e1 e2
   Coercion e t -> eval e
   UnaryExpression op e -> evalUnary op e
   BinaryExpression op e1 e2 -> evalBinary op e1 e2
-  Quantified Lambda tv vars e -> evalLambda tv vars e (position expr)
-  Quantified Forall tv vars e -> evalForall tv vars e (position expr)
-  Quantified Exists tv vars e -> vnot <$> evalForall tv vars (enot e) (position expr)
+  Quantified Lambda tv vars e -> evalLambda tv vars e pos
+  Quantified Forall tv vars e -> evalForall tv vars e pos
+  Quantified Exists tv vars e -> evalForall tv vars (enot e) pos >>= evalUnary Not
   
-evalVar :: (Monad m, Functor m) => Id -> SourcePos -> Execution m Value  
+evalLogical t r pos = do
+  vals <- use $ envMemory.memLogical
+  return $ case M.lookup r vals of
+            Nothing -> attachPos pos $ Logical t r
+            Just val -> val  
+  
 evalVar name pos = do
   tc <- use envTypeContext
   case M.lookup name (localScope tc) of
@@ -645,7 +509,7 @@ evalVar name pos = do
         Just t -> executeGlobally $ evalVarWith t memConstants False
         Nothing -> internalError $ text "Encountered unknown identifier during execution:" <+> text name
   where  
-    evalVarWith :: (Monad m, Functor m) => Type -> StoreLens -> Bool -> Execution m Value
+    evalVarWith :: (Monad m, Functor m) => Type -> StoreLens -> Bool -> Execution m Thunk
     evalVarWith t lens initOld = do
       s <- use $ envMemory.lens
       case M.lookup name s of         -- Lookup a cached value
@@ -657,107 +521,190 @@ evalVar name pos = do
           checkNameConstraints name pos
           return chosenValue
               
-evalApplication :: (Monad m, Functor m) => Id -> [Expression] -> SourcePos -> Execution m Value  
 evalApplication name args pos = evalMapSelection (functionExpr name pos) args pos  
         
-rejectMapIndex pos idx = case idx of
-  Reference _ r -> throwRuntimeFailure (UnsupportedConstruct $ text "map as an index") pos
+rejectMapIndex pos idx = case thunkType idx of
+  MapType _ _ _ -> throwRuntimeFailure (UnsupportedConstruct $ text "map as an index") pos
   _ -> return ()
       
 evalMapSelection m args pos = do  
-  mV <- eval m
-  case mV of
+  m' <- eval m
+  case fromLiteral m' of
     Reference _ r -> do
-      argsV <- mapM eval args
-      h <- use $ envMemory.memHeap
-      case M.lookup argsV (h `at` r) of    -- Lookup a cached value
-        Just val -> return val
-        Nothing -> do                       -- If not found, choose a value non-deterministically
-          tc <- use envTypeContext
-          mapM_ (rejectMapIndex pos) argsV
-          let rangeType = exprType tc (gen $ MapSelection m args)
-          chosenValue <- generateValue rangeType pos
-          setMapValue r argsV chosenValue
-          checkMapConstraints r argsV pos
-          return chosenValue          
-    _ -> return mV -- function without arguments (ToDo: is this how it should be handled?)
+      args' <- mapM eval args
+      mapM_ (rejectMapIndex pos) args'
+      if all isLiteral args'
+        then do
+          let argsV = map fromLiteral args'
+          mRepr <- readHeap r
+          case M.lookup argsV mRepr of    -- Lookup a cached value
+            Just val -> return val
+            Nothing -> do                       -- If not found, choose a value non-deterministically
+              let rangeType = thunkType (gen $ MapSelection m' args')
+              chosenValue <- generateValue rangeType pos
+              setMapValue r argsV chosenValue
+              checkMapConstraints r args' pos
+              return chosenValue
+        else do
+          checkMapConstraints r args' pos
+          return $ attachPos pos $ MapSelection m' args' 
+    _ -> return m' -- function without arguments (ToDo: is this how it should be handled?)
         
 evalMapUpdate m args new pos = do
-  mVal@(Reference t r) <- eval m
-  argsVals <- mapM eval args
-  mapM_ (rejectMapIndex pos) argsVals
-  newVal <- eval new
-  repr <- readHeap r
-  newMVal@(Reference _ r') <- allocate t (M.insert argsVals newVal repr)
-  let lit = attachPos pos . Literal    
-      var = attachPos pos . Var
+  m' <- eval m
+  let Reference t r = fromLiteral m'
+  args' <- mapM eval args
+  mapM_ (rejectMapIndex pos) args'
+  new' <- eval new    
+  mRepr <- readHeap r
+  newM' <- generateValue t pos
+  let Reference _ r' = fromLiteral newM'
+  let var = attachPos pos . Var
       freshVarNames = map (\i -> nonIdChar : show i) [0..]
       bv = zip freshVarNames domains
       bvExprs = map (var . fst) bv
       MapType tv domains _ = t
-      appOld = attachPos pos $ MapSelection (lit mVal) bvExprs
-      appNew = attachPos pos $ MapSelection (lit newMVal) bvExprs
-      guard = disjunction (zipWith (|!=|) bvExprs (map lit argsVals))
-      constraint = inheritPos (Quantified Lambda tv bv) (guard |=>| (appOld |=| appNew))
-  extendMapConstraint r constraint
-  extendMapConstraint r' constraint  
-  return newMVal
+      appOld = attachPos pos $ MapSelection m' bvExprs
+      appNew = attachPos pos $ MapSelection newM' bvExprs
+      guardNeq = disjunction (zipWith (|!=|) bvExprs args')
+      guardEq = conjunction (zipWith (|=|) bvExprs args')
+      lambda = inheritPos (Quantified Lambda tv bv)
+  extendMapConstraint r $ lambda (guardNeq |=>| (appOld |=| appNew))
+  extendMapConstraint r' $ lambda (guardNeq |=>| (appOld |=| appNew))  
+  extendMapConstraint r' $ lambda (guardEq |=>| (appNew |=| new'))
+  return newM'
   
 evalIf cond e1 e2 = do
-  v <- eval cond
-  case v of
-    BoolValue True -> eval e1    
-    BoolValue False -> eval e2    
-    
-evalUnary op e = unOp op <$> eval e    
+  cond' <- eval cond
+  if isLiteral cond'
+    then case fromLiteral cond' of
+      BoolValue True -> eval e1    
+      BoolValue False -> eval e2    
+    else do
+      e1' <- eval e1
+      e2' <- eval e2
+      return $ attachPos (position cond) $ IfExpr cond' e1' e2'
       
-evalBinary op e1 e2 = if op `elem` shortCircuitOps
-  then do -- Keep track of which terms got evaluated
-    left <- eval e1
-    case binOpLazy op left of
-      Just result -> return result
-      Nothing -> do
-        right <- eval e2
-        binOp (position e1) op left right
-  else do
-    left <- eval e1
-    right <- eval e2
-    binOp (position e1) op left right
+-- | Semantics of unary operators
+unOp :: UnOp -> Value -> Value
+unOp Neg (IntValue n)   = IntValue (-n)
+unOp Not (BoolValue b)  = BoolValue (not b)      
+    
+evalUnary op e  = do
+  e' <- eval e
+  return . attachPos (position e) $ if isLiteral e'
+                              then Literal $ unOp op $ fromLiteral e'
+                              else UnaryExpression op e'
+                                                            
+-- | Short-circuit boolean operators
+shortCircuitOps = [And, Or, Implies, Explies]
+
+-- | Short-circuit semantics of binary operators:
+-- 'binOpLazy' @op lhs@ : returns the value of @lhs op@ if already defined, otherwise Nothing 
+binOpLazy :: BinOp -> Value -> Maybe Value
+binOpLazy And     (BoolValue False) = Just $ BoolValue False
+binOpLazy Or      (BoolValue True)  = Just $ BoolValue True
+binOpLazy Implies (BoolValue False) = Just $ BoolValue True
+binOpLazy Explies (BoolValue True)  = Just $ BoolValue True
+binOpLazy _ _                       = Nothing
+
+-- | Strict semantics of binary operators
+binOp :: (Monad m, Functor m) => SourcePos -> BinOp -> Value -> Value -> Execution m Thunk 
+binOp pos Plus    (IntValue n1) (IntValue n2)   = return $ attachPos pos $ Literal $ IntValue (n1 + n2)
+binOp pos Minus   (IntValue n1) (IntValue n2)   = return $ attachPos pos $ Literal $ IntValue (n1 - n2)
+binOp pos Times   (IntValue n1) (IntValue n2)   = return $ attachPos pos $ Literal $ IntValue (n1 * n2)
+binOp pos Div     (IntValue n1) (IntValue n2)   = if n2 == 0 
+                                                then generateValue IntType pos
+                                                else return $ attachPos pos $ Literal $ IntValue (fst (n1 `euclidean` n2))
+binOp pos Mod     (IntValue n1) (IntValue n2)   = if n2 == 0 
+                                                then generateValue IntType pos
+                                                else return $ attachPos pos $ Literal $ IntValue (snd (n1 `euclidean` n2))
+binOp pos Leq     (IntValue n1) (IntValue n2)   = return $ attachPos pos $ Literal $ BoolValue (n1 <= n2)
+binOp pos Ls      (IntValue n1) (IntValue n2)   = return $ attachPos pos $ Literal $ BoolValue (n1 < n2)
+binOp pos Geq     (IntValue n1) (IntValue n2)   = return $ attachPos pos $ Literal $ BoolValue (n1 >= n2)
+binOp pos Gt      (IntValue n1) (IntValue n2)   = return $ attachPos pos $ Literal $ BoolValue (n1 > n2)
+binOp pos And     (BoolValue b1) (BoolValue b2) = return $ attachPos pos $ Literal $ BoolValue (b1 && b2)
+binOp pos Or      (BoolValue b1) (BoolValue b2) = return $ attachPos pos $ Literal $ BoolValue (b1 || b2)
+binOp pos Implies (BoolValue b1) (BoolValue b2) = return $ attachPos pos $ Literal $ BoolValue (b1 <= b2)
+binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ attachPos pos $ Literal $ BoolValue (b1 >= b2)
+binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ attachPos pos $ Literal $ BoolValue (b1 == b2)
+binOp pos Eq      v1 v2                         = evalEquality pos v1 v2
+binOp pos Neq     v1 v2                         = evalEquality pos v1 v2 >>= evalUnary Not
+binOp pos Lc      v1 v2                         = throwRuntimeFailure (UnsupportedConstruct $ text "orders") pos
+
+-- | Euclidean division used by Boogie for integer division and modulo
+euclidean :: Integer -> Integer -> (Integer, Integer)
+a `euclidean` b =
+  case a `quotRem` b of
+    (q, r) | r >= 0    -> (q, r)
+           | b >  0    -> (q - 1, r + b)
+           | otherwise -> (q + 1, r - b)
+           
+-- | 'evalEquality' @v1 v2 pos@ : Evaluate @v1 == v2@ at position @pos@
+evalEquality :: (Monad m, Functor m) => SourcePos -> Value -> Value -> Execution m Thunk
+evalEquality pos v1@(Reference t1 r1) v2@(Reference t2 r2) = if r1 == r2
+  then return $ lit (BoolValue True) -- Equal references point to equal maps
+  else if t1 /= t2 -- Different types can occur in a generic context
+    then return $ lit (BoolValue False)
+    else let
+        MapType tv domains range = t1
+        freshVarNames = map (\i -> nonIdChar : show i) [0..]
+        vars = zip freshVarNames domains                
+        app m = attachPos pos $ MapSelection (lit m) (map (var . fst) vars)
+      in evalForall tv vars (app v1 |=| app v2) pos
+  where
+    lit = attachPos pos . Literal
+    var = attachPos pos . Var
+-- evalEquality (MapValue _ _) (MapValue _ _) _ = internalError $ text "Attempt to compare two maps"
+evalEquality pos v1 v2 = return $ attachPos pos $ Literal $ BoolValue (v1 == v2)                              
+      
+evalBinary op e1 e2 = do
+  let pos = position e1
+  e1' <- eval e1
+  if isLiteral e1' && op `elem` shortCircuitOps && isJust (binOpLazy op (fromLiteral e1'))
+    then return $ attachPos pos $ Literal $ fromJust $ binOpLazy op (fromLiteral e1')
+    else do
+      e2' <- eval e2
+      if isLiteral e1' && isLiteral e2'
+        then binOp pos op (fromLiteral e1') (fromLiteral e2')
+        else return $ attachPos pos $ BinaryExpression op e1' e2'
     
 evalLambda tv vars e pos = do
   tc <- use envTypeContext
   let t = exprType tc (lambda e)
-  val@(Reference _ r) <- generateValue t pos
+  m' <- generateValue t pos
   (Quantified Lambda _ _ symBody) <- node <$> symbolicEval (lambda e)
-  let app = attachPos pos $ MapSelection (attachPos pos $ Literal val) (map (attachPos pos . Var . fst) vars)
+  let var = attachPos pos . Var      
+      app = attachPos pos $ MapSelection m' (map (var . fst) vars)
+      Reference _ r = fromLiteral m'
   extendMapConstraint r (lambda $ app |=| symBody)
-  return val
+  return m'
   where
     lambda = attachPos pos . Quantified Lambda tv vars
     
-evalForall :: (Monad m, Functor m) => [Id] -> [IdType] -> Expression -> SourcePos -> Execution m Value
 evalForall tv vars e pos = do  
   symExpr <- symbolicEval (attachPos pos $ Quantified Forall tv vars e)
-  let mc = extractMapConstraints symExpr
-  BoolValue <$> allM evalForMap (M.toList mc)
+  res <- generateValue BoolType pos
+  samples <- mapM (evalForMap res) (M.toList $ extractMapConstraints symExpr)
+  modify $ addConstraints [res |=| conjunction samples]
+  return res
   where
-    evalForMap (r, constraints) = do      
-      satCache <- allM (checkCached r) constraints
-      if not satCache  -- If any cached values do not satisfy the constraint
-        then return False   -- found evidence that the constraint does not hold
-        else do             -- no evidence yet if the constraint holds for all arguments, make a non-deterministic choice for every constraint           
-          satDecide <- allM (decideConstraint r) constraints 
-          when satDecide $ mapM_ (extendMapConstraint r) constraints
-          return satDecide          
-    checkCached r c = do
+    evalForMap res (r, constraints) = do
+      samples <- mapM (evalConstraint res r) constraints
+      return $ conjunction samples
+    evalConstraint res r c = do       
       cache <- readHeap r
-      allM (\actuals -> applyConstraint c actuals pos) (M.keys cache)
+      cacheRs <- mapM (\actuals -> applyMapConstraint c (map lit actuals) pos) (M.keys cache)
+      newR <- decideConstraint r c
+      addGuardedConstraint res r c
+      return $ conjunction (cacheRs ++ [newR])
     decideConstraint r c@(Pos _ (Quantified Lambda tv vars _)) = do
       let typeBinding = M.fromList $ zip tv (repeat anyType)
       let argTypes = map (typeSubst typeBinding . snd) vars
-      -- ToDo: we could plug in linear analysis here and replace with genIndex sometimes
       index <- mapM (flip generateValue pos) argTypes -- choose an index non-deterministically
-      applyConstraint c index pos
+      applyMapConstraint c index pos
+    addGuardedConstraint res r (Pos p (Quantified Lambda tv vars e)) = extendMapConstraint r (Pos p (Quantified Lambda tv vars (res |=>| e)))
+    lit = attachPos pos . Literal
           
 {- Statements -}
 
@@ -770,11 +717,18 @@ exec stmt = case node stmt of
     Assign lhss rhss -> execAssign lhss rhss
     Call lhss name args -> execCall name lhss args (position stmt)
     CallForall name args -> return ()
-  >> collectGarbage
   
-execPredicate specClause pos = do
-  b <- unValueBool <$> eval (specExpr specClause)
-  when (not b) $ throwViolation specClause pos
+execPredicate (SpecClause source True expr) pos = do
+  c <- eval expr
+  modify $ addConstraints [c]
+
+execPredicate clause@(SpecClause source False expr) pos = do
+  c <- eval expr
+  solveConstraints
+  c' <- eval c
+  case fromLiteral c' of
+    BoolValue True -> return ()
+    BoolValue False -> throwRuntimeFailure (SpecViolation clause) pos
     
 execHavoc names pos = do
   mapM_ forgetAnyVar names
@@ -782,7 +736,7 @@ execHavoc names pos = do
     
 execAssign lhss rhss = do
   rVals <- mapM eval rhss'
-  zipWithM_ resetAnyVar lhss' rVals
+  zipWithM_ setAnyVar lhss' rVals
   mapM_ (modify . markModified) lhss' 
   where
     lhss' = map fst (zipWith simplifyLeft lhss rhss)
@@ -802,11 +756,11 @@ execCallBySig sig lhss args pos = do
   (sig', def) <- selectDef tc defs
   let lhssExpr = map (gen . Var) lhss
   retsV <- execProcedure sig' def args lhssExpr pos `catchError` addFrame
-  zipWithM_ resetAnyVar lhss retsV
+  zipWithM_ setAnyVar lhss retsV
   where
     selectDef tc [] = return (assumePostconditions sig, dummyDef tc)
     selectDef tc defs = do
-      i <- generate (`genIndex` length defs)
+      i <- genIndex $ length defs
       return (sig, defs !! i)
     -- For procedures with no implementation: dummy definition that just havocs all modifiable globals
     dummyDef tc = PDef {
@@ -829,12 +783,12 @@ execBlock blocks label = let
     case last block of
       Pos pos Return -> return pos
       Pos _ (Goto lbs) -> do
-        i <- generate (`genIndex` length lbs)
+        i <- genIndex $ length lbs
         execBlock blocks (lbs !! i)
     
 -- | 'execProcedure' @sig def args lhss@ :
 -- Execute definition @def@ of procedure @sig@ with actual arguments @args@ and call left-hand sides @lhss@
-execProcedure :: (Monad m, Functor m) => PSig -> PDef -> [Expression] -> [Expression] -> SourcePos -> Execution m [Value]
+execProcedure :: (Monad m, Functor m) => PSig -> PDef -> [Expression] -> [Expression] -> SourcePos -> Execution m [Thunk]
 execProcedure sig def args lhss callPos = let 
   ins = pdefIns def
   outs = pdefOuts def
@@ -871,22 +825,23 @@ symbolicEval expr = symbolicEval' [] expr
   where
     symbolicEval' vars (Pos p e) = attachPos p <$> case e of
       l@(Literal _) -> return l
+      l@(Logical _ _) -> return l
       var@(Var name) -> if name `elem` vars
         then return var
-        else Literal <$> evalVar name p
+        else node <$> evalVar name p
       Application name args -> node <$> symbolicEval' vars (attachPos p $ MapSelection (functionExpr name p) args)
       MapSelection m args -> do
         m' <- symbolicEval' vars m
         args' <- mapM (symbolicEval' vars) args
         if all isLiteral (m' : args')
-          then Literal <$> evalMapSelection m' args' p
+          then node <$> evalMapSelection m' args' p
           else return $ MapSelection m' args'
       MapUpdate m args new -> do
         m' <- symbolicEval' vars m
         args' <- mapM (symbolicEval' vars) args
         new' <- symbolicEval' vars new
         if all isLiteral (m' : new' : args')
-          then Literal <$> evalMapUpdate m' args' new' p
+          then node <$> evalMapUpdate m' args' new' p
           else return $ MapUpdate m' args' new'   
       Old e -> node <$> old (symbolicEval' vars e)
       IfExpr cond e1 e2 -> do
@@ -894,49 +849,89 @@ symbolicEval expr = symbolicEval' [] expr
         e1' <- symbolicEval' vars e1
         e2' <- symbolicEval' vars e2
         if all isLiteral [cond', e1', e2']
-          then Literal <$> evalIf cond' e1' e2'
+          then node <$> evalIf cond' e1' e2'
           else return $ IfExpr cond' e1' e2'
       Coercion e t -> node <$> symbolicEval' vars e
       UnaryExpression op e -> do
         e' <- symbolicEval' vars e
         if isLiteral e'
-          then Literal <$> evalUnary op e'
+          then node <$> evalUnary op e'
           else return $ UnaryExpression op e'
       BinaryExpression op e1 e2 -> do
         e1' <- symbolicEval' vars e1
         e2' <- symbolicEval' vars e2
         if isLiteral e1' && isLiteral e2'
-          then Literal <$> evalBinary op e1' e2'
+          then node <$> evalBinary op e1' e2'
           else return $ BinaryExpression op e1' e2'
       Quantified qop tv bv e -> Quantified qop tv bv <$> symbolicEval' (vars ++ map fst bv) e
               
 -- | 'checkNameConstraints' @name pos@ : execute where clause of variable @name@ at position @pos@
 checkNameConstraints name pos = do
   cs <- gets $ lookupNameConstraints name
-  mapM_ (\c -> execPredicate (SpecClause Axiom True c) pos) cs
+  cs' <- mapM eval cs
+  modify $ addConstraints cs'
   
--- | 'applyConstraint' @c actuals pos@ : 
--- return if @c (actuals)@ holds
--- (@pos@ is the position of the constraint invocation)      
-applyConstraint c actuals pos = case node c of
-  Quantified Lambda tv formals body ->
-    let 
-      formalNames = map fst formals
-      formalTypes = map snd formals
-      actualTypes = map valueType actuals
-      locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []    
-    in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
-      then return True
-      else unValueBool <$> locally (eval body)
-  _ -> unValueBool <$> eval c  
-        
 -- | 'checkMapConstraints' @r actuals pos@ : assume all constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
 checkMapConstraints r actuals pos = do
-  constraints <- gets $ lookupMapConstraints r
-  mc <- findM (\c -> not <$> applyConstraint c actuals pos) constraints
-  when (isJust mc) (throwViolation (SpecClause Axiom True $ fromJust mc) pos)
+  cs <- gets $ lookupMapConstraints r
+  cs' <- mapM (\c -> applyMapConstraint c actuals pos) cs  
+  modify $ addConstraints cs'
   
+-- | 'applyMapConstraint' @c actuals pos@ : 
+-- return if @c (actuals)@ holds
+-- (@pos@ is the position of the constraint invocation)      
+applyMapConstraint c actuals pos = 
+  let
+    Quantified Lambda tv formals body = node c
+    formalNames = map fst formals
+    formalTypes = map snd formals
+    actualTypes = map thunkType actuals
+    locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []    
+  in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
+    then return $ attachPos pos $ tt
+    else locally (symbolicEval body)
+    
+-- | 'solve' @cs@ : apply solver to constraints @cs@
+solve :: (Monad m, Functor m) => ConstraintSet -> Execution m Solution
+solve cs = do    
+  s <- use envSolver
+  lift $ lift $ s cs
+    
+-- | 'solveAll' @cs@ : completely solve constraints @cs@
+-- (apply solver until no constraints are left;
+-- if any constraint evaluates to false with the current solution, throw an assumption violation)
+solveAll :: (Monad m, Functor m) => ConstraintSet -> Execution m ()
+solveAll [] = return ()
+solveAll constraints = do
+  solution <- solve constraints
+  envMemory.memLogical %= M.union solution
+  newConstraints <- catMaybes <$> mapM checkConstraint constraints
+  solveAll newConstraints
+  where
+    checkConstraint c = do
+      res <- eval c
+      case node res of
+        Literal (BoolValue True) -> return Nothing
+        Literal (BoolValue False) -> throwRuntimeFailure (SpecViolation (SpecClause Axiom True c)) (position res)
+        _ -> return $ Just res
+
+-- | Solve current logical variable constraints
+solveConstraints :: (Monad m, Functor m) => Execution m ()
+solveConstraints = do
+  constraints <- use $ envConstraints.conLogical
+  solveAll constraints
+  envConstraints.conLogical .= []
+  
+-- | 'genIndex' @n@ : return an intereg in [0, n)  
+genIndex :: (Monad m, Functor m) => Int -> Execution m Int
+genIndex n = if n == 1
+  then return 0
+  else do
+    l <- generateLogical IntType noPos
+    solveAll [num 0 |<=| l, l |<| num (fromIntegral n)]
+    (fromInteger . unValueInt . fromLiteral) <$> eval l
+          
 {- Preprocessing -}
 
 -- | Collect procedure implementations, and constant/function/global variable constraints
@@ -947,8 +942,8 @@ preprocess (Program decls) = mapM_ processDecl decls
       FunctionDecl name _ args _ mBody -> processFunction name (map fst args) mBody
       ProcedureDecl name _ args rets _ (Just body) -> processProcedureBody name (position decl) (map noWhere args) (map noWhere rets) body
       ImplementationDecl name _ args rets bodies -> mapM_ (processProcedureBody name (position decl) args rets) bodies
-      AxiomDecl expr -> extendNameConstraint symGlobals expr
-      VarDecl vars -> mapM_ (extendNameConstraint symGlobals) (map itwWhere vars)      
+      AxiomDecl expr -> extendNameConstraint conGlobals expr
+      VarDecl vars -> mapM_ (extendNameConstraint conGlobals) (map itwWhere vars)      
       _ -> return ()
       
 processFunction name argNames mBody = do
@@ -962,7 +957,7 @@ processFunction name argNames mBody = do
       let formals = zip (map formalName argNames) argTypes
       let app = attachPos pos $ Application name (map (attachPos pos . Var . fst) formals)
       let axiom = inheritPos (Quantified Forall tv formals) (app |=| body)      
-      extendNameConstraint symGlobals axiom
+      extendNameConstraint conGlobals axiom
   where        
     formalName Nothing = dummyFArg 
     formalName (Just n) = n
@@ -978,7 +973,7 @@ processProcedureBody name pos args rets body = do
     argNames = map fst args
     retNames = map fst rets
 
-{- Constant and function constraints -}
+{- Extracting constraints -}
 
 -- | 'extractMapConstraints' @bExpr@ : extract parametrized constraints from @bExpr@
 -- @bExpr@ must not contain any free variables

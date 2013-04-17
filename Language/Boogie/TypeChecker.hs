@@ -3,6 +3,7 @@ module Language.Boogie.TypeChecker (
   -- * Checking programs
   typeCheckProgram,
   exprType,
+  thunkType,
   resolve,
   TypeError (..),
   typeErrorsDoc,
@@ -61,6 +62,10 @@ exprType :: Context -> Expression -> Type
 exprType c expr = case evalState (runErrorT (checkExpression expr)) c of
   Left _ -> (error . show) (text "encountered ill-typed expression during execution:" <+> pretty expr)
   Right t -> t
+
+-- | Type of thunk (does not require type context)  
+thunkType :: Expression -> Type
+thunkType = exprType emptyContext  
   
 -- | 'localContext' @inst locals c@ : @c@ with local names replaced by @locals@, thier types instantiated according to @inst@
 localContext :: TypeBinding -> [IdType] -> Context -> Context
@@ -300,6 +305,7 @@ checkExpression (Pos pos e) = do
   modify $ setPos pos
   case e of
     Literal val -> return $ valueType val
+    Logical t _ -> return t
     Var id -> checkVar id
     Application id args -> checkApplication id args
     MapSelection m args -> checkMapSelection m args

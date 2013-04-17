@@ -1,12 +1,14 @@
-{-# LANGUAGE TemplateHaskell, Rank2Types #-}
+{-# LANGUAGE TemplateHaskell, Rank2Types, FlexibleInstances, TypeSynonymInstances #-}
 
 -- | Execution state for the interpreter
 module Language.Boogie.Environment ( 
-  deepDeref,
+  -- deepDeref,
   Store,
   emptyStore,
   userStore,
   storeDoc,
+  MapCache,
+  Solution,
   Memory,
   StoreLens,
   memLocals,
@@ -14,23 +16,32 @@ module Language.Boogie.Environment (
   memOld,
   memModified,
   memConstants,
-  memHeap,
+  memMaps,
+  memLogical,
   emptyMemory,
   visibleVariables,
   userMemory,
   memoryDoc,
-  SymbolicMemory,
-  symLocals,
-  symGlobals,
-  symHeap,
+  ConstraintSet,
+  Solver,
+  NameConstraints,
+  nameConstraintsDoc,
+  MapConstraints,
+  mapConstraintsDoc,
+  constraintUnion,  
+  ConstraintMemory,
+  conLocals,
+  conGlobals,
+  conMaps,
+  conLogical,
   Environment,
   envMemory,
   envProcedures,
   envConstraints,
   envTypeContext,
-  envGenerator,
+  envSolver,
   envCustomCount,
-  envQBound,
+  envLogicalCount,
   envInOld,
   initEnv,
   lookupProcedure,
@@ -40,6 +51,7 @@ module Language.Boogie.Environment (
   addProcedureImpl,
   addNameConstraint,
   addMapConstraint,
+  addConstraints,
   setCustomCount,
   withHeap,
   markModified
@@ -49,7 +61,6 @@ import Language.Boogie.Util
 import Language.Boogie.Position
 import Language.Boogie.AST
 import Language.Boogie.Heap
-import Language.Boogie.Generator
 import Language.Boogie.TypeChecker (Context, ctxGlobals)
 import Language.Boogie.Pretty
 import Data.List
@@ -61,41 +72,52 @@ import Control.Lens hiding (Context, at)
   
 {- Map operations -}
 
--- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
-deepDeref :: Heap MapRepr -> Value -> Value
-deepDeref h v = deepDeref' v
-  where
-    deepDeref' (Reference t r) = MapValue t $ M.map deepDeref' (M.mapKeys (map deepDeref') (h `at` r)) -- Dereference all keys and values
-    deepDeref' v = v
+-- -- | 'deepDeref' @h v@: Completely dereference value @v@ given heap @h@ (so that no references are left in @v@)
+-- deepDeref :: Heap MapCache -> Value -> Value
+-- deepDeref h v = deepDeref' v
+  -- where
+    -- deepDeref' (Reference t r) = MapValue t $ M.map deepDeref' (M.mapKeys (map deepDeref') (h `at` r)) -- Dereference all keys and values
+    -- deepDeref' v = v
   
 {- Store -}  
 
 -- | Store: stores variable values at runtime 
-type Store = Map Id Value
+type Store = Map Id Thunk
 
 -- | A store with no variables
 emptyStore :: Store
 emptyStore = M.empty
 
 -- | Pretty-printed store
-storeDoc :: Store -> Doc
 storeDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (id, val) = text id <+> text "=" <+> pretty val
+  where varDoc (id, val) = pretty id <+> text "=" <+> pretty val
     
 -- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@
-userStore :: Heap MapRepr -> Store -> Store
-userStore heap store = M.map (deepDeref heap) store    
+userStore :: Heap MapCache -> Store -> Store
+userStore heap store = store-- M.map (deepDeref heap . fromLiteral) store    
+
+-- | Partial map instance
+type MapCache = Map [Value] Thunk
+
+instance Pretty MapCache where
+  pretty cache = let
+      keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
+      itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> pretty v
+    in brackets (commaSep (map itemDoc (M.toList cache)))
+        
+type Solution = Map Ref Thunk
 
 {- Memory -}
 
--- | Memory: stores concrete values associated with names and references
+-- | Memory: stores thunks associated with names, map references and logical variables
 data Memory = Memory {
-  _memLocals :: Store,      -- ^ Local variable store
-  _memGlobals :: Store,     -- ^ Global variable store
-  _memOld :: Store,         -- ^ Old global variable store (in two-state contexts)
-  _memModified :: Set Id,   -- ^ Set of global variables, which have been modified since the beginning of the current procedure
-  _memConstants :: Store,   -- ^ Constant and function cache
-  _memHeap :: Heap MapRepr  -- ^ Heap
+  _memLocals :: Store,          -- ^ Local variable store
+  _memGlobals :: Store,         -- ^ Global variable store
+  _memOld :: Store,             -- ^ Old global variable store (in two-state contexts)
+  _memModified :: Set Id,       -- ^ Set of global variables, which have been modified since the beginning of the current procedure  
+  _memConstants :: Store,       -- ^ Constant store  
+  _memMaps :: Heap MapCache,    -- ^ Partial instances of maps
+  _memLogical :: Solution       -- ^ Logical variable store
 } deriving Eq
 
 makeLenses ''Memory
@@ -110,7 +132,8 @@ emptyMemory = Memory {
   _memOld = emptyStore,
   _memModified = S.empty,
   _memConstants = emptyStore,
-  _memHeap = emptyHeap
+  _memMaps = emptyHeap,
+  _memLogical = M.empty
 }
 
 -- | Visible values of all identifiers in a memory (locals shadow globals) 
@@ -118,20 +141,20 @@ visibleVariables :: Memory -> Store
 visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (mem^.memConstants)
 
 -- | Clear cached values if maps that have guard-less definitions
-clearDefinedCache :: MapConstraints -> Heap MapRepr -> Heap MapRepr
-clearDefinedCache symHeap heap = heap --foldr (\r -> update r emptyMap) heap definedRefs -- ToDo: fix!
+clearDefinedCache :: MapConstraints -> Heap MapCache -> Heap MapCache
+clearDefinedCache conMaps heap = heap --foldr (\r -> update r emptyMap) heap definedRefs -- ToDo: fix!
   -- where
-    -- definedRefs = [r | (r, (defs, _)) <- M.toList symHeap, any (\def -> node (defGuard def) == tt) defs]
+    -- definedRefs = [r | (r, (defs, _)) <- M.toList conMaps, any (\def -> node (defGuard def) == tt) defs]
 
--- | 'userStore' @symMem mem@ : @mem@ with all reference values completely dereferenced and cache of defined maps removed 
-userMemory :: SymbolicMemory -> Memory -> Memory
-userMemory symMem mem = let heap' = clearDefinedCache (_symHeap symMem) (mem^.memHeap)
+-- | 'userStore' @conMem mem@ : @mem@ with all reference values completely dereferenced and cache of defined maps removed 
+userMemory :: ConstraintMemory -> Memory -> Memory
+userMemory conMem mem = let heap' = clearDefinedCache (_conMaps conMem) (mem^.memMaps)
   in over memLocals (userStore heap') $
      over memGlobals (userStore heap') $
      over memOld (userStore heap') $
      over memModified (const S.empty) $
      over memConstants (userStore heap') $
-     over memHeap (const emptyHeap)
+     over memMaps (const emptyHeap)
      mem
 
 -- | 'memoryDoc' @inNames outNames mem@ : pretty-printed @mem@ where
@@ -145,7 +168,8 @@ memoryDoc inNames outNames mem = vsep $
   docNonEmpty ((mem^.memGlobals) `M.union` (mem^.memConstants)) (labeledStoreDoc "Globals") ++
   docNonEmpty (mem^.memOld) (labeledStoreDoc "Old globals") ++
   docWhen (not (S.null $ mem^.memModified)) (text "Modified:" <+> commaSep (map text (S.toList $ mem^.memModified))) ++
-  docWhen (mem^.memHeap /= emptyHeap) (text "Heap:" <+> align (heapDoc (mem^.memHeap)))
+  docWhen (mem^.memMaps /= emptyHeap) (text "Maps:" <+> align (heapDoc (mem^.memMaps))) ++
+  docNonEmpty (mem^.memLogical) (labeledStoreDoc "Logical")
   where
     allLocals = mem^.memLocals
     ins = restrictDomain (S.fromList inNames) allLocals
@@ -160,33 +184,59 @@ instance Pretty Memory where
   
 {- Constraint memory -}
 
--- | Symbolic memory: stores name and map constraints
-data SymbolicMemory = SymbolicMemory {
-  _symLocals :: NameConstraints,       -- ^ Local name constraints
-  _symGlobals :: NameConstraints,      -- ^ Global name constraints
-  _symHeap :: MapConstraints           -- ^ Map constraints
+-- | Set of constraints
+type ConstraintSet = [Expression]
+
+-- | Solver: produces solutions of constraint sets
+type Solver m = ConstraintSet -> m Solution
+
+-- | Mapping from names to their constraints
+type NameConstraints = Map Id ConstraintSet
+
+-- | Pretty-printed variable constraints
+nameConstraintsDoc :: NameConstraints -> Doc
+nameConstraintsDoc vars = vsep $ map varDoc (M.toList vars)
+  where varDoc (name, cs) = nest 2 (text name <+> pretty cs)
+
+-- | Mapping from map references to their parametrized constraints
+type MapConstraints = Map Ref ConstraintSet
+
+mapConstraintsDoc heap = vsep $ map valDoc (M.toList heap)
+  where valDoc (r, cs) = nest 2 (refDoc r <+> pretty cs)
+  
+-- | Union of constraints (values at the same key are concatenated)
+constraintUnion s1 s2 = M.unionWith (++) s1 s2  
+
+-- | Constraint memory: stores constraints associated with names, map references and logical variables
+data ConstraintMemory = ConstraintMemory {
+  _conLocals :: NameConstraints,        -- ^ Local name constraints
+  _conGlobals :: NameConstraints,       -- ^ Global name constraints
+  _conMaps :: MapConstraints,           -- ^ Parametrized map constraints
+  _conLogical :: ConstraintSet          -- ^ Constraint on logical variables
 }
 
-makeLenses ''SymbolicMemory
+makeLenses ''ConstraintMemory
 
 -- | Symbolic memory with no constraints
-emptySymbolicMemory = SymbolicMemory {
-  _symLocals = M.empty,
-  _symGlobals = M.empty,
-  _symHeap = M.empty
+emptyConstraintMemory = ConstraintMemory {
+  _conLocals = M.empty,
+  _conGlobals = M.empty,
+  _conMaps = M.empty,
+  _conLogical = []
 }
 
-symbolicMemoryDoc :: SymbolicMemory -> Doc
+symbolicMemoryDoc :: ConstraintMemory -> Doc
 symbolicMemoryDoc mem = vsep $ 
-  docNonEmpty (mem^.symLocals) (labeledStoreDoc "SLocals") ++
-  docNonEmpty (mem^.symGlobals) (labeledStoreDoc "SGlobals") ++
-  docNonEmpty (mem^.symHeap) (\h -> text "SHeap:" <+> align (mapConstraintsDoc h))
+  docNonEmpty (mem^.conLocals) (labeledStoreDoc "Local con") ++
+  docNonEmpty (mem^.conGlobals) (labeledStoreDoc "Global con") ++
+  docNonEmpty (mem^.conMaps) (\h -> text "Map con:" <+> align (mapConstraintsDoc h)) ++
+  docWhen (not $ null (mem^.conLogical)) (text "Logical con:" <+> align (vsep (map pretty (mem^.conLogical))))
   where
     labeledStoreDoc label store = (text label <> text ":") <+> align (nameConstraintsDoc store)
     docWhen flag doc = if flag then [doc] else [] 
     docNonEmpty m mDoc = docWhen (not (M.null m)) (mDoc m)
     
-instance Pretty SymbolicMemory where
+instance Pretty ConstraintMemory where
   pretty = symbolicMemoryDoc
 
 {- Environment -}
@@ -194,28 +244,28 @@ instance Pretty SymbolicMemory where
 -- | Execution state
 data Environment m = Environment
   {
-    _envMemory :: Memory,                   -- ^ Concrete values
-    _envConstraints :: SymbolicMemory,      -- ^ Abstract values
+    _envMemory :: Memory,                   -- ^ Values
+    _envConstraints :: ConstraintMemory,    -- ^ Constraints
     _envProcedures :: Map Id [PDef],        -- ^ Procedure implementations
     _envTypeContext :: Context,             -- ^ Type context
-    _envGenerator :: Generator m,           -- ^ Input generator (used for non-deterministic choices)
+    _envSolver :: Solver m,                 -- ^ Constraint solver
+    _envLogicalCount :: Int,                -- ^ Number of logical varibles currently in use
     _envCustomCount :: Map Type Int,        -- ^ For each user-defined type, number of distinct values of this type already generated
-    _envQBound :: Maybe Integer,            -- ^ Maximum number of values to try for a quantified variable (unbounded if Nothing)
     _envInOld :: Bool                       -- ^ Is an old expression currently being evaluated?
   }
   
 makeLenses ''Environment
    
--- | 'initEnv' @tc gen@: Initial environment in a type context @tc@ with a value generator @gen@  
-initEnv tc gen qbound = Environment
+-- | 'initEnv' @tc s@: Initial environment in a type context @tc@ with constraint solver @s@  
+initEnv tc s = Environment
   {
     _envMemory = emptyMemory,
-    _envConstraints = emptySymbolicMemory,
+    _envConstraints = emptyConstraintMemory,
     _envProcedures = M.empty,
     _envTypeContext = tc,
-    _envGenerator = gen,
+    _envSolver = s,
     _envCustomCount = M.empty,
-    _envQBound = qbound,
+    _envLogicalCount = 0,
     _envInOld = False
   }
   
@@ -228,18 +278,19 @@ combineGetters f g1 g2 = to $ \env -> (env ^. g1) `f` (env ^. g2)
   
 -- Environment queries  
 lookupProcedure = lookupGetter envProcedures []  
-lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.symLocals) (envConstraints.symGlobals)) []
-lookupMapConstraints = lookupGetter (envConstraints.symHeap) []
+lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.conLocals) (envConstraints.conGlobals)) []
+lookupMapConstraints = lookupGetter (envConstraints.conMaps) []
 lookupCustomCount = lookupGetter envCustomCount 0
 
 -- Environment modifications  
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
 addNameConstraint :: Id -> SimpleLens (Environment m) NameConstraints -> Expression -> Environment m -> Environment m
 addNameConstraint name lens con env = over lens (M.insert name (nub $ lookupGetter lens [] name env ++ [con])) env
-addMapConstraint r con env = over (envConstraints.symHeap) (M.insert r (nub $ lookupMapConstraints r env ++ [con])) env
+addMapConstraint r con env = over (envConstraints.conMaps) (M.insert r (nub $ lookupMapConstraints r env ++ [con])) env
+addConstraints cs = over (envConstraints.conLogical) (++ cs)
 setCustomCount t n = over envCustomCount (M.insert t n)
-withHeap f env = let (res, h') = f (env^.envMemory.memHeap) 
-  in (res, set (envMemory.memHeap) h' env )
+withHeap f env = let (res, h') = f (env^.envMemory.memMaps) 
+  in (res, set (envMemory.memMaps) h' env )
 markModified name env = if M.member name (env^.envTypeContext.to ctxGlobals) 
   then over (envMemory.memModified) (S.insert name) env
   else env

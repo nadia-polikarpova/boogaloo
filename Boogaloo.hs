@@ -11,7 +11,6 @@ import Language.Boogie.Pretty
 import Language.Boogie.Heap
 import Language.Boogie.Environment
 import Language.Boogie.Interpreter
-import Language.Boogie.Generator
 import System.Environment
 import System.Console.CmdArgs
 import System.Console.ANSI
@@ -148,16 +147,13 @@ executeFromFile file proc_ branch_max random seed exec_max invalid nexec pass fa
         rGen <- case seed of
           Nothing -> getStdGen
           Just s -> return $ mkStdGen s      
-        let generator = if random then randomGenerator rGen branch_max else exhaustiveGenerator branch_max
-        let outs = (maybeTake out_max . filter keep . maybeTake exec_max) (outcomes p context generator)
+        let solver = undefined
+        let outs = maybeTake out_max . filter keep . maybeTake exec_max $ executeProgram p context solver proc_
         if summary
           then printDoc format $ sessionSummaryDoc debug outs
           else if null outs
             then printDoc format $ auxDoc (text "No executions to display")
             else mapM_ (printDoc format) $ zipWith outcomeDoc [0..] outs
-    outcomes p context generator = if exec_max == Just 1 || (keepAll && out_max == Just 1)
-      then [executeProgramDet p context branch_max proc_]
-      else executeProgram p context generator branch_max proc_
     keepAll = invalid && nexec && pass && fail
     maybeTake mLimit = case mLimit of
       Nothing -> id

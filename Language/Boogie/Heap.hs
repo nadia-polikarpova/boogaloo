@@ -107,9 +107,9 @@ decRefCount r h = let (v, c) = (h^.hValCounts) ! r
 
 -- | Pretty-printed heap
 heapDoc :: Pretty a => Heap a -> Doc
-heapDoc h = (vsep $ map entryDoc (M.toList (h^.hValCounts))) $+$
-  text "Garbage" <+> braces (commaSep (map refDoc (S.toList (h^.hGarbage)))) $+$
-  text "Free" <+> braces (commaSep (map refDoc (S.toList (h^.hFree))))
+heapDoc h = (vsep $ map entryDoc (M.toList (h^.hValCounts)))
+  -- $+$ text "Garbage" <+> braces (commaSep (map refDoc (S.toList (h^.hGarbage))))
+  -- $+$ text "Free" <+> braces (commaSep (map refDoc (S.toList (h^.hFree))))
   where entryDoc (ref, (val, count)) = refDoc ref <> braces (int count) <+> text "->" <+> pretty val
   
 instance Pretty a => Pretty (Heap a) where
