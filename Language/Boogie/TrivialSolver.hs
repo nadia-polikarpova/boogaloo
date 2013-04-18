@@ -36,11 +36,11 @@ getLogPoint gen ref ttype =
     (ref,) <$> genValOfType gen ttype
 
 -- | Solver
-solve :: Solver Stream
-solve constrs = 
+solve :: Maybe Integer -> Solver Stream
+solve mBound constrs = 
     Map.fromList <$> mapM (uncurry (getLogPoint gtor)) (nub lgPts)
     where
-      gtor = exhaustiveGenerator Nothing
+      gtor = exhaustiveGenerator mBound
       lgPts = everything (++) (mkQ [] go) constrs
           where
             go expr = 
