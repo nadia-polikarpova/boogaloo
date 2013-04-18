@@ -20,6 +20,7 @@ module Language.Boogie.Z3.GenMonad
     , lookupCtor
     , tupleSymbol
     , customSymbol
+    , typeString
     ) where
 
 import           Control.Applicative
@@ -38,7 +39,8 @@ import           Z3.Monad
 import           Language.Boogie.AST
 import           Language.Boogie.PrettyAST ()
 
-data TaggedRef = LogicRef Type Ref 
+data TaggedRef = LogicRef Type Ref
+               | MapRef Type Ref
                  deriving (Eq, Ord, Show, Data, Typeable)
 
 data Custom = Custom Type Int

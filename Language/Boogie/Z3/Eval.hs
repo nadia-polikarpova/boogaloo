@@ -39,6 +39,7 @@ evalExpr expr = debug ("evalExpr: " ++ show expr) >>
             IntValue i      -> mkInt i
             BoolValue True  -> mkTrue
             BoolValue False -> mkFalse
+            Reference t ref -> uses refMap (lookup' "evalValue" (MapRef t ref))
             CustomValue (IdType ident types) ref ->
                 do ctor <- lookupCustomCtor ident types
                    refAst <- mkInt ref

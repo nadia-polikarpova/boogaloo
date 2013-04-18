@@ -12,6 +12,7 @@ import           Control.Lens ((%=), uses)
 import           Control.Monad
 
 import           Data.Generics (everything, mkQ, gmapQ)
+import           Data.List (intercalate)
 import qualified Data.Set as Set
 import           Data.Set (Set)
 import qualified Data.Map as Map
@@ -41,16 +42,24 @@ updateRefMap = mapM_ addRefs
 
       -- | Get the values from a single expression.
       refs :: Expression -> Set TaggedRef
-      refs = everything Set.union (mkQ Set.empty go)
+      refs expr = valueT expr `Set.union` exprT expr
           where
+            valueT = everything Set.union (mkQ Set.empty valueRef)
+            exprT = everything Set.union (mkQ Set.empty go)
+
             go (Logical t ref) = Set.singleton (LogicRef t ref)
             go e               = Set.unions (gmapQ (mkQ Set.empty go) e)
 
+            valueRef (Reference t r) = Set.singleton (MapRef t r)
+            valueRef _ = Set.empty
+
       refStr :: TaggedRef -> String
       refStr (LogicRef _ r) = "logical_" ++ show r
+      refStr (MapRef t r)   = intercalate "_" ["map", show r, typeString t]
 
       refType :: TaggedRef -> Type
       refType (LogicRef t _) = t
+      refType (MapRef t _)   = t
 
       declareRef :: TaggedRef -> Z3Gen AST
       declareRef tRef =
@@ -114,12 +123,15 @@ reconstruct model =
           do refAssoc <- uses refMap Map.toList 
              foldM go Map.empty refAssoc
           where go m (tRef, ast) =
-                    do (r, v) <- reconLogicRef tRef ast
-                       return (Map.insert r v m)
+                    case tRef of
+                      LogicRef t ref -> 
+                          do(r, v) <- reconLogicRef t ref ast
+                            return (Map.insert r v m)
+                      _ -> return m
 
       -- | Reconstruct a ref/value pair for a logical reference.
-      reconLogicRef :: TaggedRef -> AST -> Z3Gen (Ref, Value)
-      reconLogicRef (LogicRef t ref) ast =
+      reconLogicRef :: Type -> Ref -> AST -> Z3Gen (Ref, Value)
+      reconLogicRef t ref ast =
           do Just ast' <- eval model ast
              x <- extract' t ast'
              return (ref, x)
