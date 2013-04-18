@@ -9,6 +9,7 @@ import           Control.Monad.Trans.State
 import           Control.Monad.Trans.Error
 
 import           Data.Generics
+import           Data.List (nub)
 import           Data.Map (Map)
 import qualified Data.Map as Map
 
@@ -37,7 +38,7 @@ getLogPoint gen ref ttype =
 -- | Solver
 solve :: Solver Stream
 solve constrs = 
-    Map.fromList <$> mapM (uncurry (getLogPoint gtor)) lgPts
+    Map.fromList <$> mapM (uncurry (getLogPoint gtor)) (nub lgPts)
     where
       gtor = exhaustiveGenerator Nothing
       lgPts = everything (++) (mkQ [] go) constrs
