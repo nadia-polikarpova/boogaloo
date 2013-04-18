@@ -2,11 +2,9 @@
 
 -- | Execution state for the interpreter
 module Language.Boogie.Environment ( 
-  -- deepDeref,
   Store,
   emptyStore,
   userStore,
-  storeDoc,
   MapInstance,
   MapCache,
   Memory,
@@ -23,9 +21,7 @@ module Language.Boogie.Environment (
   userMemory,
   memoryDoc,
   NameConstraints,
-  nameConstraintsDoc,
   MapConstraints,
-  mapConstraintsDoc,
   constraintUnion,  
   ConstraintMemory,
   conLocals,
@@ -69,43 +65,36 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Control.Lens hiding (Context, at)
   
-{- Store -}  
+{- Memory -}
 
 -- | Store: stores variable values at runtime 
 type Store = Map Id Thunk
 
 -- | A store with no variables
-emptyStore :: Store
 emptyStore = M.empty
 
--- | Pretty-printed store
-storeDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (id, val) = pretty id <+> text "=" <+> pretty val
-    
 -- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@
 userStore :: MapCache -> Store -> Store
-userStore heap store = store-- M.map (deepDeref heap . fromLiteral) store    
+userStore maps store = store -- M.map (deepDeref maps . fromLiteral) store
 
+-- | Pretty-printed store
+instance Pretty Store where
+  pretty = vMapDoc pretty pretty
+    
 -- | Partial map instance
 type MapInstance = Map [Thunk] Thunk
 
 instance Pretty MapInstance where
-  pretty inst = let
-      keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
-      itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> pretty v
-    in brackets (commaSep (map itemDoc (M.toList inst)))
+  pretty = let keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
+    in hMapDoc keysDoc pretty
     
 -- | MapCache: stores partial map instances    
 type MapCache = Map Ref MapInstance
-  
+    
 emptyCache = M.empty  
   
 instance Pretty MapCache where
-  pretty cache = let
-      entryDoc (ref, val) = pretty ref <+> text "->" <+> pretty val
-    in vsep $ map entryDoc (M.toList cache)
-
-{- Memory -}
+  pretty = vMapDoc pretty pretty
 
 -- | Memory: stores thunks associated with names, map references and logical variables
 data Memory = Memory {
@@ -114,7 +103,7 @@ data Memory = Memory {
   _memOld :: Store,         -- ^ Old global variable store (in two-state contexts)
   _memModified :: Set Id,   -- ^ Set of global variables, which have been modified since the beginning of the current procedure  
   _memConstants :: Store,   -- ^ Constant store  
-  _memMaps :: MapCache,         -- ^ Partial instances of maps
+  _memMaps :: MapCache,     -- ^ Partial instances of maps
   _memLogical :: Solution   -- ^ Logical variable store
 } deriving Eq
 
@@ -140,18 +129,18 @@ visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (m
 
 -- | Clear cached values if maps that have guard-less definitions
 clearDefinedCache :: MapConstraints -> MapCache -> MapCache
-clearDefinedCache conMaps heap = heap --foldr (\r -> update r emptyMap) heap definedRefs -- ToDo: fix!
+clearDefinedCache conMaps maps = maps -- foldr (\r -> update r emptyMap) maps definedRefs -- ToDo: fix!
   -- where
     -- definedRefs = [r | (r, (defs, _)) <- M.toList conMaps, any (\def -> node (defGuard def) == tt) defs]
 
--- | 'userStore' @conMem mem@ : @mem@ with all reference values completely dereferenced and cache of defined maps removed 
+-- -- | 'userStore' @conMem mem@ : @mem@ with all reference values completely dereferenced and cache of defined maps removed 
 userMemory :: ConstraintMemory -> Memory -> Memory
-userMemory conMem mem = let heap' = clearDefinedCache (_conMaps conMem) (mem^.memMaps)
-  in over memLocals (userStore heap') $
-     over memGlobals (userStore heap') $
-     over memOld (userStore heap') $
+userMemory conMem mem = let maps' = clearDefinedCache (_conMaps conMem) (mem^.memMaps)
+  in over memLocals (userStore maps') $
+     over memGlobals (userStore maps') $
+     over memOld (userStore maps') $
      over memModified (const S.empty) $
-     over memConstants (userStore heap') $
+     over memConstants (userStore maps') $
      over memMaps (const emptyCache)
      mem
 
@@ -160,20 +149,21 @@ userMemory conMem mem = let heap' = clearDefinedCache (_conMaps conMem) (mem^.me
 -- and locals in @outNames@ will be printed as output variables
 memoryDoc :: [Id] -> [Id] -> Memory -> Doc
 memoryDoc inNames outNames mem = vsep $ 
-  docNonEmpty ins (labeledStoreDoc "Ins") ++
-  docNonEmpty locals (labeledStoreDoc "Locals") ++
-  docNonEmpty outs (labeledStoreDoc "Outs") ++
-  docNonEmpty ((mem^.memGlobals) `M.union` (mem^.memConstants)) (labeledStoreDoc "Globals") ++
-  docNonEmpty (mem^.memOld) (labeledStoreDoc "Old globals") ++
+  docNonEmpty ins (labeledDoc "Ins") ++
+  docNonEmpty locals (labeledDoc "Locals") ++
+  docNonEmpty outs (labeledDoc "Outs") ++
+  docNonEmpty allGlobals (labeledDoc "Globals") ++
+  docNonEmpty (mem^.memOld) (labeledDoc "Old globals") ++
   docWhen (not (S.null $ mem^.memModified)) (text "Modified:" <+> commaSep (map text (S.toList $ mem^.memModified))) ++
-  docWhen (mem^.memMaps /= emptyCache) (text "Maps:" <+> align (pretty (mem^.memMaps))) ++
-  docNonEmpty (mem^.memLogical) (labeledStoreDoc "Logical")
+  docNonEmpty (mem^.memMaps) (labeledDoc "Maps") ++
+  docNonEmpty (mem^.memLogical) (labeledDoc "Logical")
   where
     allLocals = mem^.memLocals
     ins = restrictDomain (S.fromList inNames) allLocals
     outs = restrictDomain (S.fromList outNames) allLocals
     locals = removeDomain (S.fromList $ inNames ++ outNames) allLocals
-    labeledStoreDoc label store = (text label <> text ":") <+> align (storeDoc store)
+    allGlobals = (mem^.memGlobals) `M.union` (mem^.memConstants)
+    labeledDoc label x = (text label <> text ":") <+> align (pretty x)
     docWhen flag doc = if flag then [doc] else [] 
     docNonEmpty m mDoc = docWhen (not (M.null m)) (mDoc m)
     
@@ -186,15 +176,14 @@ instance Pretty Memory where
 type NameConstraints = Map Id ConstraintSet
 
 -- | Pretty-printed variable constraints
-nameConstraintsDoc :: NameConstraints -> Doc
-nameConstraintsDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (name, cs) = nest 2 (text name <+> pretty cs)
+instance Pretty NameConstraints where
+  pretty = vMapDoc pretty constraintSetDoc
 
 -- | Mapping from map references to their parametrized constraints
 type MapConstraints = Map Ref ConstraintSet
 
-mapConstraintsDoc heap = vsep $ map valDoc (M.toList heap)
-  where valDoc (r, cs) = nest 2 (refDoc r <+> pretty cs)
+instance Pretty MapConstraints where
+  pretty = vMapDoc refDoc constraintSetDoc  
   
 -- | Union of constraints (values at the same key are concatenated)
 constraintUnion s1 s2 = M.unionWith (++) s1 s2  
@@ -219,12 +208,12 @@ emptyConstraintMemory = ConstraintMemory {
 
 constraintMemoryDoc :: ConstraintMemory -> Doc
 constraintMemoryDoc mem = vsep $ 
-  docNonEmpty (mem^.conLocals) (labeledStoreDoc "Local con") ++
-  docNonEmpty (mem^.conGlobals) (labeledStoreDoc "Global con") ++
-  docNonEmpty (mem^.conMaps) (\h -> text "Map con:" <+> align (mapConstraintsDoc h)) ++
-  docWhen (not $ null (mem^.conLogical)) (text "Logical con:" <+> align (vsep (map pretty (mem^.conLogical))))
+  docNonEmpty (mem^.conLocals) (labeledDoc "CLocal") ++
+  docNonEmpty (mem^.conGlobals) (labeledDoc "CGlobal") ++
+  docNonEmpty (mem^.conMaps) (labeledDoc "CMap") ++
+  docWhen (not $ null (mem^.conLogical)) ((text "CLogical" <> text ":") <+> align (constraintSetDoc (mem^.conLogical)))
   where
-    labeledStoreDoc label store = (text label <> text ":") <+> align (nameConstraintsDoc store)
+    labeledDoc label x = (text label <> text ":") <+> align (pretty x)
     docWhen flag doc = if flag then [doc] else [] 
     docNonEmpty m mDoc = docWhen (not (M.null m)) (mDoc m)
     

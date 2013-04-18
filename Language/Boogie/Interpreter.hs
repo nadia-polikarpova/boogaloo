@@ -216,7 +216,6 @@ data RuntimeFailure = RuntimeFailure {
 
 -- | Throw a run-time failure
 throwRuntimeFailure source pos = do
-  eliminateLogicals
   mem <- use envMemory
   throwError (RuntimeFailure source pos mem [])
 
@@ -243,7 +242,7 @@ instance Error RuntimeFailure where
 -- | Pretty-printed run-time failure
 runtimeFailureDoc debug err = 
   let store = (if debug then id else userStore ((rtfMemory err)^.memMaps)) (M.filterWithKey (\k _ -> isRelevant k) (visibleVariables (rtfMemory err)))
-      sDoc = storeDoc store 
+      sDoc = pretty store 
   in failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) <+> 
     (nest 2 $ option (not (isEmpty sDoc)) (text "with") $+$ sDoc) $+$
     vsep (map stackFrameDoc (reverse (rtfTrace err)))
@@ -724,7 +723,9 @@ execPredicate clause@(SpecClause source False expr) pos = do
   c' <- eval c
   case fromLiteral c' of
     BoolValue True -> return ()
-    BoolValue False -> throwRuntimeFailure (SpecViolation clause) pos
+    BoolValue False -> do
+      eliminateLogicals
+      throwRuntimeFailure (SpecViolation clause) pos
     
 execHavoc names pos = do
   mapM_ forgetAnyVar names
