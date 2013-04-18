@@ -94,7 +94,7 @@ type MapCache = Map Ref MapInstance
 emptyCache = M.empty  
   
 instance Pretty MapCache where
-  pretty = vMapDoc pretty pretty
+  pretty = vMapDoc refDoc pretty
 
 -- | Memory: stores thunks associated with names, map references and logical variables
 data Memory = Memory {
