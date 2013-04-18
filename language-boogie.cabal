@@ -31,6 +31,7 @@ library
       Language.Boogie.Z3.GenMonad,
       Language.Boogie.Z3.Solver,
       Language.Boogie.Z3.Solution,
+      Language.Boogie.TrivialSolver,
       Language.Boogie.Util,
       Language.Boogie.TypeChecker,
       Language.Boogie.Tokens,
