@@ -7,7 +7,6 @@ module Language.Boogie.Interpreter (
   executeProgram,
   -- * Run-time failures
   FailureSource (..),
-  -- InternalCode,
   StackFrame (..),
   StackTrace,
   RuntimeFailure (..),  
@@ -25,7 +24,9 @@ module Language.Boogie.Interpreter (
   -- * Executing parts of programs
   eval,
   exec,
-  preprocess
+  preprocess,
+  -- * Debugging
+  dumpState
   ) where
 
 import Language.Boogie.Solver  
@@ -553,6 +554,7 @@ evalMapUpdate m args new pos = do
   new' <- eval new    
   newM' <- generateValue t pos
   let Reference _ r' = fromLiteral newM'
+  setMapValue r' args' new'
   let var = attachPos pos . Var
       freshVarNames = map (\i -> nonIdChar : show i) [0..]
       bv = zip freshVarNames domains
@@ -561,11 +563,9 @@ evalMapUpdate m args new pos = do
       appOld = attachPos pos $ MapSelection m' bvExprs
       appNew = attachPos pos $ MapSelection newM' bvExprs
       guardNeq = disjunction (zipWith (|!=|) bvExprs args')
-      guardEq = conjunction (zipWith (|=|) bvExprs args')
       lambda = inheritPos (Quantified Lambda tv bv)
   extendMapConstaints r $ lambda (guardNeq |=>| (appOld |=| appNew))
   extendMapConstaints r' $ lambda (guardNeq |=>| (appOld |=| appNew))  
-  extendMapConstaints r' $ lambda (guardEq |=>| (appNew |=| new'))
   return newM'
   
 evalIf cond e1 e2 = do
@@ -678,7 +678,7 @@ evalLambda tv vars e pos = do
     
 evalForall tv vars e pos = do  
   symExpr <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)
-  res <- generateValue BoolType pos
+  res <- generateValue BoolType pos  
   samples <- mapM (evalForMap res) (M.toList $ extractMapConstraints symExpr)
   sampleRes <- eval $ conjunction samples
   extendLogicalConstaints $ res |=| sampleRes
@@ -930,12 +930,12 @@ solveAll constraints = do
         Literal (BoolValue True) -> return Nothing
         Literal (BoolValue False) -> throwRuntimeFailure (SpecViolation (SpecClause Axiom True c)) (position res)
         _ -> return $ Just res
-
+  
 -- | Solve current logical variable constraints
 solveConstraints :: (Monad m, Functor m) => Execution m ()
 solveConstraints = do
   constraints <- use $ envConstraints.conLogical
-  instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps) 
+  instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)
   solveAll $ constraints ++ instanceConstraints
   envConstraints.conLogical .= []
   where
@@ -965,7 +965,7 @@ eliminateLogicals = do
     evalMapConstraints = do
       mc <- use $ envConstraints.conMaps
       newMC <- T.mapM (mapM evalQuantified) mc
-      envConstraints.conMaps .= mc
+      envConstraints.conMaps .= newMC
   
 -- | 'genIndex' @n@ : return an intereg in [0, n)  
 genIndex :: (Monad m, Functor m) => Int -> Execution m Int
@@ -1085,5 +1085,14 @@ extractArgs vars args = foldl extractArg [] (zip args [0..])
                   else []                          -- Expression involving non-fixed bound variables: not a simple argument, omit
     freshArgName i = nonIdChar : show i
     varArgs = [v | (Pos p (Var v)) <- args]
-    nonfixedBV = vars \\ varArgs    
+    nonfixedBV = vars \\ varArgs
+
+{- Debugging -}
+
+dumpState :: (Monad m, Functor m) => ConstraintSet -> Execution m () 
+dumpState constraints = do
+  mem <- use envMemory
+  con <- use envConstraints
+  (error . show) (punctuate linebreak [pretty mem, pretty con, text "Constraints" $+$ constraintSetDoc constraints])
+    
        
