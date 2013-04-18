@@ -217,8 +217,8 @@ emptyConstraintMemory = ConstraintMemory {
   _conLogical = []
 }
 
-symbolicMemoryDoc :: ConstraintMemory -> Doc
-symbolicMemoryDoc mem = vsep $ 
+constraintMemoryDoc :: ConstraintMemory -> Doc
+constraintMemoryDoc mem = vsep $ 
   docNonEmpty (mem^.conLocals) (labeledStoreDoc "Local con") ++
   docNonEmpty (mem^.conGlobals) (labeledStoreDoc "Global con") ++
   docNonEmpty (mem^.conMaps) (\h -> text "Map con:" <+> align (mapConstraintsDoc h)) ++
@@ -229,7 +229,7 @@ symbolicMemoryDoc mem = vsep $
     docNonEmpty m mDoc = docWhen (not (M.null m)) (mDoc m)
     
 instance Pretty ConstraintMemory where
-  pretty = symbolicMemoryDoc
+  pretty = constraintMemoryDoc
 
 {- Environment -}
   

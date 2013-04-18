@@ -61,15 +61,17 @@ executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Id -
 executeProgram p tc solver entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver)
   where
     programExecution = do
-      execUnsafely $ preprocess p
+      execUnsafely $ preprocess p      
       execRootCall
+      solveConstraints
+      eliminateLogicals
     sig = procSig entryPoint tc
     execRootCall = do
       let params = psigParams sig
       let defaultBinding = M.fromList $ zip (psigTypeVars sig) (repeat defaultType)
       let paramTypes = map (typeSubst defaultBinding) (map itwType params)
       envTypeContext %= setLocals (M.fromList $ zip (map itwId params) paramTypes)
-      execCallBySig (assumePreconditions sig) (map itwId (psigRets sig)) (map (gen . Var . itwId) (psigArgs sig)) noPos
+      execCallBySig (assumePreconditions sig) (map itwId (psigRets sig)) (map (gen . Var . itwId) (psigArgs sig)) noPos      
     defaultType = BoolType      
     result (Left err, env) = TestCase sig (env^.envMemory) (env^.envConstraints) (Just err)
     result (_, env)      = TestCase sig (env^.envMemory) (env^.envConstraints) Nothing    
@@ -214,6 +216,7 @@ data RuntimeFailure = RuntimeFailure {
 
 -- | Throw a run-time failure
 throwRuntimeFailure source pos = do
+  eliminateLogicals
   mem <- use envMemory
   throwError (RuntimeFailure source pos mem [])
 
@@ -828,7 +831,7 @@ evalQuantified expr = evalQuantified' [] expr
   where
     evalQuantified' vars (Pos p e) = attachPos p <$> case e of
       l@(Literal _) -> return l
-      l@(Logical _ _) -> return l
+      l@(Logical t r) -> node <$> evalLogical t r p
       var@(Var name) -> if name `elem` vars
         then return var
         else node <$> evalVar name p
@@ -940,6 +943,28 @@ solveConstraints = do
         mapType = MapType [] (map thunkType args) (thunkType val)
         mapExpr = gen $ Literal $ Reference mapType r
       in gen (MapSelection mapExpr args) |=| val
+  
+-- | Assuming that all logical variables have been assigned values,
+-- re-evaluate the store and the map constraints, and wipe out logical store.
+eliminateLogicals :: (Monad m, Functor m) => Execution m ()
+eliminateLogicals = do
+    evalStore memGlobals
+    evalStore memOld
+    evalStore memLocals
+    evalStore memConstants
+    evalMapConstraints
+    envMemory.memLogical .= M.empty
+  where
+    evalStore :: (Monad m, Functor m) => StoreLens -> Execution m ()
+    evalStore lens = do
+      store <- use $ envMemory.lens
+      newStore <- T.mapM eval store
+      envMemory.lens .= newStore
+    evalMapConstraints :: (Monad m, Functor m) => Execution m ()
+    evalMapConstraints = do
+      mc <- use $ envConstraints.conMaps
+      newMC <- T.mapM (mapM evalQuantified) mc
+      envConstraints.conMaps .= mc
   
 -- | 'genIndex' @n@ : return an intereg in [0, n)  
 genIndex :: (Monad m, Functor m) => Int -> Execution m Int
