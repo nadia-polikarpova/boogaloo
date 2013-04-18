@@ -3,7 +3,8 @@
 -- | Pretty printing of AST nodes
 module Language.Boogie.PrettyAST (
   idpretty,
-  refDoc
+  refDoc,
+  logDoc
 ) where
 
 import Language.Boogie.Pretty
@@ -62,7 +63,7 @@ exprDocAt :: Int -> Expression -> Doc
 exprDocAt n (Pos _ e) = condParens (n' <= n) (
   case e of
     Literal v -> pretty v
-    Logical t r -> text "l'" <> pretty r
+    Logical t r -> logDoc r
     Var id -> text id
     Application id args -> text id <> parens (commaSep (map exprDoc args))
     MapSelection m args -> exprDocAt n' m <> brackets (commaSep (map exprDoc args))
@@ -231,9 +232,13 @@ implementationDoc name fv args rets bodies =
   
 {- Values -}
 
--- | Pretty-printed reference
+-- | Pretty-printed map reference
 refDoc :: Ref -> Doc
 refDoc r = text "r'" <> int r
+
+-- | Pretty-printed logical variable
+logDoc :: Ref -> Doc
+logDoc r = text "l'" <> int r
     
 -- | Pretty-printed value
 instance Pretty Value where
