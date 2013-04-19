@@ -57,5 +57,5 @@ intInterval n = let n2 = n `div` 2 in (-n2, n - n2 - 1)
 natInterval n = (0, n - 1)
 
 -- | Convert a (possibly infinite) nonempty list into a stream      
-fromList :: [a] -> Stream a
+fromList :: MonadPlus m => [a] -> m a
 fromList xs = foldr1 mplus (map return xs)
