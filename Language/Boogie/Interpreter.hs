@@ -649,7 +649,6 @@ evalEquality pos v1@(Reference t1 r1) v2@(Reference t2 r2) = if r1 == r2
   where
     lit = attachPos pos . Literal
     var = attachPos pos . Var
--- evalEquality (MapValue _ _) (MapValue _ _) _ = internalError $ text "Attempt to compare two maps"
 evalEquality pos v1 v2 = return $ attachPos pos $ Literal $ BoolValue (v1 == v2)                              
       
 evalBinary op e1 e2 = do
@@ -677,29 +676,17 @@ evalLambda tv vars e pos = do
     lambda = attachPos pos . Quantified Lambda tv vars
     
 evalForall tv vars e pos = do  
-  symExpr <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)
-  res <- generateValue BoolType pos  
-  samples <- mapM (evalForMap res) (M.toList $ extractMapConstraints symExpr)
-  sampleRes <- eval $ conjunction samples
-  extendLogicalConstaints $ res |=| sampleRes
+  symExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)
+  res <- generateValue BoolType pos    
+  let typeBinding = M.fromList $ zip tv (repeat anyType)
+  sampleRes <- executeNested typeBinding vars (eval e')
+  extendLogicalConstaints $ enot res |=>| enot sampleRes  
+  mapM (addConstraintForMap res) (M.toList $ extractMapConstraints symExpr)
   return res
   where
-    evalForMap res (r, constraints) = do
-      samples <- mapM (evalConstraint res r) constraints
-      return $ conjunction samples
-    evalConstraint res r c = do       
-      inst <- getMapInstance r
-      cacheRs <- mapM (\actuals -> applyMapConstraint c actuals pos) (M.keys inst)
-      newR <- decideConstraint r c
-      addGuardedConstraint res r c
-      return $ conjunction (cacheRs ++ [newR])
-    decideConstraint r c@(Pos _ (Quantified Lambda tv vars _)) = do
-      let typeBinding = M.fromList $ zip tv (repeat anyType)
-      let argTypes = map (typeSubst typeBinding . snd) vars
-      index <- mapM (flip generateValue pos) argTypes -- choose an index non-deterministically
-      applyMapConstraint c index pos
+    addConstraintForMap res (r, constraints) = do
+      mapM (addGuardedConstraint res r) constraints
     addGuardedConstraint res r (Pos p (Quantified Lambda tv vars e)) = extendMapConstaints r (Pos p (Quantified Lambda tv vars (res |=>| e)))
-    lit = attachPos pos . Literal
           
 {- Statements -}
 
@@ -894,7 +881,7 @@ applyMapConstraint c actuals pos =
     formalNames = map fst formals
     formalTypes = map snd formals
     actualTypes = map thunkType actuals
-    locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []    
+    locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []
   in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
     then return $ attachPos pos $ tt
     else locally (eval body)
