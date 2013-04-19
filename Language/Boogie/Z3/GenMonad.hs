@@ -167,4 +167,6 @@ typeString t =
      BoolType -> "bool"
      MapType _ args res -> 
          concat ["(", tupleSymbol args, ")->", typeString res]
+     IdType ident types ->
+         intercalate "_" ("IdType":ident:map typeString types)
      _ -> error $ "typeString: no string for " ++ show t
