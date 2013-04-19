@@ -58,4 +58,4 @@ natInterval n = (0, n - 1)
 
 -- | Convert a (possibly infinite) nonempty list into a stream      
 fromList :: MonadPlus m => [a] -> m a
-fromList xs = foldr1 mplus (map return xs)
+fromList xs = foldr mplus mzero (map return xs)

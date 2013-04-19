@@ -676,17 +676,18 @@ evalLambda tv vars e pos = do
     lambda = attachPos pos . Quantified Lambda tv vars
     
 evalForall tv vars e pos = do
-  res <- generateValue BoolType pos
-  symExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)  
-  let typeBinding = M.fromList $ zip tv (repeat anyType)
-  sampleRes <- executeNested typeBinding vars (eval e')
-  extendLogicalConstaints $ enot res |=>| enot sampleRes  
-  mapM (addConstraintForMap res) (M.toList $ extractMapConstraints symExpr)
-  return res
-  where
-    addConstraintForMap res (r, constraints) = do
-      mapM (addGuardedConstraint res r) constraints
-    addGuardedConstraint res r (Pos p (Quantified Lambda tv vars e)) = extendMapConstaints r (Pos p (Quantified Lambda tv vars (res |=>| e)))
+  qExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)  
+  answer <- generateValue BoolType pos
+  solveAll [trivialConstraint answer]
+  res <- eval answer
+  if unValueBool $ fromLiteral $ res
+    then do -- we decided that e always holds: attach it to all ocurring maps
+      mapM_ (\(r, cs) -> mapM_ (extendMapConstaints r) cs) (M.toList $ extractMapConstraints qExpr)
+    else do -- we decided that e does not always hold: find a counterexample  
+      let typeBinding = M.fromList $ zip tv (repeat anyType)
+      counterExample <- executeNested typeBinding vars (eval $ enot e')
+      extendLogicalConstaints counterExample    
+  return res      
           
 {- Statements -}
 
@@ -804,6 +805,9 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
 
 {- Evaluating constraints -}
+
+-- | Constraint that just mentions logical variables without constraining them
+trivialConstraint e = e |=| e
 
 -- | 'extendNameConstaints' @lens c@ : add @c@ as a constraint for all free variables in @c@ to @envConstraints.lens@
 extendNameConstaints :: (MonadState (Environment m) s, Finalizer s) => SimpleLens ConstraintMemory NameConstraints -> Expression -> s ()
