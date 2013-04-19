@@ -9,6 +9,7 @@ import qualified Language.Boogie.Parser as Parser (program)
 import Language.Boogie.TypeChecker
 import Language.Boogie.Pretty
 import Language.Boogie.Interpreter
+import Language.Boogie.Solver
 import qualified Language.Boogie.TrivialSolver as Trivial
 import qualified Language.Boogie.Z3.Solver as Z3
 import System.Environment

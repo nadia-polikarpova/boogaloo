@@ -681,13 +681,13 @@ evalForall tv vars e pos = do
   solveAll [trivialConstraint answer]
   res <- eval answer
   if unValueBool $ fromLiteral $ res
-    then do -- we decided that e always holds: attach it to all ocurring maps
+    then do -- we decided that e always holds: attach it to all occurring maps
       mapM_ (\(r, cs) -> mapM_ (extendMapConstaints r) cs) (M.toList $ extractMapConstraints qExpr)
     else do -- we decided that e does not always hold: find a counterexample  
       let typeBinding = M.fromList $ zip tv (repeat anyType)
       counterExample <- executeNested typeBinding vars (eval $ enot e')
       extendLogicalConstaints counterExample    
-  return res      
+  return res
           
 {- Statements -}
 
@@ -707,13 +707,16 @@ execPredicate (SpecClause source True expr) pos = do
 
 execPredicate clause@(SpecClause source False expr) pos = do
   c <- eval expr
-  solveConstraints
-  c' <- eval c
-  case fromLiteral c' of
-    BoolValue True -> return ()
-    BoolValue False -> do
-      eliminateLogicals
-      throwRuntimeFailure (SpecViolation clause) pos
+  if node c == tt
+    then return ()
+    else do
+      solveConstraints
+      c' <- eval c
+      case fromLiteral c' of
+        BoolValue True -> return ()
+        BoolValue False -> do
+          eliminateLogicals
+          throwRuntimeFailure (SpecViolation clause) pos
     
 execHavoc names pos = do
   mapM_ forgetAnyVar names
@@ -929,9 +932,11 @@ solveAll constraints = do
 solveConstraints :: (Monad m, Functor m) => Execution m ()
 solveConstraints = do
   constraints <- use $ envConstraints.conLogical
-  instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)
-  solveAll $ constraints ++ instanceConstraints
-  envConstraints.conLogical .= []
+  when (not $ null constraints) (do
+    instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)
+    solveAll $ constraints ++ instanceConstraints
+    envConstraints.conLogical .= []
+    )
   where
     constraintsFromMap (r, inst) = map (pointConstraint r) (M.toList inst)
     pointConstraint r (args, val) = let
