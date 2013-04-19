@@ -94,11 +94,11 @@ extract model ref t ast =
              do bMb <- getBool ast'
                 case bMb of
                   Just b -> return $ BoolValue b
-                  Nothing -> 
-                      error $ unwords ["solveConstr.reconstruct.extract:"
-                                      ,"couldn't extract bool from logical"
-                                      ,show ref
-                                      ]
+                  Nothing -> return $ BoolValue False
+                      -- error $ unwords ["solveConstr.reconstruct.extract:"
+                      --                 ,"couldn't extract bool from logical"
+                      --                 ,show ref
+                      --                 ]
          IdType ident types ->
              do proj <- lookupCustomProj ident types
                 extr <- mkApp proj [ast']
