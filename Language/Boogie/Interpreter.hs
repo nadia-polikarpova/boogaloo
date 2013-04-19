@@ -675,9 +675,9 @@ evalLambda tv vars e pos = do
   where
     lambda = attachPos pos . Quantified Lambda tv vars
     
-evalForall tv vars e pos = do  
-  symExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)
-  res <- generateValue BoolType pos    
+evalForall tv vars e pos = do
+  res <- generateValue BoolType pos
+  symExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)  
   let typeBinding = M.fromList $ zip tv (repeat anyType)
   sampleRes <- executeNested typeBinding vars (eval e')
   extendLogicalConstaints $ enot res |=>| enot sampleRes  
@@ -764,6 +764,7 @@ execBlock blocks label = let
   statements = init block
   in do
     mapM exec statements
+    solveConstraints
     case last block of
       Pos pos Return -> return pos
       Pos _ (Goto lbs) -> do
@@ -812,7 +813,9 @@ extendNameConstaints lens c = mapM_ (\name -> modify $ addNameConstraint name (e
 extendMapConstaints r c = modify $ addMapConstraint r c
 
 -- | 'extendLogicalConstaints' @c@ : add @c@ to the logical constraints
-extendLogicalConstaints c = modify $ addLogicalConstraint c
+extendLogicalConstaints c = if node c == tt
+  then return ()
+  else modify $ addLogicalConstraint c
 
 -- | 'evalQuantified' @expr@ : evaluate @expr@ modulo quantification
 evalQuantified expr = evalQuantified' [] expr
