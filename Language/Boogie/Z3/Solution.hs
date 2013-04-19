@@ -85,8 +85,8 @@ solveConstr constrs =
 
 -- | Extracts a particular type from an AST node, evaluating
 -- the node first.
-extract :: Model -> Type -> AST -> Z3Gen Value
-extract model t ast = 
+extract :: Model -> Ref -> Type -> AST -> Z3Gen Value
+extract model ref t ast = 
     do Just ast' <- eval model ast
        case t of 
          IntType -> IntValue <$> getInt ast'
@@ -94,7 +94,11 @@ extract model t ast =
              do bMb <- getBool ast'
                 case bMb of
                   Just b -> return $ BoolValue b
-                  Nothing -> error "solveConstr.reconstruct.extract: not bool"
+                  Nothing -> 
+                      error $ unwords ["solveConstr.reconstruct.extract:"
+                                      ,"couldn't extract bool from logical"
+                                      ,show ref
+                                      ]
          IdType ident types ->
              do proj <- lookupCustomProj ident types
                 extr <- mkApp proj [ast']
@@ -133,5 +137,5 @@ reconstruct model =
       reconLogicRef :: Type -> Ref -> AST -> Z3Gen (Ref, Value)
       reconLogicRef t ref ast =
           do Just ast' <- eval model ast
-             x <- extract' t ast'
+             x <- extract' ref t ast'
              return (ref, x)
