@@ -32,6 +32,7 @@ library
       Language.Boogie.Z3.Solver,
       Language.Boogie.Z3.Solution,
       Language.Boogie.TrivialSolver,
+      Language.Boogie.Solver,
       Language.Boogie.Generator,
       Language.Boogie.Util,
       Language.Boogie.TypeChecker,
