@@ -6,6 +6,7 @@ import           Data.Foldable (Foldable)
 import qualified Data.Map as Map
 
 import           Language.Boogie.AST
+import           Language.Boogie.Generator
 import           Language.Boogie.Z3.Solution
 import           Language.Boogie.Position
 import           Language.Boogie.Solver
@@ -18,7 +19,12 @@ import           System.IO.Unsafe
 solve :: (MonadPlus m, Foldable m) => [Expression] -> m Solution
 solve constrs = 
     case stepConstrs constrs of
-      Just (soln, neq) -> return soln `mplus` solve (neq : constrs)
+      Just (soln, neq) -> return soln `mplus` go
+          where
+            go =
+                do (ref, e) <- fromList (Map.toList soln)
+                   let notE = enot (gen (Logical (thunkType e) ref) |=| e)
+                   solve (notE : constrs)
       Nothing -> mzero
 
 stepConstrs :: [Expression] -> Maybe (Solution, Expression)
