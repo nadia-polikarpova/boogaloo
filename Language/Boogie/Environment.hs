@@ -34,6 +34,7 @@ module Language.Boogie.Environment (
   envConstraints,
   envTypeContext,
   envSolver,
+  envGenerator,
   envCustomCount,
   envMapCount,
   envLogicalCount,
@@ -55,6 +56,7 @@ import Language.Boogie.Util
 import Language.Boogie.Position
 import Language.Boogie.AST
 import Language.Boogie.Solver
+import Language.Boogie.Generator
 import Language.Boogie.TypeChecker (Context, ctxGlobals)
 import Language.Boogie.Pretty
 import Language.Boogie.PrettyAST
@@ -230,6 +232,7 @@ data Environment m = Environment
     _envProcedures :: Map Id [PDef],        -- ^ Procedure implementations
     _envTypeContext :: Context,             -- ^ Type context
     _envSolver :: Solver m,                 -- ^ Constraint solver
+    _envGenerator :: Generator m,
     _envMapCount :: Int,                    -- ^ Number of map references currently in use
     _envLogicalCount :: Int,                -- ^ Number of logical varibles currently in use
     _envCustomCount :: Map Type Int,        -- ^ For each user-defined type, number of distinct values of this type already generated
@@ -239,13 +242,14 @@ data Environment m = Environment
 makeLenses ''Environment
    
 -- | 'initEnv' @tc s@: Initial environment in a type context @tc@ with constraint solver @s@  
-initEnv tc s = Environment
+initEnv tc s g = Environment
   {
     _envMemory = emptyMemory,
     _envConstraints = emptyConstraintMemory,
     _envProcedures = M.empty,
     _envTypeContext = tc,
     _envSolver = s,
+    _envGenerator = g,
     _envCustomCount = M.empty,
     _envMapCount = 0,
     _envLogicalCount = 0,

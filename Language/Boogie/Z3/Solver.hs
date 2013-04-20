@@ -4,6 +4,7 @@ import           Control.Monad
 
 import           Data.Foldable (Foldable)
 import qualified Data.Map as Map
+import           Data.Maybe
 
 import           Language.Boogie.AST
 import           Language.Boogie.Generator
@@ -16,16 +17,18 @@ import           Language.Boogie.Z3.GenMonad
 
 import           System.IO.Unsafe
 
-solve :: (MonadPlus m, Foldable m) => [Expression] -> m Solution
-solve constrs = 
+solve :: (MonadPlus m, Foldable m) => Maybe Int -> [Expression] -> m Solution
+solve mBound constrs = 
     case stepConstrs constrs of
       Just (soln, neq) -> return soln `mplus` go
           where
-            go =
-                do (ref, e) <- fromList (Map.toList soln)
-                   let notE = enot (gen (Logical (thunkType e) ref) |=| e)
-                   solve (notE : constrs)
-      Nothing -> mzero
+            go = if mBound == Nothing || (fromJust mBound > 1)
+                    then do 
+                      (ref, e) <- fromList (Map.toList soln)
+                      let notE = enot (gen (Logical (thunkType e) ref) |=| e)
+                      solve (fmap pred mBound) (notE : constrs)
+                    else mzero
+      Nothing -> mzero    
 
 stepConstrs :: [Expression] -> Maybe (Solution, Expression)
 stepConstrs constrs = unsafePerformIO $ evalZ3Gen $

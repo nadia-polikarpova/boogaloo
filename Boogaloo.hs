@@ -12,6 +12,7 @@ import Language.Boogie.Interpreter
 import Language.Boogie.Solver
 import qualified Language.Boogie.TrivialSolver as Trivial
 import qualified Language.Boogie.Z3.Solver as Z3
+import Language.Boogie.Generator
 import System.Environment
 import System.Console.CmdArgs
 import System.Console.ANSI
@@ -125,7 +126,7 @@ executeFromFile file proc_ solver branch_max exec_max invalid nexec pass fail ou
   where
     printFinalState p context = case M.lookup proc_ (ctxProcedures context) of
       Nothing -> printDoc format $ errorDoc (text "Cannot find procedure" <+> text proc_)
-      Just _ -> let outs = maybeTake out_max . filter keep . maybeTake exec_max . toList $ executeProgram p context solve proc_
+      Just _ -> let outs = maybeTake out_max . filter keep . maybeTake exec_max . toList $ executeProgram p context solve generator proc_
         in if summary
               then printDoc format $ sessionSummaryDoc debug outs
               else if null outs
@@ -134,7 +135,8 @@ executeFromFile file proc_ solver branch_max exec_max invalid nexec pass fail ou
     solve :: ConstraintSet -> [Solution]
     solve = case solver of
       Exhaustive -> Trivial.solve branch_max
-      Z3 -> Z3.solve
+      Z3 -> Z3.solve (fmap fromInteger branch_max)
+    generator = exhaustiveGenerator branch_max
     maybeTake mLimit = case mLimit of
       Nothing -> id
       Just n -> take n

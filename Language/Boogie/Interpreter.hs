@@ -30,6 +30,7 @@ module Language.Boogie.Interpreter (
   ) where
 
 import Language.Boogie.Solver  
+import Language.Boogie.Generator
 import Language.Boogie.Environment
 import Language.Boogie.AST
 import Language.Boogie.Util
@@ -58,8 +59,8 @@ import Control.Lens hiding (Context, at)
 -- | 'executeProgram' @p tc solver entryPoint@ :
 -- Execute program @p@ in type context @tc@ with solver @solver@, starting from procedure @entryPoint@,
 -- and return the outcome(s) embedded into the solver's monad.
-executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Id -> m (TestCase)
-executeProgram p tc solver entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver)
+executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Generator m -> Id -> m (TestCase)
+executeProgram p tc solver generator entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver generator)
   where
     programExecution = do
       execUnsafely $ preprocess p      
@@ -493,9 +494,9 @@ eval expr@(Pos pos e) = case e of
   
 evalLogical t r pos = do
   vals <- use $ envMemory.memLogical
-  return $ case M.lookup r vals of
-            Nothing -> attachPos pos $ Logical t r
-            Just val -> val  
+  case M.lookup r vals of
+    Nothing -> return $ attachPos pos $ Logical t r
+    Just val -> eval val  
   
 evalVar name pos = do
   tc <- use envTypeContext
@@ -515,7 +516,7 @@ evalVar name pos = do
     evalVarWith t lens initOld = do
       s <- use $ envMemory.lens
       case M.lookup name s of         -- Lookup a cached value
-        Just val -> return val
+        Just val -> eval val
         Nothing -> do                 -- If not found, choose a value non-deterministically
           chosenValue <- generateValue t pos
           setVar lens name chosenValue
@@ -537,7 +538,7 @@ evalMapSelection m args pos = do
       mapM_ (rejectMapIndex pos) args'
       inst <- getMapInstance r
       case M.lookup args' inst of    -- Lookup a cached value
-        Just val -> return val
+        Just val -> eval val
         Nothing -> do                       -- If not found, choose a value non-deterministically
           let rangeType = thunkType (gen $ MapSelection m' args')
           chosenValue <- generateValue rangeType pos
@@ -677,17 +678,18 @@ evalLambda tv vars e pos = do
     
 evalForall tv vars e pos = do
   qExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)  
-  answer <- generateValue BoolType pos
-  solveAll [trivialConstraint answer]
-  res <- eval answer
-  if unValueBool $ fromLiteral $ res
+  -- answer <- generateValue BoolType pos
+  -- solveAll [trivialConstraint answer]
+  -- res <- eval answer
+  res <- generate genBool
+  if res
     then do -- we decided that e always holds: attach it to all occurring maps
       mapM_ (\(r, cs) -> mapM_ (extendMapConstaints r) cs) (M.toList $ extractMapConstraints qExpr)
     else do -- we decided that e does not always hold: find a counterexample  
       let typeBinding = M.fromList $ zip tv (repeat anyType)
       counterExample <- executeNested typeBinding vars (eval $ enot e')
       extendLogicalConstaints counterExample    
-  return res
+  return $ Pos pos $ Literal $ BoolValue res
           
 {- Statements -}
 
@@ -748,7 +750,7 @@ execCallBySig sig lhss args pos = do
   where
     selectDef tc [] = return (assumePostconditions sig, dummyDef tc)
     selectDef tc defs = do
-      i <- genIndex $ length defs
+      i <- generate $ flip genIndex (length defs)
       return (sig, defs !! i)
     -- For procedures with no implementation: dummy definition that just havocs all modifiable globals
     dummyDef tc = PDef {
@@ -772,7 +774,7 @@ execBlock blocks label = let
     case last block of
       Pos pos Return -> return pos
       Pos _ (Goto lbs) -> do
-        i <- genIndex $ length lbs
+        i <- generate $ flip genIndex (length lbs)
         execBlock blocks (lbs !! i)
     
 -- | 'execProcedure' @sig def args lhss@ :
@@ -974,14 +976,20 @@ eliminateLogicals = do
       newMC <- T.mapM (mapM evalQuantified) mc
       envConstraints.conMaps .= newMC
   
--- | 'genIndex' @n@ : return an intereg in [0, n)  
-genIndex :: (Monad m, Functor m) => Int -> Execution m Int
-genIndex n = if n == 1
-  then return 0
-  else do
-    l <- generateValue IntType noPos
-    solveAll [num 0 |<=| l, l |<| num (fromIntegral n)]
-    (fromInteger . unValueInt . fromLiteral) <$> eval l
+-- -- | 'genIndex' @n@ : return an intereg in [0, n)  
+-- genIndex :: (Monad m, Functor m) => Int -> Execution m Int
+-- genIndex n = if n == 1
+  -- then return 0
+  -- else do
+    -- l <- generateValue IntType noPos
+    -- solveAll [num 0 |<=| l, l |<| num (fromIntegral n)]
+    -- (fromInteger . unValueInt . fromLiteral) <$> eval l
+    
+-- | 'generate' @f@ : computation that extracts @f@ from the generator
+generate :: (Monad m, Functor m) => (Generator m -> m a) -> Execution m a
+generate f = do    
+  gen <- use envGenerator
+  lift (lift (f gen))
           
 {- Preprocessing -}
 
