@@ -822,7 +822,9 @@ extendMapConstaints r c = modify $ addMapConstraint r c
 -- | 'extendLogicalConstaints' @c@ : add @c@ to the logical constraints
 extendLogicalConstaints c = if node c == tt
   then return ()
-  else modify $ addLogicalConstraint c
+  else if node c == ff 
+    then throwRuntimeFailure (SpecViolation (SpecClause Axiom True c)) (position c)
+    else modify $ addLogicalConstraint c
 
 -- | 'evalQuantified' @expr@ : evaluate @expr@ modulo quantification
 evalQuantified expr = evalQuantified' [] expr
@@ -872,15 +874,21 @@ evalQuantified expr = evalQuantified' [] expr
 -- | 'checkNameConstraints' @name pos@ : execute where clause of variable @name@ at position @pos@
 checkNameConstraints name pos = do
   cs <- gets $ lookupNameConstraints name
-  cs' <- mapM eval cs
-  mapM_ extendLogicalConstaints cs'
+  mapM checkConstraint cs
+  where 
+    checkConstraint c = do
+      c' <- eval c
+      extendLogicalConstaints c'
   
 -- | 'checkMapConstraints' @r actuals pos@ : assume all constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
 checkMapConstraints r actuals pos = do
   cs <- gets $ lookupMapConstraints r
-  cs' <- mapM (\c -> applyMapConstraint c actuals pos) cs  
-  mapM_ extendLogicalConstaints cs'
+  mapM checkConstraint cs
+  where
+    checkConstraint c = do
+      c' <- applyMapConstraint c actuals pos
+      extendLogicalConstaints c'    
   
 -- | 'applyMapConstraint' @c actuals pos@ : 
 -- return if @c (actuals)@ holds

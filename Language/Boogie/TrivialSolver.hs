@@ -3,7 +3,6 @@
 module Language.Boogie.TrivialSolver (solve) where
 
 import           Control.Applicative
-import           Control.Monad.Stream
 import           Control.Monad.Identity
 import           Control.Monad.Trans.State
 import           Control.Monad.Trans.Error
@@ -22,7 +21,7 @@ import           Language.Boogie.Pretty
 import           Language.Boogie.Solver
 import           Language.Boogie.TypeChecker
 
-genValOfType :: Generator Stream -> Type -> Stream Thunk
+genValOfType :: (MonadPlus m, Functor m) => Generator m -> Type -> m Thunk
 genValOfType gtor ttype = gen <$> Literal <$> val
     where
      val = case ttype of
@@ -31,12 +30,12 @@ genValOfType gtor ttype = gen <$> Literal <$> val
              IdType _ _ -> CustomValue ttype <$> fromIntegral <$> genInteger gtor
              _ -> error $ "genValOfType: can't generate value for " ++ show ttype
 
-getLogPoint :: Generator Stream -> Ref -> Type -> Stream (Ref, Thunk)
+getLogPoint :: (MonadPlus m, Functor m) => Generator m -> Ref -> Type -> m (Ref, Thunk)
 getLogPoint gen ref ttype =
     (ref,) <$> genValOfType gen ttype
 
 -- | Solver
-solve :: Maybe Integer -> Solver Stream
+solve :: (MonadPlus m, Functor m) => Maybe Integer -> Solver m
 solve mBound constrs = 
     Map.fromList <$> mapM (uncurry (getLogPoint gtor)) (nub lgPts)
     where
