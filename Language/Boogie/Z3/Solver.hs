@@ -24,9 +24,10 @@ solve mBound constrs =
           where
             go = if mBound == Nothing || (fromJust mBound > 1)
                     then do 
-                      (ref, e) <- fromList (Map.toList soln)
-                      let notE = enot (gen (Logical (thunkType e) ref) |=| e)
-                      solve (fmap pred mBound) (notE : constrs)
+                      -- (ref, e) <- fromList (Map.toList soln)
+                      -- let notE = enot (gen (Logical (thunkType e) ref) |=| e)
+                      -- solve (fmap pred mBound) (notE : constrs)
+                      solve (fmap pred mBound) (neq : constrs)
                     else mzero
       Nothing -> mzero    
 
