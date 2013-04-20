@@ -554,7 +554,7 @@ evalMapUpdate m args new pos = do
   let Reference t r = fromLiteral m'
   args' <- mapM eval args
   mapM_ (rejectMapIndex pos) args'
-  new' <- eval new    
+  new' <- eval new
   newM' <- generateValue t pos
   let Reference _ r' = fromLiteral newM'
   setMapValue r' args' new'
@@ -680,18 +680,22 @@ evalLambda tv vars e pos = do
     
 evalForall tv vars e pos = do
   qExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)  
-  -- answer <- generateValue BoolType pos
-  -- solveAll [trivialConstraint answer]
-  -- res <- eval answer
   res <- generate genBool
   if res
     then do -- we decided that e always holds: attach it to all occurring maps
+      cached <- concat <$> mapM evalForMap (M.toList $ extractMapConstraints qExpr)
+      mapM_ extendLogicalConstraints cached
       mapM_ (\(r, cs) -> mapM_ (extendMapConstaints r) cs) (M.toList $ extractMapConstraints qExpr)
     else do -- we decided that e does not always hold: find a counterexample  
       let typeBinding = M.fromList $ zip tv (repeat anyType)
       counterExample <- executeNested typeBinding vars (eval $ enot e')
-      extendLogicalConstaints counterExample    
+      extendLogicalConstraints counterExample    
   return $ Pos pos $ Literal $ BoolValue res
+  where
+    evalForMap (r, constraints) = concat <$> mapM (evalConstraint r) constraints
+    evalConstraint r c = do       
+      inst <- getMapInstance r
+      mapM (\actuals -> applyMapConstraint c actuals pos) (M.keys inst)
           
 {- Statements -}
 
@@ -707,7 +711,7 @@ exec stmt = case node stmt of
   
 execPredicate (SpecClause source True expr) pos = do
   c <- eval expr
-  extendLogicalConstaints c
+  extendLogicalConstraints c
 
 execPredicate clause@(SpecClause source False expr) pos = do
   c <- eval expr  
@@ -716,9 +720,9 @@ execPredicate clause@(SpecClause source False expr) pos = do
     else do
       res <- generate genBool
       if res
-        then extendLogicalConstaints c
+        then extendLogicalConstraints c
         else do
-          extendLogicalConstaints (enot c)
+          extendLogicalConstraints (enot c)
           solveConstraints
           eliminateLogicals
           throwRuntimeFailure (SpecViolation clause) pos          
@@ -835,8 +839,8 @@ extendNameConstaints lens c = mapM_ (\name -> modify $ addNameConstraint name (e
 -- | 'extendMapConstaints' @r c@ : add @c@ to the constraints of the map @r@  
 extendMapConstaints r c = modify $ addMapConstraint r c
 
--- | 'extendLogicalConstaints' @c@ : add @c@ to the logical constraints
-extendLogicalConstaints c = if node c == tt
+-- | 'extendLogicalConstraints' @c@ : add @c@ to the logical constraints
+extendLogicalConstraints c = if node c == tt
   then return ()
   else if node c == ff 
     then throwRuntimeFailure (SpecViolation (SpecClause Axiom True c)) (position c)
@@ -894,7 +898,7 @@ checkNameConstraints name pos = do
   where 
     checkConstraint c = do
       c' <- eval c
-      extendLogicalConstaints c'
+      extendLogicalConstraints c'
   
 -- | 'checkMapConstraints' @r actuals pos@ : assume all constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
@@ -904,7 +908,7 @@ checkMapConstraints r actuals pos = do
   where
     checkConstraint c = do
       c' <- applyMapConstraint c actuals pos
-      extendLogicalConstaints c'    
+      extendLogicalConstraints c'    
   
 -- | 'applyMapConstraint' @c actuals pos@ : 
 -- return if @c (actuals)@ holds
@@ -925,19 +929,28 @@ solve :: (Monad m, Functor m) => ConstraintSet -> Execution m Solution
 solve cs = do    
   s <- use envSolver
   lift $ lift $ s cs
-    
--- | 'solveAll' @cs@ : completely solve constraints @cs@
--- (apply solver until no constraints are left;
--- if any constraint evaluates to false with the current solution, throw an assumption violation)
-solveAll :: (Monad m, Functor m) => ConstraintSet -> Execution m ()
-solveAll [] = return ()
-solveAll constraints = do
-  solution <- solve constraints
-  envMemory.memLogical %= M.union solution
-  updateMapCache
-  newConstraints <- catMaybes <$> mapM checkConstraint constraints
-  solveAll newConstraints
+
+-- | Solve current logical variable constraints
+-- until a valid solution is found and no constraints are left
+solveConstraints :: (Monad m, Functor m) => Execution m ()
+solveConstraints = do
+  constraints <- use $ envConstraints.conLogical
+  envConstraints.conLogical .= []
+  instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)
+  when (not $ null constraints) $ solveAndCheck (constraints ++ instanceConstraints)
   where
+    constraintsFromMap (r, inst) = map (pointConstraint r) (M.toList inst)
+    pointConstraint r (args, val) = let
+        mapType = MapType [] (map thunkType args) (thunkType val)
+        mapExpr = gen $ Literal $ Reference mapType r
+      in gen (MapSelection mapExpr args) |=| val  
+    solveAndCheck constraints = do
+      solution <- solve constraints
+      envMemory.memLogical %= M.union solution
+      updateMapCache
+      mapM_ checkConstraint constraints      
+      solveConstraints -- the previous two lines might have generated more constraints, so we should solve again    
+    -- | Instantiate all logical variables inside map cache
     updateMapCache = do
       maps <- use $ envMemory.memMaps
       newMapCache <- T.mapM (\inst -> M.fromList <$> mapM evalPoint (M.toList inst)) maps
@@ -945,28 +958,14 @@ solveAll constraints = do
     evalPoint (args, val) = do
       val' : args' <- mapM eval (val : args)
       return (args', val')
+    -- | Check validity of a constraint with the current assignment to logicals;
+    -- if the constraint does not evaluate to a literal, add it to constraints again
     checkConstraint c = do
       res <- eval c
       case node res of
-        Literal (BoolValue True) -> return Nothing
+        Literal (BoolValue True) -> return ()
         Literal (BoolValue False) -> throwRuntimeFailure (SpecViolation (SpecClause Axiom True c)) (position res)
-        _ -> return $ Just res
-  
--- | Solve current logical variable constraints
-solveConstraints :: (Monad m, Functor m) => Execution m ()
-solveConstraints = do
-  constraints <- use $ envConstraints.conLogical
-  when (not $ null constraints) (do
-    instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)
-    solveAll $ constraints ++ instanceConstraints
-    envConstraints.conLogical .= []
-    )
-  where
-    constraintsFromMap (r, inst) = map (pointConstraint r) (M.toList inst)
-    pointConstraint r (args, val) = let
-        mapType = MapType [] (map thunkType args) (thunkType val)
-        mapExpr = gen $ Literal $ Reference mapType r
-      in gen (MapSelection mapExpr args) |=| val
+        _ -> extendLogicalConstraints res      
   
 -- | Assuming that all logical variables have been assigned values,
 -- re-evaluate the store and the map constraints, and wipe out logical store.
@@ -990,15 +989,6 @@ eliminateLogicals = do
       newMC <- T.mapM (mapM evalQuantified) mc
       envConstraints.conMaps .= newMC
   
--- -- | 'genIndex' @n@ : return an intereg in [0, n)  
--- genIndex :: (Monad m, Functor m) => Int -> Execution m Int
--- genIndex n = if n == 1
-  -- then return 0
-  -- else do
-    -- l <- generateValue IntType noPos
-    -- solveAll [num 0 |<=| l, l |<| num (fromIntegral n)]
-    -- (fromInteger . unValueInt . fromLiteral) <$> eval l
-    
 -- | 'generate' @f@ : computation that extracts @f@ from the generator
 generate :: (Monad m, Functor m) => (Generator m -> m a) -> Execution m a
 generate f = do
