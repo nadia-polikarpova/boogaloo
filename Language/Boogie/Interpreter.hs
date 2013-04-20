@@ -708,17 +708,18 @@ execPredicate (SpecClause source True expr) pos = do
   extendLogicalConstaints c
 
 execPredicate clause@(SpecClause source False expr) pos = do
-  c <- eval expr
+  c <- eval expr  
   if node c == tt
     then return ()
     else do
-      solveConstraints
-      c' <- eval c
-      case fromLiteral c' of
-        BoolValue True -> return ()
-        BoolValue False -> do
+      res <- generate genBool
+      if res
+        then extendLogicalConstaints c
+        else do
+          extendLogicalConstaints (enot c)
+          solveConstraints
           eliminateLogicals
-          throwRuntimeFailure (SpecViolation clause) pos
+          throwRuntimeFailure (SpecViolation clause) pos          
     
 execHavoc names pos = do
   mapM_ forgetAnyVar names
@@ -841,14 +842,14 @@ evalQuantified expr = evalQuantified' [] expr
       MapSelection m args -> do
         m' <- evalQuantified' vars m
         args' <- mapM (evalQuantified' vars) args
-        if all isLiteral (m' : args')
+        if all (null . freeVars) (m' : args')
           then node <$> evalMapSelection m' args' p
           else return $ MapSelection m' args'
       MapUpdate m args new -> do
         m' <- evalQuantified' vars m
         args' <- mapM (evalQuantified' vars) args
         new' <- evalQuantified' vars new
-        if all isLiteral (m' : new' : args')
+        if all (null . freeVars) (m' : new' : args')
           then node <$> evalMapUpdate m' args' new' p
           else return $ MapUpdate m' args' new'   
       Old e -> node <$> old (evalQuantified' vars e)
@@ -856,19 +857,19 @@ evalQuantified expr = evalQuantified' [] expr
         cond' <- evalQuantified' vars cond
         e1' <- evalQuantified' vars e1
         e2' <- evalQuantified' vars e2
-        if all isLiteral [cond', e1', e2']
+        if all (null . freeVars) [cond', e1', e2']
           then node <$> evalIf cond' e1' e2'
           else return $ IfExpr cond' e1' e2'
       Coercion e t -> node <$> evalQuantified' vars e
       UnaryExpression op e -> do
         e' <- evalQuantified' vars e
-        if isLiteral e'
+        if (null . freeVars) e'
           then node <$> evalUnary op e'
           else return $ UnaryExpression op e'
       BinaryExpression op e1 e2 -> do
         e1' <- evalQuantified' vars e1
         e2' <- evalQuantified' vars e2
-        if isLiteral e1' && isLiteral e2'
+        if (null . freeVars) e1' && (null . freeVars) e2'
           then node <$> evalBinary op e1' e2'
           else return $ BinaryExpression op e1' e2'
       Quantified qop tv bv e -> Quantified qop tv bv <$> evalQuantified' (vars ++ map fst bv) e

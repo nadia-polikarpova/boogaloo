@@ -132,11 +132,11 @@ executeFromFile file proc_ solver branch_max exec_max invalid nexec pass fail ou
               else if null outs
                 then printDoc format $ auxDoc (text "No executions to display")
                 else mapM_ (printDoc format) $ zipWith outcomeDoc [0..] outs
-    solve :: ConstraintSet -> [Solution]
+    solve :: ConstraintSet -> Stream Solution
     solve = case solver of
       Exhaustive -> Trivial.solve branch_max
       Z3 -> Z3.solve (fmap fromInteger branch_max)
-    generator = exhaustiveGenerator branch_max
+    generator = exhaustiveGenerator Nothing
     maybeTake mLimit = case mLimit of
       Nothing -> id
       Just n -> take n
