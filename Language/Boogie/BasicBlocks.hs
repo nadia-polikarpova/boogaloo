@@ -109,7 +109,7 @@ transform m ([], Pos p stmt) = case stmt of
     t <- transBlock (M.insert innermost lDone m) body
     return $
       [justBareStatement $ Goto [lHead]] ++
-      attach lHead (map checkInvariant invs ++ [justBareStatement $ Goto [lBody, lGDone]]) ++
+      attach lHead (map checkInvariant invs ++ [justBareStatement $ Goto [lGDone, lBody]]) ++
       [([lBody], assume e)] ++ t ++ [justBareStatement $ Goto [lHead]] ++
       [([lGDone], assume (enot e))] ++ [justBareStatement $ Goto [lDone]] ++
       [justLabel lDone]    

@@ -153,6 +153,7 @@ executeLocally localTC formals actuals localWhere computation = do
   oldEnv <- get
   envTypeContext %= localTC
   envMemory.memLocals .= M.empty
+  envLabelCount .= M.empty
   zipWithM_ (setVar memLocals) formals actuals
   mapM_ (extendNameConstaints conLocals) localWhere
   computation `finally` unwind oldEnv
@@ -163,6 +164,7 @@ executeLocally localTC formals actuals localWhere computation = do
       envTypeContext .= oldEnv^.envTypeContext
       envMemory.memLocals .= oldEnv^.envMemory.memLocals
       envConstraints.conLocals .= oldEnv^.envConstraints.conLocals
+      envLabelCount .= oldEnv^.envLabelCount
       
 -- | Exucute computation in a nested context      
 executeNested :: (MonadState (Environment m) s, Finalizer s) => TypeBinding -> [IdType] -> s a -> s a
@@ -769,14 +771,25 @@ execBlock :: (Monad m, Functor m) => Map Id [Statement] -> Id -> Execution m Sou
 execBlock blocks label = let
   block = blocks ! label
   statements = init block
+  labelCount lb = do
+    lCounts <- use envLabelCount
+    case M.lookup lb lCounts of
+      Just n -> do
+        return n
+      Nothing -> do
+        envLabelCount %= M.insert lb 0
+        return 0
   in do
     mapM exec statements
-    solveConstraints
     case last block of
       Pos pos Return -> return pos
       Pos _ (Goto lbs) -> do
+        counts <- mapM labelCount lbs
+        let orderedLbs = sortBy (\a b -> snd a `compare` snd b) (zip lbs counts)
         i <- generate $ flip genIndex (length lbs)
-        execBlock blocks (lbs !! i)
+        let (lb, c) = orderedLbs !! i
+        envLabelCount %= M.insert lb (succ c)
+        execBlock blocks lb
     
 -- | 'execProcedure' @sig def args lhss@ :
 -- Execute definition @def@ of procedure @sig@ with actual arguments @args@ and call left-hand sides @lhss@
@@ -988,7 +1001,7 @@ eliminateLogicals = do
     
 -- | 'generate' @f@ : computation that extracts @f@ from the generator
 generate :: (Monad m, Functor m) => (Generator m -> m a) -> Execution m a
-generate f = do    
+generate f = do
   gen <- use envGenerator
   lift (lift (f gen))
           
