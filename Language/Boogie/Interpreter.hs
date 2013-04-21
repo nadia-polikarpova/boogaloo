@@ -41,6 +41,7 @@ import Language.Boogie.TypeChecker
 import Language.Boogie.NormalForm
 import Language.Boogie.BasicBlocks
 import Data.Maybe
+import Data.Function
 import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
@@ -155,7 +156,7 @@ executeLocally localTC formals actuals localWhere computation = do
   envMemory.memLocals .= M.empty
   envLabelCount .= M.empty
   zipWithM_ (setVar memLocals) formals actuals
-  mapM_ (extendNameConstaints conLocals) localWhere
+  mapM_ (extendNameConstraints conLocals) localWhere
   computation `finally` unwind oldEnv
   where
     -- | Restore type context and the values of local variables 
@@ -527,17 +528,12 @@ evalVar name pos = do
           return chosenValue
               
 evalApplication name args pos = evalMapSelection (functionExpr name pos) args pos  
-        
-rejectMapIndex pos idx = case thunkType idx of
-  MapType _ _ _ -> throwRuntimeFailure (UnsupportedConstruct $ text "map as an index") pos
-  _ -> return ()
-      
+
 evalMapSelection m args pos = do  
   m' <- eval m
   case fromLiteral m' of
     Reference _ r -> do
       args' <- mapM eval args
-      mapM_ (rejectMapIndex pos) args'
       inst <- getMapInstance r
       case M.lookup args' inst of    -- Lookup a cached value
         Just val -> eval val
@@ -553,7 +549,6 @@ evalMapUpdate m args new pos = do
   m' <- eval m
   let Reference t r = fromLiteral m'
   args' <- mapM eval args
-  mapM_ (rejectMapIndex pos) args'
   new' <- eval new
   newM' <- generateValue t pos
   let Reference _ r' = fromLiteral newM'
@@ -567,8 +562,8 @@ evalMapUpdate m args new pos = do
       appNew = attachPos pos $ MapSelection newM' bvExprs
       guardNeq = disjunction (zipWith (|!=|) bvExprs args')
       lambda = inheritPos (Quantified Lambda tv bv)
-  extendMapConstaints r $ lambda (guardNeq |=>| (appOld |=| appNew))
-  extendMapConstaints r' $ lambda (guardNeq |=>| (appOld |=| appNew))  
+  extendMapConstraints r $ lambda (guardNeq |=>| (appOld |=| appNew))
+  extendMapConstraints r' $ lambda (guardNeq |=>| (appOld |=| appNew))  
   return newM'
   
 evalIf cond e1 e2 = do
@@ -673,19 +668,24 @@ evalLambda tv vars e pos = do
   let var = attachPos pos . Var      
       app = attachPos pos $ MapSelection m' (map (var . fst) vars)
       Reference _ r = fromLiteral m'
-  extendMapConstaints r (lambda $ app |=| symBody)
+  extendMapConstraints r (lambda $ app |=| symBody)
   return m'
   where
     lambda = attachPos pos . Quantified Lambda tv vars
     
 evalForall tv vars e pos = do
-  qExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)  
   res <- generate genBool
+  forceForall tv vars e pos res
+      
+-- | Force the result of a forall expression to a given value      
+forceForall tv vars e pos res = do
+  qExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)  
   if res
     then do -- we decided that e always holds: attach it to all occurring maps
-      cached <- concat <$> mapM evalForMap (M.toList $ extractMapConstraints qExpr)
-      mapM_ extendLogicalConstraints cached
-      mapM_ (\(r, cs) -> mapM_ (extendMapConstaints r) cs) (M.toList $ extractMapConstraints qExpr)
+      let mapConstraints = M.toList $ extractMapConstraints qExpr
+      cached <- concat <$> mapM evalForMap mapConstraints
+      mapM_ extendLogicalConstraints cached      
+      mapM_ (\(r, cs) -> mapM_ (extendMapConstraints r) cs) mapConstraints
     else do -- we decided that e does not always hold: find a counterexample  
       let typeBinding = M.fromList $ zip tv (repeat anyType)
       counterExample <- executeNested typeBinding vars (eval $ enot e')
@@ -695,7 +695,7 @@ evalForall tv vars e pos = do
     evalForMap (r, constraints) = concat <$> mapM (evalConstraint r) constraints
     evalConstraint r c = do       
       inst <- getMapInstance r
-      mapM (\actuals -> applyMapConstraint c actuals pos) (M.keys inst)
+      mapM (\actuals -> applyMapConstraint c actuals pos) (M.keys inst)      
           
 {- Statements -}
 
@@ -709,9 +709,9 @@ exec stmt = case node stmt of
     Call lhss name args -> execCall name lhss args (position stmt)
     CallForall name args -> return ()
   
-execPredicate (SpecClause source True expr) pos = do
+execPredicate (SpecClause source True expr) pos = do  
   c <- eval expr
-  extendLogicalConstraints c
+  extendLogicalConstraints c  
 
 execPredicate clause@(SpecClause source False expr) pos = do
   c <- eval expr  
@@ -789,7 +789,7 @@ execBlock blocks label = let
       Pos pos Return -> return pos
       Pos _ (Goto lbs) -> do
         counts <- mapM labelCount lbs
-        let orderedLbs = sortBy (\a b -> snd a `compare` snd b) (zip lbs counts)
+        let orderedLbs = sortBy (compare `on` snd) (zip lbs counts)
         i <- generate $ flip genIndex (length lbs)
         let (lb, c) = orderedLbs !! i
         envLabelCount %= M.insert lb (succ c)
@@ -829,15 +829,12 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
 
 {- Evaluating constraints -}
 
--- | Constraint that just mentions logical variables without constraining them
-trivialConstraint e = e |=| e
+-- | 'extendNameConstraints' @lens c@ : add @c@ as a constraint for all free variables in @c@ to @envConstraints.lens@
+extendNameConstraints :: (MonadState (Environment m) s, Finalizer s) => SimpleLens ConstraintMemory NameConstraints -> Expression -> s ()
+extendNameConstraints lens c = mapM_ (\name -> modify $ addNameConstraint name (envConstraints.lens) c) (freeVars c)
 
--- | 'extendNameConstaints' @lens c@ : add @c@ as a constraint for all free variables in @c@ to @envConstraints.lens@
-extendNameConstaints :: (MonadState (Environment m) s, Finalizer s) => SimpleLens ConstraintMemory NameConstraints -> Expression -> s ()
-extendNameConstaints lens c = mapM_ (\name -> modify $ addNameConstraint name (envConstraints.lens) c) (freeVars c)
-
--- | 'extendMapConstaints' @r c@ : add @c@ to the constraints of the map @r@  
-extendMapConstaints r c = modify $ addMapConstraint r c
+-- | 'extendMapConstraints' @r c@ : add @c@ to the constraints of the map @r@  
+extendMapConstraints r c = modify $ addMapConstraint r c
 
 -- | 'extendLogicalConstraints' @c@ : add @c@ to the logical constraints
 extendLogicalConstraints c = if node c == tt
@@ -904,7 +901,7 @@ checkNameConstraints name pos = do
 -- in the map referenced by @r@ mentioned at @pos@
 checkMapConstraints r actuals pos = do
   cs <- gets $ lookupMapConstraints r
-  mapM checkConstraint cs
+  mapM_ checkConstraint cs
   where
     checkConstraint c = do
       c' <- applyMapConstraint c actuals pos
@@ -922,7 +919,9 @@ applyMapConstraint c actuals pos =
     locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []
   in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
     then return $ attachPos pos $ tt
-    else locally (eval body)
+    else case node body of
+      Quantified Forall tv' vars e -> locally (forceForall tv' vars e pos True) -- parametrized forall constraint: force it to true
+      _ -> locally (eval body)
     
 -- | 'solve' @cs@ : apply solver to constraints @cs@
 solve :: (Monad m, Functor m) => ConstraintSet -> Execution m Solution
@@ -934,9 +933,9 @@ solve cs = do
 -- until a valid solution is found and no constraints are left
 solveConstraints :: (Monad m, Functor m) => Execution m ()
 solveConstraints = do
-  constraints <- use $ envConstraints.conLogical
+  constraints <- use $ envConstraints.conLogical  
   envConstraints.conLogical .= []
-  instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)
+  instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)  
   when (not $ null constraints) $ solveAndCheck (constraints ++ instanceConstraints)
   where
     constraintsFromMap (r, inst) = map (pointConstraint r) (M.toList inst)
@@ -1005,8 +1004,8 @@ preprocess (Program decls) = mapM_ processDecl decls
       FunctionDecl name _ args _ mBody -> processFunction name (map fst args) mBody
       ProcedureDecl name _ args rets _ (Just body) -> processProcedureBody name (position decl) (map noWhere args) (map noWhere rets) body
       ImplementationDecl name _ args rets bodies -> mapM_ (processProcedureBody name (position decl) args rets) bodies
-      AxiomDecl expr -> extendNameConstaints conGlobals expr
-      VarDecl vars -> mapM_ (extendNameConstaints conGlobals) (map itwWhere vars)      
+      AxiomDecl expr -> extendNameConstraints conGlobals expr
+      VarDecl vars -> mapM_ (extendNameConstraints conGlobals) (map itwWhere vars)      
       _ -> return ()
       
 processFunction name argNames mBody = do
@@ -1020,7 +1019,7 @@ processFunction name argNames mBody = do
       let formals = zip (map formalName argNames) argTypes
       let app = attachPos pos $ Application name (map (attachPos pos . Var . fst) formals)
       let axiom = inheritPos (Quantified Forall tv formals) (app |=| body)      
-      extendNameConstaints conGlobals axiom
+      extendNameConstraints conGlobals axiom
   where        
     formalName Nothing = dummyFArg 
     formalName (Just n) = n
