@@ -46,7 +46,8 @@ evalExpr expr = debug ("evalExpr: " ++ show expr) >>
                    mkApp ctor [refAst]
             _ -> error $ "evalValue: can't handle value: " ++ show v
 
-      go = evalExpr
+
+      go e = evalExpr e <* debug ("eval'd " ++ show e)
 
       tupleArg :: [Expression] -> Z3Gen AST
       tupleArg es =

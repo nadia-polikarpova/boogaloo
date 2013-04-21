@@ -76,19 +76,49 @@ updateRefMap = mapM_ addRefs
 solveConstr :: [Expression] -> Z3Gen (Maybe Solution)
 solveConstr constrs = 
     do updateRefMap constrs
+       debug ("solveConstr: finished map updates")
        mapM_ (evalExpr >=> assertCnstr) constrs
+       dummyPreds
+       debug ("solveConstr: asserting constraints")
        (_result, modelMb) <- getModel
        case modelMb of
          Just model -> Just <$> reconstruct model
          Nothing -> return Nothing
 
 
+-- | Generate dummy predicates to force values for everything
+-- we want in the model.
+dummyPreds :: Z3Gen ()
+dummyPreds =
+  do pBoolStr <- mkStringSymbol "dummy_p_bool"
+     pIntStr <- mkStringSymbol "dummy_p_int"
+     bSort <- mkBoolSort
+     iSort <- mkIntSort
+     
+     pBool <- mkFuncDecl pBoolStr [bSort] bSort
+     pInt <- mkFuncDecl pIntStr [iSort] bSort
+     
+     assocs <- uses refMap Map.toList
+     
+     let go (LogicRef t _ref, ast) =
+           case t of
+             BoolType -> mkApp pBool [ast] >>= assertCnstr
+             IntType -> mkApp pInt [ast] >>= assertCnstr
+         go _ = return ()
+     
+     mapM_ go assocs
+     
+     return ()
+
 -- | Extracts a particular type from an AST node, evaluating
 -- the node first.
 extract :: Model -> Ref -> Type -> AST -> Z3Gen Value
 extract model ref t ast = 
     do Just ast' <- eval model ast
-       case t of 
+       str <- astToString ast
+       str' <- astToString ast'
+       debug (unwords ["extract:", str, str', show t])
+       v <- case t of 
          IntType -> IntValue <$> getInt ast'
          BoolType -> 
              do bMb <- getBool ast'
@@ -110,7 +140,8 @@ extract model ref t ast =
                             , "extract maptypes like "
                             , show t
                             ]
-
+       debug (unwords ["extract:", show v])
+       return v
 -- | From a model and a mapping of values to Z3 AST nodes reconstruct
 -- a mapping from references to values. This extracts the appropriate
 -- values from the model.
