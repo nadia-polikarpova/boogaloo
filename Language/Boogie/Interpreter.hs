@@ -528,7 +528,21 @@ evalVar name pos = do
           checkNameConstraints name pos
           return chosenValue
               
-evalApplication name args pos = evalMapSelection (functionExpr name pos) args pos  
+evalApplication name args pos = do
+  mBody <- expandMacro name args
+  case mBody of
+    Nothing -> evalMapSelection (functionExpr name pos) args pos
+    Just expr -> eval expr
+    
+-- | 'expandMacro' @name args@: if @name@ is a non-recursive function with a body, return its body applied to @args@,
+-- otherwise return 'Nothing'
+expandMacro name args = do
+  fs <- use envFunctions
+  case M.lookup name fs of
+    Nothing -> return Nothing
+    Just (Pos _ (Quantified Lambda tv vars body)) -> if isRecursive name fs
+      then return Nothing  
+      else return . Just $ exprSubst (M.fromList $ zip (map fst vars) args) body
 
 evalMapSelection m args pos = do  
   m' <- eval m
@@ -852,7 +866,11 @@ evalQuantified expr = evalQuantified' [] expr
       var@(Var name) -> if name `elem` vars
         then return var
         else node <$> evalVar name p
-      Application name args -> node <$> evalQuantified' vars (attachPos p $ MapSelection (functionExpr name p) args)
+      Application name args -> do 
+        mBody <- expandMacro name args
+        case mBody of
+          Nothing -> node <$> evalQuantified' vars (attachPos p $ MapSelection (functionExpr name p) args)
+          Just expr -> node <$> evalQuantified' vars expr
       MapSelection m args -> do
         m' <- evalQuantified' vars m
         args' <- mapM (evalQuantified' vars) args
@@ -1010,6 +1028,7 @@ preprocess (Program decls) = mapM_ processDecl decls
       ImplementationDecl name _ args rets bodies -> mapM_ (processProcedureBody name (position decl) args rets) bodies
       AxiomDecl expr -> extendNameConstraints conGlobals expr
       VarDecl vars -> mapM_ (extendNameConstraints conGlobals) (map itwWhere vars)      
+      ConstantDecl True names t _ _ -> mapM_ (makeUnique t) names
       _ -> return ()
       
 processFunction name argNames mBody = do
@@ -1022,7 +1041,8 @@ processFunction name argNames mBody = do
       let pos = position body
       let formals = zip (map formalName argNames) argTypes
       let app = attachPos pos $ Application name (map (attachPos pos . Var . fst) formals)
-      let axiom = inheritPos (Quantified Forall tv formals) (app |=| body)      
+      let axiom = inheritPos (Quantified Forall tv formals) (app |=| body)
+      envFunctions %= M.insert name (inheritPos (Quantified Lambda tv formals) body)
       extendNameConstraints conGlobals axiom
   where        
     formalName Nothing = dummyFArg 
@@ -1038,6 +1058,16 @@ processProcedureBody name pos args rets body = do
   where
     argNames = map fst args
     retNames = map fst rets
+    
+-- | 'makeUnique' @typ name@: add constraints for a constant @name@ of type @typ@
+-- that it os different from all other constants of this type.
+makeUnique typ name = do
+  tc <- use envTypeContext
+  let other = M.filterWithKey (\n t -> n /= name && t == typ) (ctxConstants tc)
+  mapM_ (\n -> extendNameConstraints conGlobals (axiom n)) (M.keys other)
+  where
+    axiom n = (gen . Var) (min n name) |!=| (gen . Var) (max n name)
+  
 
 {- Extracting constraints -}
 

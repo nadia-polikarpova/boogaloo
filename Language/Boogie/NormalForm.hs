@@ -56,7 +56,7 @@ prenexNF boolExpr = glue $ rawPrenex boolExpr
     merge' _ _ op e1 e2 = BinaryExpression op e1 e2
     -- | Rename all bound variables and type variables in a quantified expression with a renaming function r
     renameBound r (Quantified qop tv vars e) = Quantified qop (map r tv) (map (renameVar r tv) vars) (exprSubst (varBinding r (map fst vars)) e)
-    varBinding r ids = M.fromList $ zip ids (map (Var . r) ids)
+    varBinding r ids = M.fromList $ zip ids (map (gen . Var . r) ids)
     typeBinding r tv = M.fromList $ zip tv (map (nullaryType . r) tv)
     renameVar r tv (id, t) = (r id, typeSubst (typeBinding r tv) t)
     -- | Glue together any two quantifiers of the same kind in a row

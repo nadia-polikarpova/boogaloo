@@ -18,6 +18,7 @@ module Language.Boogie.Util (
   paramSubst,
   mapRefs,
   refSelections,
+  applications,
   -- * Specs
   preconditions,
   postconditions,
@@ -205,7 +206,7 @@ freeVars = fst . freeVarsTwoState
 freeOldVars = snd . freeVarsTwoState
 
 -- | Mapping from variables to expressions
-type VarBinding = Map Id BareExpression
+type VarBinding = Map Id Expression
 
 -- | 'exprSubst' @binding e@ : substitute all free variables in @e@ according to @binding@;
 -- all variables in the domain of @bindings@ are considered free if not explicitly bound
@@ -214,7 +215,7 @@ exprSubst binding (Pos pos e) = attachPos pos $ exprSubst' binding e
 
 exprSubst' binding (Var id) = case M.lookup id binding of
   Nothing -> Var id
-  Just e -> e
+  Just e -> (node e)
 exprSubst' binding (Application id args) = Application id (map (exprSubst binding) args)
 exprSubst' binding (MapSelection m args) = MapSelection (exprSubst binding m) (map (exprSubst binding) args)
 exprSubst' binding (MapUpdate m args val) = MapUpdate (exprSubst binding m) (map (exprSubst binding) args) (exprSubst binding val)
@@ -234,8 +235,8 @@ paramBinding sig def = M.fromList $ zip (sigIns ++ sigOuts) (defIns ++ defOuts)
   where
     sigIns = map itwId $ psigArgs sig
     sigOuts = map itwId $ psigRets sig
-    defIns = map Var $ pdefIns def
-    defOuts = map Var $ pdefOuts def
+    defIns = map (gen . Var) $ pdefIns def
+    defOuts = map (gen . Var) $ pdefOuts def
   
 -- | 'paramSubst' @sig def@ :
 -- Substitute parameter names from @sig@ in an expression with their equivalents from @def@
@@ -278,6 +279,21 @@ refSelections expr = case node expr of
   UnaryExpression _ e -> refSelections e
   BinaryExpression _ e1 e2 -> nub . concat $ [refSelections e1, refSelections e2]
   Quantified _ _ boundVars e -> refSelections e
+  
+-- | 'applications' @expr@ : all function applications that occur in @expr@
+applications :: Expression -> [(Id, [Expression])]
+applications expr = case node expr of
+  Literal _-> []
+  Var x-> []
+  Application name args-> (name, args) : (nub . concat $ map applications args)
+  MapSelection m args-> nub . concat $ map applications (m : args)
+  MapUpdate m args val->  nub . concat $ map applications (val : m : args)
+  Old e-> internalError $ text "applications should only be applied in single-state context"
+  IfExpr cond e1 e2-> nub . concat $ [applications cond, applications e1, applications e2]
+  Coercion e _-> applications e
+  UnaryExpression _ e-> applications e
+  BinaryExpression _ e1 e2-> nub . concat $ [applications e1, applications e2]
+  Quantified _ _ _ e-> applications e    
 
 {- Specs -}
 

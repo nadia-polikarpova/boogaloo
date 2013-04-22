@@ -31,6 +31,7 @@ module Language.Boogie.Environment (
   Environment,
   envMemory,
   envProcedures,
+  envFunctions,
   envConstraints,
   envTypeContext,
   envSolver,
@@ -50,7 +51,8 @@ module Language.Boogie.Environment (
   addMapConstraint,
   addLogicalConstraint,
   setCustomCount,
-  markModified
+  markModified,
+  isRecursive
 ) where
 
 import Language.Boogie.Util
@@ -232,9 +234,10 @@ data Environment m = Environment
     _envMemory :: Memory,                   -- ^ Values
     _envConstraints :: ConstraintMemory,    -- ^ Constraints
     _envProcedures :: Map Id [PDef],        -- ^ Procedure implementations
+    _envFunctions :: Map Id Expression,     -- ^ Functions with definitions
     _envTypeContext :: Context,             -- ^ Type context
     _envSolver :: Solver m,                 -- ^ Constraint solver
-    _envGenerator :: Generator m,
+    _envGenerator :: Generator m,           -- ^ Value generator
     _envMapCount :: Int,                    -- ^ Number of map references currently in use
     _envLogicalCount :: Int,                -- ^ Number of logical varibles currently in use
     _envCustomCount :: Map Type Int,        -- ^ For each user-defined type, number of distinct values of this type already generated
@@ -250,6 +253,7 @@ initEnv tc s g = Environment
     _envMemory = emptyMemory,
     _envConstraints = emptyConstraintMemory,
     _envProcedures = M.empty,
+    _envFunctions = M.empty,
     _envTypeContext = tc,
     _envSolver = s,
     _envGenerator = g,
@@ -283,3 +287,11 @@ setCustomCount t n = over envCustomCount (M.insert t n)
 markModified name env = if M.member name (env^.envTypeContext.to ctxGlobals) 
   then over (envMemory.memModified) (S.insert name) env
   else env
+  
+-- | 'isRecursive' @name functions@ : is function @name@ (mutually) recursive according to definitions in @functions@?
+isRecursive name functions = callsAny name [name]
+  where
+    callsAny name fs = case M.lookup name functions of
+                            Nothing -> False
+                            Just (Pos _ (Quantified Lambda tv vars body)) -> let called = map fst $ applications body
+                              in not (null (fs `intersect` called)) || any (\f -> callsAny f (fs ++ called)) called
