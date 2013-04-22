@@ -104,6 +104,10 @@ dummyPreds =
            case t of
              BoolType -> mkApp pBool [ast] >>= assertCnstr
              IntType -> mkApp pInt [ast] >>= assertCnstr
+             IdType ident types ->
+                 do (_, _, proj) <- lookupCustomType ident types
+                    inner <- mkApp proj [ast]
+                    mkApp pInt [inner] >>= assertCnstr
          go _ = return ()
      
      mapM_ go assocs
