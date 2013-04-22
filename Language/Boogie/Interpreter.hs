@@ -67,7 +67,6 @@ executeProgram p tc solver generator entryPoint = result <$> runStateT (runError
       execUnsafely $ preprocess p      
       execRootCall
       solveConstraints
-      eliminateLogicals
     sig = procSig entryPoint tc
     execRootCall = do
       let params = psigParams sig
@@ -149,7 +148,7 @@ restoreOld callerMem = do
   envMemory.memModified %= ((callerMem^.memModified) `S.union`)
   
 -- | Execute computation in a local context
-executeLocally :: (MonadState (Environment m) s, Finalizer s) => (Context -> Context) -> [Id] -> [Thunk] -> [Expression] -> s a -> s a
+executeLocally :: (Monad m, Functor m) => (Context -> Context) -> [Id] -> [Thunk] -> [Expression] -> Execution m a -> Execution m a
 executeLocally localTC formals actuals localWhere computation = do
   oldEnv <- get
   envTypeContext %= localTC
@@ -166,6 +165,7 @@ executeLocally localTC formals actuals localWhere computation = do
       envMemory.memLocals .= oldEnv^.envMemory.memLocals
       envConstraints.conLocals .= oldEnv^.envConstraints.conLocals
       envLabelCount .= oldEnv^.envLabelCount
+      eliminateLogicals -- instantiate the caller's locals
       
 -- | Exucute computation in a nested context      
 executeNested :: (MonadState (Environment m) s, Finalizer s) => TypeBinding -> [IdType] -> s a -> s a
@@ -721,10 +721,9 @@ execPredicate clause@(SpecClause source False expr) pos = do
       res <- generate genBool
       if res
         then extendLogicalConstraints c
-        else do
-          extendLogicalConstraints (enot c)
+        else do          
+          extendLogicalConstraints (enot c)          
           solveConstraints
-          eliminateLogicals
           throwRuntimeFailure (SpecViolation clause) pos          
     
 execHavoc names pos = do
@@ -936,7 +935,9 @@ solveConstraints = do
   constraints <- use $ envConstraints.conLogical  
   envConstraints.conLogical .= []
   instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)  
-  when (not $ null constraints) $ solveAndCheck (constraints ++ instanceConstraints)
+  if null constraints
+    then eliminateLogicals                                  -- We are done: instantiate the memory with the solution 
+    else solveAndCheck (constraints ++ instanceConstraints) -- Something to solve
   where
     constraintsFromMap (r, inst) = map (pointConstraint r) (M.toList inst)
     pointConstraint r (args, val) = let
@@ -969,14 +970,16 @@ solveConstraints = do
 -- | Assuming that all logical variables have been assigned values,
 -- re-evaluate the store and the map constraints, and wipe out logical store.
 eliminateLogicals :: (Monad m, Functor m) => Execution m ()
-eliminateLogicals = do
-    evalStore memGlobals
-    evalStore memOld
-    evalStore memLocals
-    evalStore memConstants
-    evalMapConstraints
-    envMemory.memLogical .= M.empty
+eliminateLogicals = do    
+    solution <- use $ envMemory.memLogical
+    when (not $ M.null solution) go
   where
+    go = do
+      evalStore memGlobals
+      evalStore memOld
+      evalStore memLocals
+      evalStore memConstants
+      evalMapConstraints    
     evalStore :: (Monad m, Functor m) => StoreLens -> Execution m ()
     evalStore lens = do
       store <- use $ envMemory.lens
