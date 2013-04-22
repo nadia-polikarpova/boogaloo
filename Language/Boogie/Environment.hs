@@ -144,7 +144,8 @@ userMemory conMem mem = let maps' = clearDefinedCache (_conMaps conMem) (mem^.me
      over memOld (userStore maps') $
      over memModified (const S.empty) $
      over memConstants (userStore maps') $
-     over memMaps (const emptyCache)
+     over memMaps id $ --(const emptyCache)
+     over memLogical (const M.empty)
      mem
 
 -- | 'memoryDoc' @inNames outNames mem@ : pretty-printed @mem@ where

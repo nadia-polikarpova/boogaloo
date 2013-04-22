@@ -246,8 +246,9 @@ instance Error RuntimeFailure where
   
 -- | Pretty-printed run-time failure
 runtimeFailureDoc debug err = 
-  let store = (if debug then id else userStore ((rtfMemory err)^.memMaps)) (M.filterWithKey (\k _ -> isRelevant k) (visibleVariables (rtfMemory err)))
-      sDoc = pretty store 
+    let store = (if debug then id else userStore ((rtfMemory err)^.memMaps)) (M.filterWithKey (\k _ -> isRelevant k) (visibleVariables (rtfMemory err)))
+        maps = M.filterWithKey (\r _ -> any (\e -> r `elem` mapRefs e) (M.elems store)) ((rtfMemory err)^.memMaps)
+        sDoc = pretty store $+$ pretty maps
   in failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) <+> 
     (nest 2 $ option (not (isEmpty sDoc)) (text "with") $+$ sDoc) $+$
     vsep (map stackFrameDoc (reverse (rtfTrace err)))
