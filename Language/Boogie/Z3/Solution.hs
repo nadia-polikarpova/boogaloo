@@ -74,8 +74,8 @@ updateRefMap = mapM_ addRefs
 -- The constraint expressions will have no regular variables,
 -- only logical variables and map variables.
 
-solveConstr :: [Expression] -> Z3Gen (Maybe Solution)
-solveConstr constrs = 
+solveConstr :: Bool -> [Expression] -> Z3Gen (Maybe Solution)
+solveConstr minWanted constrs = 
     do updateRefMap constrs
        debug ("solveConstr: finished map updates")
        mapM_ (evalExpr >=> assertCnstr) constrs
@@ -84,8 +84,10 @@ solveConstr constrs =
        (_result, modelMb) <- getModel
        case modelMb of
          Just model ->
-             do minModel <- minimizeModel model constrs
-                Just <$> reconstruct minModel
+             do m <- if minWanted
+                     then minimizeModel model constrs
+                     else return model
+                Just <$> reconstruct m
          Nothing -> return Nothing
 
 

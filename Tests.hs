@@ -107,7 +107,7 @@ interpreterSuccess file = do
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
       Right context -> let 
           solve :: ConstraintSet -> Stream Solution
-          solve = Z3.solve Nothing
+          solve = Z3.solve True Nothing
           generator = exhaustiveGenerator Nothing
         in case (head . filter (not . isInvalid) . toList) (executeProgram p context solve generator entryPoint) of
           I.TestCase _ _ _ (Just err) -> assertFailure (show $ pretty err)

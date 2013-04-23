@@ -20,9 +20,13 @@ import           Language.Boogie.Z3.GenMonad
 
 import           System.IO.Unsafe
 
-solve :: (MonadPlus m, Foldable m) => Maybe Int -> [Expression] -> m Solution
-solve mBound constrs = 
-    case stepConstrs constrs of
+solve :: (MonadPlus m, Foldable m)
+      => Bool          -- ^ Is a minimal solution desired?
+      -> Maybe Int     -- ^ Bound on number of solutions
+      -> [Expression]  -- ^ Constraints
+      -> m Solution
+solve minWanted mBound constrs = 
+    case stepConstrs minWanted constrs of
       Just (soln, neq) -> return soln `mplus` go
           where
             go = if mBound == Nothing || (fromJust mBound > 1)
@@ -30,13 +34,13 @@ solve mBound constrs =
                       -- (ref, e) <- fromList (Map.toList soln)
                       -- let notE = enot (gen (Logical (thunkType e) ref) |=| e)
                       -- solve (fmap pred mBound) (notE : constrs)
-                      solve (fmap pred mBound) (neq : constrs)
+                      solve minWanted (fmap pred mBound) (neq : constrs)
                     else mzero
       Nothing -> mzero    
 
-stepConstrs :: [Expression] -> Maybe (Solution, Expression)
-stepConstrs constrs = unsafePerformIO $ evalZ3Gen $
-    do solnMb <- solveConstr constrs
+stepConstrs :: Bool -> [Expression] -> Maybe (Solution, Expression)
+stepConstrs minWanted constrs = unsafePerformIO $ evalZ3Gen $
+    do solnMb <- solveConstr minWanted constrs
        case solnMb of
          Just soln -> return $ Just (soln, newConstraint soln)
          Nothing -> return Nothing

@@ -135,7 +135,7 @@ executeFromFile file proc_ solver branch_max exec_max invalid nexec pass fail ou
     solve :: ConstraintSet -> Stream Solution
     solve = case solver of
       Exhaustive -> Trivial.solve branch_max
-      Z3 -> Z3.solve (fmap fromInteger branch_max)
+      Z3 -> Z3.solve True (fmap fromInteger branch_max)
     generator = exhaustiveGenerator Nothing
     maybeTake mLimit = case mLimit of
       Nothing -> id
