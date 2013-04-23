@@ -26,6 +26,7 @@ import           Language.Boogie.PrettyAST ()
 import           Language.Boogie.Solver
 import           Language.Boogie.Z3.Eval
 import           Language.Boogie.Z3.GenMonad
+import           Language.Boogie.Z3.Minimize
 
 -- | Update the state's reference map with the references in the
 -- supplied expressions. This requires that the sorts already be
@@ -82,7 +83,9 @@ solveConstr constrs =
        debug ("solveConstr: asserting constraints")
        (_result, modelMb) <- getModel
        case modelMb of
-         Just model -> Just <$> reconstruct model
+         Just model ->
+             do minModel <- minimizeModel model constrs
+                Just <$> reconstruct minModel
          Nothing -> return Nothing
 
 

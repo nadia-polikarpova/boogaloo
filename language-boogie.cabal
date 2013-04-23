@@ -47,7 +47,8 @@ library
       Language.Boogie.Environment,
       Language.Boogie.BasicBlocks,
       Language.Boogie.AST
-  -- other-modules:       
+  other-modules:
+      Language.Boogie.Z3.Minimize
   build-depends:
       base ==4.*,
       random ==1.0.*,
