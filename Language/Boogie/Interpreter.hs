@@ -942,7 +942,7 @@ applyMapConstraint c actuals pos =
       _ -> locally (eval body)
     
 -- | 'solve' @cs@ : apply solver to constraints @cs@
-solve :: (Monad m, Functor m) => ConstraintSet -> Execution m Solution
+solve :: (Monad m, Functor m) => ConstraintSet -> Execution m (Maybe Solution)
 solve cs = do    
   s <- use envSolver
   lift $ lift $ s cs
@@ -951,7 +951,7 @@ solve cs = do
 -- until a valid solution is found and no constraints are left
 solveConstraints :: (Monad m, Functor m) => Execution m ()
 solveConstraints = do
-  constraints <- use $ envConstraints.conLogical  
+  constraints <- use $ envConstraints.conLogical    
   envConstraints.conLogical .= []
   instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)  
   if null constraints
@@ -964,11 +964,14 @@ solveConstraints = do
         mapExpr = gen $ Literal $ Reference mapType r
       in gen (MapSelection mapExpr args) |=| val  
     solveAndCheck constraints = do
-      solution <- solve constraints
-      envMemory.memLogical %= M.union solution
-      updateMapCache
-      mapM_ checkConstraint constraints      
-      solveConstraints -- the previous two lines might have generated more constraints, so we should solve again    
+      mSolution <- solve constraints
+      case mSolution of
+        Nothing -> throwRuntimeFailure (SpecViolation (SpecClause Axiom True $ conjunction constraints)) noPos
+        Just solution -> do
+          envMemory.memLogical %= M.union solution
+          updateMapCache
+          mapM_ checkConstraint constraints      
+          solveConstraints -- the previous two lines might have generated more constraints, so we should solve again    
     -- | Instantiate all logical variables inside map cache
     updateMapCache = do
       maps <- use $ envMemory.memMaps
@@ -1145,6 +1148,5 @@ dumpState :: (Monad m, Functor m) => ConstraintSet -> Execution m ()
 dumpState constraints = do
   mem <- use envMemory
   con <- use envConstraints
-  (error . show) (punctuate linebreak [pretty mem, pretty con, text "Constraints" $+$ constraintSetDoc constraints])
-    
+  (error . show) (punctuate linebreak [pretty mem, pretty con, text "Constraints" $+$ constraintSetDoc constraints])    
        

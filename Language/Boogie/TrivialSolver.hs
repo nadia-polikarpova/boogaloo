@@ -35,11 +35,11 @@ getLogPoint gen ref ttype =
     (ref,) <$> genValOfType gen ttype
 
 -- | Solver
-solve :: (MonadPlus m, Functor m) => Maybe Integer -> Solver m
+solve :: (MonadPlus m, Functor m) => Maybe Int -> Solver m
 solve mBound constrs = 
-    Map.fromList <$> mapM (uncurry (getLogPoint gtor)) (nub lgPts)
+    (Just . Map.fromList) <$> mapM (uncurry (getLogPoint gtor)) (nub lgPts)
     where
-      gtor = exhaustiveGenerator mBound
+      gtor = exhaustiveGenerator (fmap toInteger mBound)
       lgPts = everything (++) (mkQ [] go) constrs
           where
             go expr = 

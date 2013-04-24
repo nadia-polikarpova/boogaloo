@@ -21,4 +21,4 @@ instance Pretty Solution where
   pretty = vMapDoc logDoc pretty
 
 -- | Solver: produces solutions of constraint sets
-type Solver m = ConstraintSet -> m Solution
+type Solver m = ConstraintSet -> m (Maybe Solution)

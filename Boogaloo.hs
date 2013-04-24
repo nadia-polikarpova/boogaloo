@@ -31,10 +31,10 @@ releaseDate = fromGregorian 2013 2 5
 main = do
   res <- cmdArgsRun $ mode
   case res of
-    Exec file proc_ solver bound btmax invalid nexec pass fail outMax sum debug format -> 
-      executeFromFile file proc_ solver (natToMaybe bound) btmax invalid nexec pass fail (natToMaybe outMax) sum debug format
-    Test file proc_ solver bound outMax debug format ->
-      executeFromFile file proc_ solver (natToMaybe bound) Nothing True True True True (natToMaybe outMax) True debug format
+    Exec file proc_ solver minimize bound exec_max invalid nexec pass fail outMax sum debug format -> 
+      executeFromFile file proc_ solver minimize (natToMaybe bound) (natToMaybe exec_max) invalid nexec pass fail (natToMaybe outMax) sum debug format
+    Test file proc_ solver minimize exec_max outMax debug format ->
+      executeFromFile file proc_ solver minimize (Just 1) (natToMaybe exec_max) False False False True (natToMaybe outMax) False debug format
   where
     natToMaybe n
       | n >= 0      = Just n
@@ -47,8 +47,9 @@ data CommandLineArgs
         file :: String, 
         proc_ :: String,
         solver :: ConstraintSolver,
-        branch_max :: Integer,
-        exec_max :: Maybe Int, 
+        minimize :: Bool,
+        branch_max :: Int,
+        exec_max :: Int, 
         invalid :: Bool, 
         nexec :: Bool,
         pass :: Bool,
@@ -62,7 +63,8 @@ data CommandLineArgs
         file :: String, 
         proc_ :: String,
         solver :: ConstraintSolver,
-        branch_max :: Integer,
+        minimize :: Bool,
+        exec_max :: Int, 
         out_max :: Int, 
         debug :: Bool,
         format :: OutputFormat
@@ -79,18 +81,19 @@ data ConstraintSolver =
 defaultSolver = Z3  
 
 -- | Default branching
-defaultBranch = 128
+defaultBranch = 8
 
--- | Default branching in exhaustive testing
-defaultExBranch = 8
+-- | Default number of test cases for testing
+defaultTCCount = 1024
 
 execute = Exec {
   proc_       = "Main"          &= help "Program entry point (default: Main)" &= typ "PROCEDURE",
   file        = ""              &= typFile &= argPos 0,
   solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
-  branch_max  = defaultBranch   &= help ("Maximum number of possibilities for each non-deterministic choice; " ++
+  minimize    = True            &= help ("Should solutions be minimized? (default: True)"),
+  branch_max  = defaultBranch   &= help ("Maximum number of solutions to try per path; " ++
                                        "unbounded if negative (default: " ++ show defaultBranch ++ ")"),
-  exec_max    = Nothing         &= help "Maximum number of executions to try (default: unlimited)",
+  exec_max    = -1              &= help ("Maximum number of executions to try; unbounded if negative (default: -1)"),
   invalid     = False           &= help "Display invalid executions (default: false)" &= name "I",
   nexec       = True            &= help "Display executions that cannot be carried out completely (default: true)" &= name "N",
   pass        = True            &= help "Display passing executions (default: true)" &= name "P",
@@ -105,12 +108,12 @@ test = Test {
   proc_       = "Main"          &= help "Program entry point (default: Main)" &= typ "PROCEDURE",
   file        = ""              &= typFile &= argPos 0,
   solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
-  branch_max  = defaultExBranch &= help ("Maximum number of possibilities for each non-deterministic choice; " ++
-                                         "unbounded if negative (default: " ++ show defaultExBranch ++ ")"),
-  out_max     = -1              &= help "Maximum number of test cases; unbounded if negative (default: -1)",
+  minimize    = True            &= help ("Should solutions be minimized? (default: True)"),
+  exec_max    = defaultTCCount  &= help ("Maximum number of executions to try (default: " ++ show defaultTCCount ++ ")"),
+  out_max     = 1               &= help "Maximum number of faults to look for; unbounded if negative (default: 1)",
   debug       = False           &= help "Debug output (default: false)",
   format      = defaultFormat   &= help ("Output format: Plain, Ansi or Html (default: " ++ show defaultFormat ++ ")")
-  } &= help "Test program exhaustively"
+  } &= help "Test program exhaustively until an error is found"
       
 mode = cmdArgsMode $ modes [execute, test] &= 
   help "Boogie interpreter" &= 
@@ -121,8 +124,8 @@ mode = cmdArgsMode $ modes [execute, test] &=
 
 -- | Execute procedure proc_ from file
 -- | and output either errors or the final values of global variables
-executeFromFile :: String -> String -> ConstraintSolver -> Maybe Integer -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Maybe Int -> Bool -> Bool -> OutputFormat -> IO ()
-executeFromFile file proc_ solver branch_max exec_max invalid nexec pass fail out_max summary debug format = runOnFile printFinalState file format
+executeFromFile :: String -> String -> ConstraintSolver -> Bool -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Maybe Int -> Bool -> Bool -> OutputFormat -> IO ()
+executeFromFile file proc_ solver minimize branch_max exec_max invalid nexec pass fail out_max summary debug format = runOnFile printFinalState file format
   where
     printFinalState p context = case M.lookup proc_ (ctxProcedures context) of
       Nothing -> printDoc format $ errorDoc (text "Cannot find procedure" <+> text proc_)
@@ -132,10 +135,10 @@ executeFromFile file proc_ solver branch_max exec_max invalid nexec pass fail ou
               else if null outs
                 then printDoc format $ auxDoc (text "No executions to display")
                 else mapM_ (printDoc format) $ zipWith outcomeDoc [0..] outs
-    solve :: ConstraintSet -> Stream Solution
+    solve :: Solver Stream 
     solve = case solver of
       Exhaustive -> Trivial.solve branch_max
-      Z3 -> Z3.solve True (fmap fromInteger branch_max)
+      Z3 -> Z3.solve minimize branch_max
     generator = exhaustiveGenerator Nothing
     maybeTake mLimit = case mLimit of
       Nothing -> id

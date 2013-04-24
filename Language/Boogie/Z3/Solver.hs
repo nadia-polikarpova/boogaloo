@@ -23,11 +23,10 @@ import           System.IO.Unsafe
 solve :: (MonadPlus m, Foldable m)
       => Bool          -- ^ Is a minimal solution desired?
       -> Maybe Int     -- ^ Bound on number of solutions
-      -> [Expression]  -- ^ Constraints
-      -> m Solution
+      -> Solver m
 solve minWanted mBound constrs = 
     case stepConstrs minWanted constrs of
-      Just (soln, neq) -> return soln `mplus` go
+      Just (soln, neq) -> return (Just soln) `mplus` go
           where
             go = if mBound == Nothing || (fromJust mBound > 1)
                     then do 
@@ -36,7 +35,7 @@ solve minWanted mBound constrs =
                       -- solve (fmap pred mBound) (notE : constrs)
                       solve minWanted (fmap pred mBound) (neq : constrs)
                     else mzero
-      Nothing -> mzero    
+      Nothing -> return Nothing    
 
 stepConstrs :: Bool -> [Expression] -> Maybe (Solution, Expression)
 stepConstrs minWanted constrs = unsafePerformIO $ evalZ3Gen $
