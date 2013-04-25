@@ -21,12 +21,12 @@ module Language.Boogie.Environment (
   userMemory,
   memoryDoc,
   NameConstraints,
-  MapConstraints,
+  -- MapConstraints,
   constraintUnion,  
   ConstraintMemory,
   conLocals,
   conGlobals,
-  conMaps,
+  -- conMaps,
   conLogical,
   Environment,
   envMemory,
@@ -44,11 +44,11 @@ module Language.Boogie.Environment (
   initEnv,
   lookupProcedure,
   lookupNameConstraints,
-  lookupMapConstraints,
+  -- lookupMapConstraints,
   lookupCustomCount,
   addProcedureImpl,
   addNameConstraint,
-  addMapConstraint,
+  -- addMapConstraint,
   addLogicalConstraint,
   setCustomCount,
   markModified,
@@ -132,23 +132,16 @@ emptyMemory = Memory {
 visibleVariables :: Memory -> Store
 visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (mem^.memConstants)
 
--- | Clear cached values if maps that have guard-less definitions
-clearDefinedCache :: MapConstraints -> MapCache -> MapCache
-clearDefinedCache conMaps maps = maps -- foldr (\r -> update r emptyMap) maps definedRefs -- ToDo: fix!
-  -- where
-    -- definedRefs = [r | (r, (defs, _)) <- M.toList conMaps, any (\def -> node (defGuard def) == tt) defs]
-
 -- -- | 'userStore' @conMem mem@ : @mem@ with all reference values completely dereferenced and cache of defined maps removed 
 userMemory :: ConstraintMemory -> Memory -> Memory
-userMemory conMem mem = let maps' = clearDefinedCache (_conMaps conMem) (mem^.memMaps)
-  in over memLocals (userStore maps') $
-     over memGlobals (userStore maps') $
-     over memOld (userStore maps') $
-     over memModified (const S.empty) $
-     over memConstants (userStore maps') $
-     over memMaps id $ --(const emptyCache)
-     over memLogical (const M.empty)
-     mem
+userMemory conMem mem = let maps = mem^.memMaps in
+  over memLocals (userStore maps) $
+  over memGlobals (userStore maps) $
+  over memOld (userStore maps) $
+  over memModified (const S.empty) $
+  over memConstants (userStore maps) $
+  over memLogical (const M.empty)
+  mem
 
 -- | 'memoryDoc' @inNames outNames mem@ : pretty-printed @mem@ where
 -- locals in @inNames@ will be printed as input variables
@@ -185,11 +178,11 @@ type NameConstraints = Map Id ConstraintSet
 instance Pretty NameConstraints where
   pretty = vMapDoc pretty constraintSetDoc
 
--- | Mapping from map references to their parametrized constraints
-type MapConstraints = Map Ref ConstraintSet
+-- -- | Mapping from map references to their parametrized constraints
+-- type MapConstraints = Map Ref ConstraintSet
 
-instance Pretty MapConstraints where
-  pretty = vMapDoc refDoc constraintSetDoc  
+-- instance Pretty MapConstraints where
+  -- pretty = vMapDoc refDoc constraintSetDoc  
   
 -- | Union of constraints (values at the same key are concatenated)
 constraintUnion s1 s2 = M.unionWith (++) s1 s2  
@@ -198,7 +191,7 @@ constraintUnion s1 s2 = M.unionWith (++) s1 s2
 data ConstraintMemory = ConstraintMemory {
   _conLocals :: NameConstraints,        -- ^ Local name constraints
   _conGlobals :: NameConstraints,       -- ^ Global name constraints
-  _conMaps :: MapConstraints,           -- ^ Parametrized map constraints
+  -- _conMaps :: MapConstraints,           -- ^ Parametrized map constraints
   _conLogical :: ConstraintSet          -- ^ Constraint on logical variables
 }
 
@@ -208,7 +201,7 @@ makeLenses ''ConstraintMemory
 emptyConstraintMemory = ConstraintMemory {
   _conLocals = M.empty,
   _conGlobals = M.empty,
-  _conMaps = M.empty,
+  -- _conMaps = M.empty,
   _conLogical = []
 }
 
@@ -216,7 +209,7 @@ constraintMemoryDoc :: ConstraintMemory -> Doc
 constraintMemoryDoc mem = vsep $ 
   docNonEmpty (mem^.conLocals) (labeledDoc "CLocal") ++
   docNonEmpty (mem^.conGlobals) (labeledDoc "CGlobal") ++
-  docNonEmpty (mem^.conMaps) (labeledDoc "CMap") ++
+  -- docNonEmpty (mem^.conMaps) (labeledDoc "CMap") ++
   docWhen (not $ null (mem^.conLogical)) ((text "CLogical" <> text ":") <+> align (constraintSetDoc (mem^.conLogical)))
   where
     labeledDoc label x = (text label <> text ":") <+> align (pretty x)
@@ -274,14 +267,14 @@ combineGetters f g1 g2 = to $ \env -> (env ^. g1) `f` (env ^. g2)
 -- Environment queries  
 lookupProcedure = lookupGetter envProcedures []  
 lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.conLocals) (envConstraints.conGlobals)) []
-lookupMapConstraints = lookupGetter (envConstraints.conMaps) []
+-- lookupMapConstraints = lookupGetter (envConstraints.conMaps) []
 lookupCustomCount = lookupGetter envCustomCount 0
 
 -- Environment modifications  
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
 addNameConstraint :: Id -> SimpleLens (Environment m) NameConstraints -> Expression -> Environment m -> Environment m
 addNameConstraint name lens c env = over lens (M.insert name (nub $ c : lookupGetter lens [] name env)) env
-addMapConstraint r c env = over (envConstraints.conMaps) (M.insert r (nub $ c : lookupMapConstraints r env)) env
+-- addMapConstraint r c env = over (envConstraints.conMaps) (M.insert r (nub $ c : lookupMapConstraints r env)) env
 addLogicalConstraint c = over (envConstraints.conLogical) (nub . (c :))
 setCustomCount t n = over envCustomCount (M.insert t n)
 markModified name env = if M.member name (env^.envTypeContext.to ctxGlobals) 
