@@ -556,7 +556,7 @@ evalMapSelection m args pos = do
           let rangeType = thunkType (gen $ MapSelection m' args')
           chosenValue <- generateValue rangeType pos
           setMapValue r args' chosenValue
-          checkMapConstraints r args' pos
+          -- checkMapConstraints r args' pos
           return chosenValue
     _ -> return m' -- function without arguments (ToDo: is this how it should be handled?)
         
@@ -697,10 +697,11 @@ forceForall tv vars e pos res = do
   qExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)  
   if res
     then do -- we decided that e always holds: attach it to all occurring maps
-      let mapConstraints = M.toList $ extractMapConstraints qExpr
-      cached <- concat <$> mapM evalForMap mapConstraints
-      mapM_ extendLogicalConstraints cached      
-      mapM_ (\(r, cs) -> mapM_ (extendMapConstraints r) cs) mapConstraints
+      -- let mapConstraints = M.toList $ extractMapConstraints qExpr
+      -- cached <- concat <$> mapM evalForMap mapConstraints
+      -- mapM_ extendLogicalConstraints cached      
+      -- mapM_ (\(r, cs) -> mapM_ (extendMapConstraints r) cs) mapConstraints
+      extendLogicalConstraints qExpr
     else do -- we decided that e does not always hold: find a counterexample  
       let typeBinding = M.fromList $ zip tv (repeat anyType)
       counterExample <- executeNested typeBinding vars (eval $ enot e')
