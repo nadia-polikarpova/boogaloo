@@ -45,7 +45,9 @@ stepConstrs useMbqi minWanted constrs =
     unsafePerformIO $ evalZ3GenWith opts act
     where
       act =
-          do solnMb <- solveConstr minWanted constrs
+          do debug ("stepConstrs: start")
+             solnMb <- solveConstr minWanted constrs
+             debug ("stepConstrs: done")
              case solnMb of
                Just soln -> return $ Just (soln, newConstraint soln)
                Nothing -> return Nothing
