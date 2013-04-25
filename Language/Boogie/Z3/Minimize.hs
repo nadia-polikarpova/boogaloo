@@ -71,7 +71,9 @@ objective :: Z3Gen AST
 objective =
     do intMbs <- mapM (uncurry intAst) =<< uses refMap Map.toList
        let ints = catMaybes intMbs
-       mkAdd ints
+       if null ints
+         then mkInt 0
+         else mkAdd ints
     where
       intAst :: TaggedRef -> AST -> Z3Gen (Maybe AST)
       intAst (LogicRef t _ref) ast =
