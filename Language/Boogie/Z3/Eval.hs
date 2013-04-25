@@ -4,6 +4,9 @@ import           Control.Applicative
 import           Control.Lens (uses)
 import           Control.Monad
 
+import           Data.Map (Map)
+import qualified Data.Map as Map
+
 import           Z3.Monad
 
 import           Language.Boogie.AST
@@ -12,13 +15,17 @@ import           Language.Boogie.PrettyAST ()
 import           Language.Boogie.TypeChecker
 import           Language.Boogie.Z3.GenMonad
 
+evalExpr = evalExpr' Map.empty
+
 -- | Evaluate an expression to a Z3 AST.
-evalExpr :: Expression -- ^ Expression to evaluate
-         -> Z3Gen AST
-evalExpr expr = debug ("evalExpr: " ++ show expr) >>
+evalExpr' :: Map String AST -- ^ Map of bound variables.
+          -> Expression -- ^ Expression to evaluate
+          -> Z3Gen AST
+evalExpr' boundMap expr = debug ("evalExpr': " ++ show expr) >>
     case node expr of
+      Var ident -> return (boundMap Map.! ident)
       Literal v -> evalValue v
-      Logical t ref -> uses refMap (lookup' "evalExpr" (LogicRef t ref))
+      Logical t ref -> uses refMap (lookup' "evalExpr'" (LogicRef t ref))
       MapSelection m args ->
           do m' <- go m
              arg <- tupleArg args
@@ -35,9 +42,14 @@ evalExpr expr = debug ("evalExpr: " ++ show expr) >>
           do let (names, types) = unzip idTypes
              symbs <- mapM mkStringSymbol names
              sorts <- mapM lookupSort types
-             quant qop [] symbs sorts =<< go e
-          
-      e -> error $ "solveConstr.evalExpr: " ++ show e
+             consts <- zipWithM mkConst symbs sorts
+             let boundMap' = Map.union boundMap (Map.fromList (zip names consts))
+             apps <- mapM toApp consts
+             debug ("evalExpr': after toApp")
+             ast <- quant qop [] apps =<< evalExpr' boundMap' e
+             debug ("evalExpr': after quant")
+             return ast
+      e -> error $ "solveConstr.evalExpr': " ++ show e
     where
       evalValue :: Value -> Z3Gen AST
       evalValue v =
@@ -52,11 +64,9 @@ evalExpr expr = debug ("evalExpr: " ++ show expr) >>
                    mkApp ctor [refAst]
             _ -> error $ "evalValue: can't handle value: " ++ show v
 
+      go e = evalExpr' boundMap e
 
-      go e = evalExpr e <* debug ("eval'd " ++ show e)
-
-      quant Forall = mkForall
-      quant Exists = mkExists
+      quant Forall = mkForallConst
 
       tupleArg :: [Expression] -> Z3Gen AST
       tupleArg es =
