@@ -31,6 +31,12 @@ evalExpr expr = debug ("evalExpr: " ++ show expr) >>
       UnaryExpression op e -> go e >>= unOp op
       BinaryExpression op e1 e2 -> join (binOp op <$> go e1 <*> go e2)
       IfExpr c e1 e2 -> join (mkIte <$> go c <*> go e1 <*> go e2)
+      Quantified qop ids idTypes e ->
+          do let (names, types) = unzip idTypes
+             symbs <- mapM mkStringSymbol names
+             sorts <- mapM lookupSort types
+             quant qop [] symbs sorts =<< go e
+          
       e -> error $ "solveConstr.evalExpr: " ++ show e
     where
       evalValue :: Value -> Z3Gen AST
@@ -48,6 +54,9 @@ evalExpr expr = debug ("evalExpr: " ++ show expr) >>
 
 
       go e = evalExpr e <* debug ("eval'd " ++ show e)
+
+      quant Forall = mkForall
+      quant Exists = mkExists
 
       tupleArg :: [Expression] -> Z3Gen AST
       tupleArg es =
