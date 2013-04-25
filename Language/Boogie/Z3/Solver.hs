@@ -9,23 +9,26 @@ import qualified Data.Map as Map
 import           Data.Maybe
 import qualified Data.Set as Set
 
+import           System.IO.Unsafe
+
+import           Z3.Monad
+
 import           Language.Boogie.AST
 import           Language.Boogie.Generator
-import           Language.Boogie.Z3.Solution
 import           Language.Boogie.Position
 import           Language.Boogie.Solver
 import           Language.Boogie.TypeChecker
 import           Language.Boogie.Util ((|=|), conjunction, enot)
 import           Language.Boogie.Z3.GenMonad
-
-import           System.IO.Unsafe
+import           Language.Boogie.Z3.Solution
 
 solve :: (MonadPlus m, Foldable m)
-      => Bool          -- ^ Is a minimal solution desired?
+      => Bool          -- ^ Use MBQI
+      -> Bool          -- ^ Is a minimal solution desired?
       -> Maybe Int     -- ^ Bound on number of solutions
       -> Solver m
-solve minWanted mBound constrs = 
-    case stepConstrs minWanted constrs of
+solve useMbqi minWanted mBound constrs = 
+    case stepConstrs useMbqi minWanted constrs of
       Just (soln, neq) -> return (Just soln) `mplus` go
           where
             go = if mBound == Nothing || (fromJust mBound > 1)
@@ -33,16 +36,23 @@ solve minWanted mBound constrs =
                       -- (ref, e) <- fromList (Map.toList soln)
                       -- let notE = enot (gen (Logical (thunkType e) ref) |=| e)
                       -- solve (fmap pred mBound) (notE : constrs)
-                      solve minWanted (fmap pred mBound) (neq : constrs)
+                      solve useMbqi minWanted (fmap pred mBound) (neq : constrs)
                     else mzero
       Nothing -> return Nothing    
 
-stepConstrs :: Bool -> [Expression] -> Maybe (Solution, Expression)
-stepConstrs minWanted constrs = unsafePerformIO $ evalZ3Gen $
-    do solnMb <- solveConstr minWanted constrs
-       case solnMb of
-         Just soln -> return $ Just (soln, newConstraint soln)
-         Nothing -> return Nothing
+stepConstrs :: Bool -> Bool -> [Expression] -> Maybe (Solution, Expression)
+stepConstrs useMbqi minWanted constrs =
+    unsafePerformIO $ evalZ3GenWith opts act
+    where
+      act =
+          do solnMb <- solveConstr minWanted constrs
+             case solnMb of
+               Just soln -> return $ Just (soln, newConstraint soln)
+               Nothing -> return Nothing
+
+      opts | useMbqi   = stdOpts
+           | otherwise = stdOpts +? (opt "auto_config" False)
+                                 +? (opt "mbqi" False)
 
 newConstraint :: Solution -> Expression
 newConstraint soln = enot (conjunction (logicEqs ++ customEqs))

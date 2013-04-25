@@ -138,7 +138,7 @@ executeFromFile file proc_ solver minimize branch_max exec_max invalid nexec pas
     solve :: Solver Stream 
     solve = case solver of
       Exhaustive -> Trivial.solve branch_max
-      Z3 -> Z3.solve minimize branch_max
+      Z3 -> Z3.solve True minimize branch_max
     generator = exhaustiveGenerator Nothing
     maybeTake mLimit = case mLimit of
       Nothing -> id

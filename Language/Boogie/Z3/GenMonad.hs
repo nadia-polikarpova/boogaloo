@@ -4,6 +4,7 @@
 module Language.Boogie.Z3.GenMonad
     ( Z3Gen
     , evalZ3Gen
+    , evalZ3GenWith
     , TaggedRef(..)
     , sortMap
     , ctorMap
@@ -77,6 +78,11 @@ emptyEnv = Z3Env Map.empty Map.empty Map.empty Map.empty
 
 evalZ3Gen :: Z3Gen a -> IO a
 evalZ3Gen act = evalZ3 $ evalStateT act emptyEnv
+
+
+evalZ3GenWith :: Opts -> Z3Gen a -> IO a
+evalZ3GenWith opts act = evalZ3With Nothing opts $ evalStateT act emptyEnv
+
 
 debug :: MonadIO m => String -> m ()
 debug = const (return ()) -- liftIO . putStrLn
