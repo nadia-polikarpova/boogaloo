@@ -971,7 +971,7 @@ solveConstraints = do
         Just solution -> do
           envMemory.memLogical %= M.union solution
           updateMapCache
-          mapM_ checkConstraint constraints      
+          -- mapM_ checkConstraint constraints      
           solveConstraints -- the previous two lines might have generated more constraints, so we should solve again    
     -- | Instantiate all logical variables inside map cache
     updateMapCache = do

@@ -23,12 +23,11 @@ import           Language.Boogie.Z3.GenMonad
 import           Language.Boogie.Z3.Solution
 
 solve :: (MonadPlus m, Foldable m)
-      => Bool          -- ^ Use MBQI
-      -> Bool          -- ^ Is a minimal solution desired?
+      => Bool          -- ^ Is a minimal solution desired?
       -> Maybe Int     -- ^ Bound on number of solutions
       -> Solver m
-solve useMbqi minWanted mBound constrs = 
-    case stepConstrs useMbqi minWanted constrs of
+solve minWanted mBound constrs = 
+    case stepConstrs minWanted constrs of
       Just (soln, neq) -> return (Just soln) `mplus` go
           where
             go = if mBound == Nothing || (fromJust mBound > 1)
@@ -36,13 +35,12 @@ solve useMbqi minWanted mBound constrs =
                       -- (ref, e) <- fromList (Map.toList soln)
                       -- let notE = enot (gen (Logical (thunkType e) ref) |=| e)
                       -- solve (fmap pred mBound) (notE : constrs)
-                      solve useMbqi minWanted (fmap pred mBound) (neq : constrs)
+                      solve minWanted (fmap pred mBound) (neq : constrs)
                     else mzero
       Nothing -> return Nothing    
 
-stepConstrs :: Bool -> Bool -> [Expression] -> Maybe (Solution, Expression)
-stepConstrs useMbqi minWanted constrs =
-    unsafePerformIO $ evalZ3GenWith opts act
+stepConstrs :: Bool -> [Expression] -> Maybe (Solution, Expression)
+stepConstrs minWanted constrs = unsafePerformIO $ evalZ3GenWith opts act
     where
       act =
           do debug ("stepConstrs: start")
@@ -52,9 +50,10 @@ stepConstrs useMbqi minWanted constrs =
                Just soln -> return $ Just (soln, newConstraint soln)
                Nothing -> return Nothing
 
-      opts | useMbqi   = stdOpts
-           | otherwise = stdOpts +? (opt "auto_config" False)
-                                 +? (opt "mbqi" False)
+      opts = stdOpts +? (opt "AUTO_CONFIG" False)
+                     +? (opt "MBQI" True)
+                     +? (opt "SOFT_TIMEOUT" (100 :: Int))
+                     +? (opt "MODEL_ON_TIMEOUT" True)
 
 newConstraint :: Solution -> Expression
 newConstraint soln = enot (conjunction (logicEqs ++ customEqs))
