@@ -8,7 +8,7 @@ module Language.Boogie.Z3.Solution
     ) where
 
 import           Control.Applicative
-import           Control.Lens ((%=), uses)
+import           Control.Lens ((%=), uses, use)
 import           Control.Monad
 
 import           Data.Generics (everything, mkQ, gmapQ)
@@ -68,6 +68,24 @@ updateRefMap = mapM_ addRefs
              sort   <- lookupSort (refType tRef)
              mkConst symbol sort
 
+-- | Constrains the values in the custom types so they are all
+-- non-negative.
+customConstrs :: Z3Gen ()
+customConstrs =
+    do assocs <- Map.toList <$> use refMap
+       mapM_ go assocs
+    where      
+      go (LogicRef t ref, ast) = goType t ast
+      go _ = return ()
+
+      goType t@(IdType ident types) ast =
+          do proj <- lookupCustomProj ident types
+             v <- mkApp proj [ast]
+             zero <- mkInt 0
+             gt <- mkGe v zero
+             assertCnstr gt
+      goType _ _ = return ()
+
 -- | Given a set of constraint expressions produce a mapping
 -- of references to their concrete values.
 --
@@ -79,6 +97,7 @@ solveConstr minWanted constrs =
     do updateRefMap constrs
        debug ("solveConstr: finished map updates")
        mapM_ (evalExpr >=> assertCnstr) constrs
+       customConstrs
        dummyPreds
        debug ("solveConstr: asserting constraints")
        (_result, modelMb) <- getModel
