@@ -270,7 +270,7 @@ lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.con
 -- lookupMapConstraints = lookupGetter (envConstraints.conMaps) []
 lookupCustomCount = lookupGetter envCustomCount 0
 
--- Environment modifications  
+-- Environment modifications
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
 addNameConstraint :: Id -> SimpleLens (Environment m) NameConstraints -> Expression -> Environment m -> Environment m
 addNameConstraint name lens c env = over lens (M.insert name (nub $ c : lookupGetter lens [] name env)) env
@@ -282,9 +282,10 @@ markModified name env = if M.member name (env^.envTypeContext.to ctxGlobals)
   else env
   
 -- | 'isRecursive' @name functions@ : is function @name@ (mutually) recursive according to definitions in @functions@?
-isRecursive name functions = callsAny name [name]
+isRecursive name functions = name `elem` reachable [] name
   where
-    callsAny name fs = case M.lookup name functions of
-                            Nothing -> False
-                            Just (Pos _ (Quantified Lambda tv vars body)) -> let called = map fst $ applications body
-                              in not (null (fs `intersect` called)) || any (\f -> callsAny f (fs ++ called)) called
+    reachable visited f = let direct = called f
+      in direct ++ concatMap (reachable (visited ++ direct)) (direct \\ visited)
+    called f = case M.lookup f functions of
+                      Nothing -> []
+                      Just (Pos _ (Quantified Lambda tv vars body)) -> map fst $ applications body
