@@ -81,6 +81,8 @@ stepConstrs minWanted constrs = unsafePerformIO withoutMBQI
 
       opts = stdOpts +? (opt "AUTO_CONFIG" False)
                      +? (opt "MBQI" False)
+                     +? (opt "SOFT_TIMEOUT" (100::Int))
+                     +? (opt "MODEL_ON_TIMEOUT" True)
 
 newConstraint :: Solution -> Expression
 newConstraint soln = enot (conjunction (logicEqs ++ customEqs))
