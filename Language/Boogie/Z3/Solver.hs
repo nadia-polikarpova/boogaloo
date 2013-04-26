@@ -1,7 +1,10 @@
 {-# LANGUAGE RecordWildCards #-}
 module Language.Boogie.Z3.Solver (solve) where
 
+import           Control.Applicative
 import           Control.Monad
+import           Control.Concurrent
+import           Control.Exception
 
 import           Data.Foldable (Foldable)
 import           Data.Map (Map)
@@ -40,9 +43,25 @@ solve minWanted mBound constrs =
       Nothing -> return Nothing    
 
 stepConstrs :: Bool -> [Expression] -> Maybe (Solution, Expression)
-stepConstrs minWanted constrs = unsafePerformIO $ evalZ3GenWith opts act
+stepConstrs minWanted constrs = unsafePerformIO timedAct
     where
-      act =
+      timedAct :: IO (Maybe (Solution, Expression))
+      timedAct =
+          do workerId <- myThreadId
+             timerId <- forkIO (timer workerId)
+             mask ( \release -> 
+                        handle (\ThreadKilled -> withoutMBQI)
+                               (release withMBQI <* killThread timerId)
+                  )
+
+      timer threadId =
+          do threadDelay (100*1000)
+             killThread threadId
+
+      withMBQI = act stdOpts
+      withoutMBQI = act opts
+
+      act opts = evalZ3GenWith opts $
           do debug ("stepConstrs: start")
              solnMb <- solveConstr minWanted constrs
              debug ("stepConstrs: done")
@@ -51,9 +70,7 @@ stepConstrs minWanted constrs = unsafePerformIO $ evalZ3GenWith opts act
                Nothing -> return Nothing
 
       opts = stdOpts +? (opt "AUTO_CONFIG" False)
-                     +? (opt "MBQI" True)
-                     +? (opt "SOFT_TIMEOUT" (100 :: Int))
-                     +? (opt "MODEL_ON_TIMEOUT" True)
+                     +? (opt "MBQI" False)
 
 newConstraint :: Solution -> Expression
 newConstraint soln = enot (conjunction (logicEqs ++ customEqs))
