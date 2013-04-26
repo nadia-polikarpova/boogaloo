@@ -43,19 +43,29 @@ solve minWanted mBound constrs =
       Nothing -> return Nothing    
 
 stepConstrs :: Bool -> [Expression] -> Maybe (Solution, Expression)
-stepConstrs minWanted constrs = unsafePerformIO timedAct
+stepConstrs minWanted constrs = unsafePerformIO withoutMBQI
     where
       timedAct :: IO (Maybe (Solution, Expression))
-      timedAct =
+      timedAct = runInBoundThread $
           do workerId <- myThreadId
              timerId <- forkIO (timer workerId)
-             mask ( \release -> 
-                        handle (\ThreadKilled -> withoutMBQI)
-                               (release withMBQI <* killThread timerId)
+             
+             mask ( \release ->
+                        handle handleAsync
+                               (do putStrLn "Starting with MBQI"
+                                   res <- release withMBQI
+                                   putStrLn "Stopping MBQI"
+                                   killThread timerId
+                                   return res
+                               )
                   )
 
+      handleAsync :: AsyncException -> IO (Maybe (Solution, Expression))
+      handleAsync _ = putStrLn "Switching to without MBQI" >> withoutMBQI
+
       timer threadId =
-          do threadDelay (100*1000)
+          do putStrLn "Starting timer thread" >> threadDelay (100*1000)
+             putStrLn "Sending kill"
              killThread threadId
 
       withMBQI = act stdOpts

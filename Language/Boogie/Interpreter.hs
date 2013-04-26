@@ -959,7 +959,7 @@ solveConstraints :: (Monad m, Functor m) => Execution m ()
 solveConstraints = do
   constraints <- use $ envConstraints.conLogical      
   instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)    
-  dumpState instanceConstraints
+  -- dumpState instanceConstraints
   envConstraints.conLogical .= []  
   -- if null constraints
     -- then eliminateLogicals                                  -- We are done: instantiate the memory with the solution 
