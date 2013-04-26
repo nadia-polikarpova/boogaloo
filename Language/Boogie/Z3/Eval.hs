@@ -15,13 +15,14 @@ import           Language.Boogie.PrettyAST ()
 import           Language.Boogie.TypeChecker
 import           Language.Boogie.Z3.GenMonad
 
-evalExpr = evalExpr' Map.empty
+evalExpr = evalExpr' Map.empty emptyContext
 
 -- | Evaluate an expression to a Z3 AST.
 evalExpr' :: Map String AST -- ^ Map of bound variables.
-          -> Expression -- ^ Expression to evaluate
+          -> Context        -- ^ Type context of bound variables.
+          -> Expression     -- ^ Expression to evaluate.
           -> Z3Gen AST
-evalExpr' boundMap expr = debug ("evalExpr': " ++ show expr) >>
+evalExpr' boundMap typeCtx expr = debug ("evalExpr': " ++ show expr) >>
     case node expr of
       Var ident -> return (boundMap Map.! ident)
       Literal v -> evalValue v
@@ -44,9 +45,11 @@ evalExpr' boundMap expr = debug ("evalExpr': " ++ show expr) >>
              sorts <- mapM lookupSort types
              consts <- zipWithM mkConst symbs sorts
              let boundMap' = Map.union boundMap (Map.fromList (zip names consts))
+                 typeCtx'  = nestedContext Map.empty idTypes typeCtx
              apps <- mapM toApp consts
              debug ("evalExpr': after toApp")
-             ast <- quant qop [] apps =<< evalExpr' boundMap' e
+             e' <- evalExpr' boundMap' typeCtx' e
+             ast <- quant qop [] apps e'
              debug ("evalExpr': after quant")
              return ast
       e -> error $ "solveConstr.evalExpr': " ++ show e
@@ -64,13 +67,13 @@ evalExpr' boundMap expr = debug ("evalExpr': " ++ show expr) >>
                    mkApp ctor [refAst]
             _ -> error $ "evalValue: can't handle value: " ++ show v
 
-      go e = evalExpr' boundMap e
+      go e = evalExpr' boundMap typeCtx e
 
       quant Forall = mkForallConst
 
       tupleArg :: [Expression] -> Z3Gen AST
       tupleArg es =
-          do let ts = map (exprType emptyContext) es
+          do let ts = map (exprType typeCtx) es
              debug (show ts)
              (_sort, ctor, _projs) <- lookupCtor ts
              es' <- mapM go es
