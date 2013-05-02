@@ -153,7 +153,6 @@ executeLocally localTC formals actuals localWhere computation = do
   oldEnv <- get
   envTypeContext %= localTC
   envMemory.memLocals .= M.empty
-  envLabelCount .= M.empty
   zipWithM_ (setVar memLocals) formals actuals
   mapM_ (extendNameConstraints conLocals) localWhere
   computation `finally` unwind oldEnv
@@ -789,19 +788,19 @@ execCallBySig sig lhss args pos = do
       }
     addFrame err = addStackFrame (StackFrame pos (psigName sig)) err
         
--- | 'execBlock' @blocks label@: Execute program consisting of @blocks@ starting from the block labeled @label@.
+-- | 'execBlock' @proc_ blocks label@: Execute the body of @proc_@ consisting of @blocks@ starting from the block labeled @label@.
 -- Return the location of the exit point.
-execBlock :: (Monad m, Functor m) => Map Id [Statement] -> Id -> Execution m SourcePos
-execBlock blocks label = let
+execBlock :: (Monad m, Functor m) => Id -> Map Id [Statement] -> Id -> Execution m SourcePos
+execBlock proc_ blocks label = let
   block = blocks ! label
   statements = init block
   labelCount lb = do
     lCounts <- use envLabelCount
-    case M.lookup lb lCounts of
+    case M.lookup (proc_, lb) lCounts of
       Just n -> do
         return n
       Nothing -> do
-        envLabelCount %= M.insert lb 0
+        envLabelCount %= M.insert (proc_, lb) 0
         return 0
   in do
     mapM exec statements
@@ -812,8 +811,8 @@ execBlock blocks label = let
         let orderedLbs = sortBy (compare `on` snd) (zip lbs counts)
         i <- generate $ flip genIndex (length lbs)
         let (lb, c) = orderedLbs !! i
-        envLabelCount %= M.insert lb (succ c)
-        execBlock blocks lb
+        envLabelCount %= M.insert (proc_, lb) (succ c)
+        execBlock proc_ blocks lb
     
 -- | 'execProcedure' @sig def args lhss@ :
 -- Execute definition @def@ of procedure @sig@ with actual arguments @args@ and call left-hand sides @lhss@
@@ -825,15 +824,15 @@ execProcedure sig def args lhss callPos = let
   exitPoint pos = if pos == noPos 
     then pdefPos def  -- Fall off the procedure body: take the procedure definition location
     else pos          -- A return statement inside the body
-  execBody = do
+  execBody = do    
     checkPreconditions sig def callPos   
-    pos <- exitPoint <$> execBlock blocks startLabel
+    pos <- exitPoint <$> execBlock (psigName sig) blocks startLabel
     checkPostonditions sig def pos    
     mapM (eval . attachPos (pdefPos def) . Var) outs
   in do
     argsV <- mapM eval args
     mem <- saveOld
-    executeLocally (enterProcedure sig def args lhss) ins argsV (map itwWhere (psigRets sig ++ fst (pdefBody def))) execBody `finally` restoreOld mem
+    executeLocally (enterProcedure sig def args lhss) ins argsV (map itwWhere (psigRets sig ++ fst (pdefBody def))) execBody `finally` restoreOld mem       
     
 {- Specs -}
 
@@ -952,7 +951,7 @@ solve :: (Monad m, Functor m) => ConstraintSet -> Execution m (Maybe Solution)
 solve cs = do    
   s <- use envSolver
   lift $ lift $ s cs
-
+  
 -- | Solve current logical variable constraints
 -- until a valid solution is found and no constraints are left
 solveConstraints :: (Monad m, Functor m) => Execution m ()

@@ -234,8 +234,8 @@ data Environment m = Environment
     _envMapCount :: Int,                    -- ^ Number of map references currently in use
     _envLogicalCount :: Int,                -- ^ Number of logical varibles currently in use
     _envCustomCount :: Map Type Int,        -- ^ For each user-defined type, number of distinct values of this type already generated
-    _envLabelCount :: Map Id Integer,       -- ^ For each label, number of times a transition with that label was taken within the current procedue invocation
-    _envInOld :: Bool                       -- ^ Is an old expression currently being evaluated?    
+    _envLabelCount :: Map (Id, Id) Integer, -- ^ For each procedure-label pair, number of times a transition with that label was taken
+    _envInOld :: Bool                       -- ^ Is an old expression currently being evaluated?
   }
   
 makeLenses ''Environment
