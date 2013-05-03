@@ -28,6 +28,7 @@ module Language.Boogie.Environment (
   conGlobals,
   -- conMaps,
   conLogical,
+  conChanged,
   Environment,
   envMemory,
   envProcedures,
@@ -191,8 +192,9 @@ constraintUnion s1 s2 = M.unionWith (++) s1 s2
 data ConstraintMemory = ConstraintMemory {
   _conLocals :: NameConstraints,        -- ^ Local name constraints
   _conGlobals :: NameConstraints,       -- ^ Global name constraints
-  -- _conMaps :: MapConstraints,           -- ^ Parametrized map constraints
-  _conLogical :: ConstraintSet          -- ^ Constraint on logical variables
+  -- _conMaps :: MapConstraints,        -- ^ Parametrized map constraints
+  _conLogical :: ConstraintSet,         -- ^ Constraint on logical variables
+  _conChanged :: Bool                   -- ^ Have the constraints changed since the last check?
 }
 
 makeLenses ''ConstraintMemory
@@ -202,7 +204,8 @@ emptyConstraintMemory = ConstraintMemory {
   _conLocals = M.empty,
   _conGlobals = M.empty,
   -- _conMaps = M.empty,
-  _conLogical = []
+  _conLogical = [],
+  _conChanged = True
 }
 
 constraintMemoryDoc :: ConstraintMemory -> Doc

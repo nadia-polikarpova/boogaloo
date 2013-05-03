@@ -21,4 +21,7 @@ instance Pretty Solution where
   pretty = vMapDoc logDoc pretty
 
 -- | Solver: produces solutions of constraint sets
-type Solver m = ConstraintSet -> m (Maybe Solution)
+data Solver m = Solver {
+  solCheck :: ConstraintSet -> m Bool,            -- | Return false if a constraint set is unsatisfiable
+  solPick :: ConstraintSet -> m (Maybe Solution)  -- | Return a solution of a constraint set
+}

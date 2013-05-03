@@ -1,12 +1,13 @@
 {-# LANGUAGE TupleSections #-}
 
-module Language.Boogie.TrivialSolver (solve) where
+module Language.Boogie.TrivialSolver (solve, solver) where
 
 import           Control.Applicative
 import           Control.Monad.Identity
 import           Control.Monad.Trans.State
 import           Control.Monad.Trans.Error
 
+import           Data.Maybe
 import           Data.Generics
 import           Data.List (nub)
 import           Data.Map (Map)
@@ -21,6 +22,16 @@ import           Language.Boogie.Pretty
 import           Language.Boogie.Solver
 import           Language.Boogie.TypeChecker
 
+solver :: (MonadPlus m, Functor m)
+      => Maybe Int     -- ^ Bound on number of solutions
+      -> Solver m
+solver mBound = Solver {
+  solPick = solve mBound,
+  solCheck = \cs -> do
+    s <- solve (Just 1) cs
+    return $ isJust s
+}      
+
 genValOfType :: (MonadPlus m, Functor m) => Generator m -> Type -> m Thunk
 genValOfType gtor ttype = gen <$> Literal <$> val
     where
@@ -34,8 +45,8 @@ getLogPoint :: (MonadPlus m, Functor m) => Generator m -> Ref -> Type -> m (Ref,
 getLogPoint gen ref ttype =
     (ref,) <$> genValOfType gen ttype
 
--- | Solver
-solve :: (MonadPlus m, Functor m) => Maybe Int -> Solver m
+-- | Solve
+solve :: (MonadPlus m, Functor m) => Maybe Int -> ConstraintSet -> m (Maybe Solution)
 solve mBound constrs = 
     (Just . Map.fromList) <$> mapM (uncurry (getLogPoint gtor)) (nub lgPts)
     where

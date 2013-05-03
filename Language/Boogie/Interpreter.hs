@@ -804,6 +804,7 @@ execBlock proc_ blocks label = let
         return 0
   in do
     mapM exec statements
+    checkSat
     case last block of
       Pos pos Return -> return pos
       Pos _ (Goto lbs) -> do
@@ -860,7 +861,9 @@ extendLogicalConstraints c = if node c == tt
   then return ()
   else if node c == ff 
     then throwRuntimeFailure (SpecViolation (SpecClause Axiom True c)) (position c)
-    else modify $ addLogicalConstraint c
+    else do
+      envConstraints.conChanged .= True
+      modify $ addLogicalConstraint c
 
 -- | 'evalQuantified' @expr@ : evaluate @expr@ modulo quantification
 evalQuantified expr = evalQuantified' [] expr
@@ -946,33 +949,49 @@ checkNameConstraints name pos = do
       -- Quantified Forall tv' vars e -> locally (forceForall tv' vars e pos True) -- parametrized forall constraint: force it to true
       -- _ -> locally (eval body)
     
--- | 'solve' @cs@ : apply solver to constraints @cs@
-solve :: (Monad m, Functor m) => ConstraintSet -> Execution m (Maybe Solution)
-solve cs = do    
-  s <- use envSolver
+-- | 'callSolver' @f cs@ : apply solver's function @f@ to constraints @cs@
+callSolver :: (Monad m, Functor m) => (Solver m -> ConstraintSet -> m a) -> ConstraintSet -> Execution m a
+callSolver f cs = do    
+  s <- uses envSolver f
   lift $ lift $ s cs
   
--- | Solve current logical variable constraints
--- until a valid solution is found and no constraints are left
-solveConstraints :: (Monad m, Functor m) => Execution m ()
-solveConstraints = do
-  constraints <- use $ envConstraints.conLogical      
-  instanceConstraints <- (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)    
-  -- dumpState instanceConstraints
-  envConstraints.conLogical .= []  
-  -- if null constraints
-    -- then eliminateLogicals                                  -- We are done: instantiate the memory with the solution 
-    -- else solveAndCheck (constraints ++ instanceConstraints) -- Something to solve
-  when (not $ null constraints) $ solveAndCheck (constraints ++ instanceConstraints)
-  eliminateLogicals
+-- | Extract constraints form map cache
+instanceConstraints :: (Monad m, Functor m) => Execution m ConstraintSet 
+instanceConstraints = (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)
   where
     constraintsFromMap (r, inst) = map (pointConstraint r) (M.toList inst)
     pointConstraint r (args, val) = let
         mapType = MapType [] (map thunkType args) (thunkType val)
         mapExpr = gen $ Literal $ Reference mapType r
       in gen (MapSelection mapExpr args) |=| val  
+  
+-- | Check if the current logical variable constraints are satisfiable,
+-- otherwise throw an assumption violation  
+checkSat :: (Monad m, Functor m) => Execution m ()
+checkSat = do
+  changed <- use $ envConstraints.conChanged
+  constraints <- use $ envConstraints.conLogical
+  when (changed && not (null constraints)) (do    
+    ic <- instanceConstraints  
+    sat <- (callSolver solCheck) (constraints ++ ic)
+    when (not sat) $ throwRuntimeFailure (SpecViolation (SpecClause Axiom True $ conjunction constraints)) noPos
+    envConstraints.conChanged .= False
+    )
+    
+-- | Solve current logical variable constraints
+solveConstraints :: (Monad m, Functor m) => Execution m ()
+solveConstraints = do
+  constraints <- use $ envConstraints.conLogical      
+  ic <- instanceConstraints
+  envConstraints.conLogical .= []  
+  -- if null constraints
+    -- then eliminateLogicals                                  -- We are done: instantiate the memory with the solution 
+    -- else solveAndCheck (constraints ++ instanceConstraints) -- Something to solve
+  when (not $ null constraints) $ solveAndCheck (constraints ++ ic)
+  eliminateLogicals
+  where
     solveAndCheck constraints = do      
-      mSolution <- solve constraints      
+      mSolution <- (callSolver solPick) constraints      
       -- dumpState []
       case mSolution of
         Nothing -> throwRuntimeFailure (SpecViolation (SpecClause Axiom True $ conjunction constraints)) noPos

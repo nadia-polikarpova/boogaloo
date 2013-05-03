@@ -125,20 +125,20 @@ mode = cmdArgsMode $ modes [execute, test] &=
 -- | Execute procedure proc_ from file
 -- | and output either errors or the final values of global variables
 executeFromFile :: String -> String -> ConstraintSolver -> Bool -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Maybe Int -> Bool -> Bool -> OutputFormat -> IO ()
-executeFromFile file proc_ solver minimize branch_max exec_max invalid nexec pass fail out_max summary debug format = runOnFile printFinalState file format
+executeFromFile file proc_ solverId minimize branch_max exec_max invalid nexec pass fail out_max summary debug format = runOnFile printFinalState file format
   where
     printFinalState p context = case M.lookup proc_ (ctxProcedures context) of
       Nothing -> printDoc format $ errorDoc (text "Cannot find procedure" <+> text proc_)
-      Just _ -> let outs = maybeTake out_max . filter keep . maybeTake exec_max . toList $ executeProgram p context solve generator proc_
+      Just _ -> let outs = maybeTake out_max . filter keep . maybeTake exec_max . toList $ executeProgram p context solver generator proc_
         in if summary
               then printDoc format $ sessionSummaryDoc debug outs
               else if null outs
                 then printDoc format $ auxDoc (text "No executions to display")
                 else mapM_ (printDoc format) $ zipWith outcomeDoc [0..] outs
-    solve :: Solver Stream 
-    solve = case solver of
-      Exhaustive -> Trivial.solve branch_max
-      Z3 -> Z3.solve minimize branch_max
+    solver :: Solver Stream
+    solver = case solverId of
+      Exhaustive -> Trivial.solver branch_max
+      Z3 -> Z3.solver minimize branch_max
     generator = exhaustiveGenerator Nothing
     maybeTake mLimit = case mLimit of
       Nothing -> id

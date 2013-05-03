@@ -1,5 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
-module Language.Boogie.Z3.Solver (solve) where
+module Language.Boogie.Z3.Solver (solve, solver) where
 
 import           Control.Applicative
 import           Control.Monad
@@ -25,10 +25,22 @@ import           Language.Boogie.Util ((|=|), conjunction, enot)
 import           Language.Boogie.Z3.GenMonad
 import           Language.Boogie.Z3.Solution
 
-solve :: (MonadPlus m, Foldable m)
+solver :: (MonadPlus m, Foldable m)
       => Bool          -- ^ Is a minimal solution desired?
       -> Maybe Int     -- ^ Bound on number of solutions
       -> Solver m
+solver minWanted mBound = Solver {
+  solPick = solve minWanted mBound,
+  solCheck = \cs -> do
+    s <- solve False (Just 1) cs
+    return $ isJust s
+}      
+
+solve :: (MonadPlus m, Foldable m)
+      => Bool          -- ^ Is a minimal solution desired?
+      -> Maybe Int     -- ^ Bound on number of solutions
+      -> ConstraintSet 
+      -> m (Maybe Solution)
 solve minWanted mBound constrs = 
     case stepConstrs minWanted constrs of
       Just (soln, neq) -> return (Just soln) `mplus` go
