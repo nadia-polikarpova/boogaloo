@@ -129,7 +129,7 @@ executeFromFile file proc_ solverId minimize branch_max exec_max invalid nexec p
   where
     printFinalState p context = case M.lookup proc_ (ctxProcedures context) of
       Nothing -> printDoc format $ errorDoc (text "Cannot find procedure" <+> text proc_)
-      Just _ -> let outs = maybeTake out_max . filter keep . maybeTake exec_max . toList $ executeProgram p context solver generator proc_
+      Just _ -> let outs = maybeTake out_max . filter keep . maybeTake exec_max . toList $ executeProgram p context solver pass generator proc_
         in if summary
               then printDoc format $ sessionSummaryDoc debug outs
               else if null outs

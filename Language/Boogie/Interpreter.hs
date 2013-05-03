@@ -55,16 +55,19 @@ import Control.Lens hiding (Context, at)
 
 {- Interface -}
       
--- | 'executeProgram' @p tc solver entryPoint@ :
--- Execute program @p@ in type context @tc@ with solver @solver@, starting from procedure @entryPoint@,
--- and return the outcome(s) embedded into the solver's monad.
-executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Generator m -> Id -> m (TestCase)
-executeProgram p tc solver generator entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver generator)
+-- | 'executeProgram' @p tc solver solvePassing generator entryPoint@ :
+-- Execute program @p@ in type context @tc@ with solver @solver@ and non-deterministic value generator @generator@, starting from procedure @entryPoint@;
+-- concretize passing executions iff @solvePassing@;
+-- return the outcome(s) embedded into the solver's monad.
+executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Bool -> Generator m -> Id -> m (TestCase)
+executeProgram p tc solver solvePassing generator entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver generator)
   where
     programExecution = do
       execUnsafely $ preprocess p      
       execRootCall
-      solveConstraints noPos
+      if solvePassing
+        then solveConstraints noPos
+        else checkSat noPos
     sig = procSig entryPoint tc
     execRootCall = do
       let params = psigParams sig
