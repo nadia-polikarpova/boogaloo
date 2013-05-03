@@ -11,8 +11,6 @@ module Language.Boogie.Interpreter (
   StackTrace,
   RuntimeFailure (..),  
   runtimeFailureDoc,
-  FailureKind (..),
-  failureKind,
   -- * Execution outcomes
   TestCase (..),
   isPass,
@@ -66,7 +64,7 @@ executeProgram p tc solver generator entryPoint = result <$> runStateT (runError
     programExecution = do
       execUnsafely $ preprocess p      
       execRootCall
-      solveConstraints
+      solveConstraints noPos
     sig = procSig entryPoint tc
     execRootCall = do
       let params = psigParams sig
@@ -198,8 +196,9 @@ executeGlobally computation = do
 {- Runtime failures -}
 
 data FailureSource = 
-  SpecViolation SpecClause |      -- ^ Violation of user-defined specification
-  UnsupportedConstruct Doc        -- ^ Language construct is not yet supported (should disappear in later versions)
+  Error SpecClause |  -- ^ Error state reached (assertion violation)
+  Unreachable |       -- ^ Unreachable state reached (assumption violation)
+  Nonexecutable Doc   -- ^ The state is OK in Boogie semantics, but the execution cannot continue due to the limitations of the interpreter
   deriving Eq
   
 -- | Information about a procedure or function call  
@@ -225,23 +224,10 @@ throwRuntimeFailure source pos = do
 
 -- | Push frame on the stack trace of a runtime failure
 addStackFrame frame (RuntimeFailure source pos mem trace) = throwError (RuntimeFailure source pos mem (frame : trace))
-
--- | Kinds of run-time failures
-data FailureKind = Error | -- ^ Error state reached (assertion violation)
-  Unreachable | -- ^ Unreachable state reached (assumption violation)
-  Nonexecutable -- ^ The state is OK in Boogie semantics, but the execution cannot continue due to the limitations of the interpreter
-  deriving Eq
-
--- | Kind of a run-time failure
-failureKind :: RuntimeFailure -> FailureKind
-failureKind err = case rtfSource err of
-  SpecViolation (SpecClause _ True _) -> Unreachable
-  SpecViolation (SpecClause _ False _) -> Error
-  _ -> Nonexecutable
   
 instance Error RuntimeFailure where
-  noMsg    = RuntimeFailure (UnsupportedConstruct $ text "unknown") noPos emptyMemory []
-  strMsg s = RuntimeFailure (UnsupportedConstruct $ text s) noPos emptyMemory []
+  noMsg    = RuntimeFailure (Nonexecutable $ text "unknown") noPos emptyMemory []
+  strMsg s = RuntimeFailure (Nonexecutable $ text s) noPos emptyMemory []
   
 -- | Pretty-printed run-time failure
 runtimeFailureDoc debug err = 
@@ -252,28 +238,27 @@ runtimeFailureDoc debug err =
     (nest 2 $ option (not (isEmpty sDoc)) (text "with") $+$ sDoc) $+$
     vsep (map stackFrameDoc (reverse (rtfTrace err)))
   where
-    failureSourceDoc (SpecViolation (SpecClause specType isFree e)) = text (clauseName specType isFree) <+> dquotes (pretty e) <+> defPosition specType e <+>
+    failureSourceDoc (Error (SpecClause specType False e)) = text (clauseName specType) <+> dquotes (pretty e) <+> defPosition specType e <+>
       text "violated"
-    failureSourceDoc (UnsupportedConstruct s) = text "Unsupported construct" <+> s
+    failureSourceDoc Unreachable = text "assumption violated"      
+    failureSourceDoc (Nonexecutable s) = text "Unsupported construct" <+> s
     
-    clauseName Inline isFree = if isFree then "Assumption" else "Assertion"  
-    clauseName Precondition isFree = if isFree then "Free precondition" else "Precondition"  
-    clauseName Postcondition isFree = if isFree then "Free postcondition" else "Postcondition"  
-    clauseName LoopInvariant isFree = if isFree then "Free loop invariant" else "Loop invariant"  
-    clauseName Where True = "Where clause"  -- where clauses cannot be non-free  
-    clauseName Axiom True = "Axiom"  -- axioms cannot be non-free  
+    clauseName Inline = "Assertion"  
+    clauseName Precondition = "Precondition"  
+    clauseName Postcondition = "Postcondition"  
+    clauseName LoopInvariant = "Loop invariant"  
     
     defPosition Inline _ = empty
     defPosition LoopInvariant _ = empty
     defPosition _ e = text "defined" <+> posDoc (position e)
         
     isRelevant k = case rtfSource err of
-      SpecViolation (SpecClause _ _ expr) -> k `elem` freeVars expr
+      Error (SpecClause _ _ expr) -> k `elem` freeVars expr
       _ -> False
     
     stackFrameDoc f = text "in call to" <+> text (callName f) <+> posDoc (callPos f)
     posDoc pos
-      | pos == noPos = text "from the environment"
+      | pos == noPos = empty
       | otherwise = text "on line" <+> int (sourceLine pos)
 
 instance Pretty RuntimeFailure where pretty err = runtimeFailureDoc True err
@@ -301,15 +286,17 @@ isPass _ =          False
 
 -- | 'isInvalid' @tc@: Does @tc@ and in an unreachable state?
 isInvalid :: TestCase -> Bool 
-isInvalid (TestCase _ _ _ (Just err))
-  | failureKind err == Unreachable = True
-isInvalid _                        = False
+isInvalid (TestCase _ _ _ (Just err)) = case rtfSource err of
+  Unreachable -> True
+  _           -> False
+isInvalid _ = False
 
 -- | 'isNonexecutable' @tc@: Does @tc@ end in a non-executable state?
 isNonexecutable :: TestCase -> Bool 
-isNonexecutable (TestCase _ _ _ (Just err))
-  | failureKind err == Nonexecutable  = True
-isNonexecutable _                     = False
+isNonexecutable (TestCase _ _ _ (Just err)) = case rtfSource err of
+  (Nonexecutable _) -> True
+  _                 -> False
+isNonexecutable _ = False
 
 -- | 'isFail' @tc@: Does @tc@ end in an error state?
 isFail :: TestCase -> Bool
@@ -426,7 +413,7 @@ freshMapRef inst = do
 -- fail if @t@ is a type variable
 generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Thunk
 generateValue t pos = case t of
-  IdType x [] | isTypeVar [] x -> throwRuntimeFailure (UnsupportedConstruct (text "choice of a value from unknown type" <+> pretty t)) pos
+  IdType x [] | isTypeVar [] x -> throwRuntimeFailure (Nonexecutable (text "choice of a value from unknown type" <+> pretty t)) pos
   t@(MapType _ _ _) -> (attachPos pos . Literal . Reference t) <$> freshMapRef emptyMap
   t -> (attachPos pos . Logical t) <$> freshLogical
               
@@ -639,7 +626,7 @@ binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ attachPos pos $ Liter
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ attachPos pos $ Literal $ BoolValue (b1 == b2)
 binOp pos Eq      v1 v2                         = evalEquality pos v1 v2
 binOp pos Neq     v1 v2                         = evalEquality pos v1 v2 >>= evalUnary Not
-binOp pos Lc      v1 v2                         = throwRuntimeFailure (UnsupportedConstruct $ text "orders") pos
+binOp pos Lc      v1 v2                         = throwRuntimeFailure (Nonexecutable $ text "orders") pos
 
 -- | Euclidean division used by Boogie for integer division and modulo
 euclidean :: Integer -> Integer -> (Integer, Integer)
@@ -743,8 +730,8 @@ execPredicate clause@(SpecClause source False expr) pos = do
         then extendLogicalConstraints c
         else do          
           extendLogicalConstraints (enot c)          
-          solveConstraints
-          throwRuntimeFailure (SpecViolation clause) pos          
+          solveConstraints pos
+          throwRuntimeFailure (Error clause) pos          
     
 execHavoc names pos = do
   mapM_ forgetAnyVar names
@@ -804,7 +791,7 @@ execBlock proc_ blocks label = let
         return 0
   in do
     mapM exec statements
-    checkSat
+    when (not $ null statements) (checkSat $ position (last statements))
     case last block of
       Pos pos Return -> return pos
       Pos _ (Goto lbs) -> do
@@ -860,7 +847,7 @@ extendNameConstraints lens c = mapM_ (\name -> modify $ addNameConstraint name (
 extendLogicalConstraints c = if node c == tt
   then return ()
   else if node c == ff 
-    then throwRuntimeFailure (SpecViolation (SpecClause Axiom True c)) (position c)
+    then throwRuntimeFailure Unreachable (position c)
     else do
       envConstraints.conChanged .= True
       modify $ addLogicalConstraint c
@@ -967,20 +954,20 @@ instanceConstraints = (concatMap constraintsFromMap . M.toList) <$> use (envMemo
   
 -- | Check if the current logical variable constraints are satisfiable,
 -- otherwise throw an assumption violation  
-checkSat :: (Monad m, Functor m) => Execution m ()
-checkSat = do
+checkSat :: (Monad m, Functor m) => SourcePos -> Execution m ()
+checkSat pos = do
   changed <- use $ envConstraints.conChanged
   constraints <- use $ envConstraints.conLogical
   when (changed && not (null constraints)) (do    
     ic <- instanceConstraints  
     sat <- (callSolver solCheck) (constraints ++ ic)
-    when (not sat) $ throwRuntimeFailure (SpecViolation (SpecClause Axiom True $ conjunction constraints)) noPos
+    when (not sat) $ throwRuntimeFailure Unreachable pos
     envConstraints.conChanged .= False
     )
     
 -- | Solve current logical variable constraints
-solveConstraints :: (Monad m, Functor m) => Execution m ()
-solveConstraints = do
+solveConstraints :: (Monad m, Functor m) => SourcePos -> Execution m ()
+solveConstraints pos = do
   constraints <- use $ envConstraints.conLogical      
   ic <- instanceConstraints
   envConstraints.conLogical .= []  
@@ -994,7 +981,7 @@ solveConstraints = do
       mSolution <- (callSolver solPick) constraints      
       -- dumpState []
       case mSolution of
-        Nothing -> throwRuntimeFailure (SpecViolation (SpecClause Axiom True $ conjunction constraints)) noPos
+        Nothing -> throwRuntimeFailure Unreachable pos
         Just solution -> do
           envMemory.memLogical %= M.union solution          
           updateMapCache

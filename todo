@@ -16,7 +16,6 @@
   - Annotate AST with expr types
   
 - Interpreter
-  - Replace SpecViolation for free specs with just Infeasible, because we never know anymore what the spec is anyway
   - User interface
     - Put back map dereferencing
     - Command line options (e.g. generate first n distinct errors)
