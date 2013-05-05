@@ -135,7 +135,7 @@ executeFromFile file proc_ solverId minimize branch_max exec_max invalid nexec p
               else if null outs
                 then printDoc format $ auxDoc (text "No executions to display")
                 else mapM_ (printDoc format) $ zipWith outcomeDoc [0..] outs
-    solver :: Solver Stream
+    solver :: Solver []
     solver = case solverId of
       Exhaustive -> Trivial.solver branch_max
       Z3 -> Z3.solver minimize branch_max
