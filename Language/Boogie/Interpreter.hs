@@ -46,7 +46,7 @@ import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Data.Set (Set)
 import qualified Data.Set as S
-import Data.Sequence (Seq, (|>), viewl, ViewL(..))
+import Data.Sequence (Seq, (|>), (><), viewl, ViewL(..))
 import qualified Data.Sequence as Seq
 import qualified Data.Traversable as T
 import Control.Monad.Error hiding (join)
@@ -848,7 +848,12 @@ extendNameConstraints :: (MonadState (Environment m) s, Finalizer s) => SimpleLe
 extendNameConstraints lens c = mapM_ (\name -> modify $ addNameConstraint name (envConstraints.lens) c) (freeVars c)
 
 -- | 'extendMapConstraints' @r c@ : add @c@ to the constraints of the map @r@  
-extendMapConstraints r c = modify $ addMapConstraint r c
+extendMapConstraints r c = do
+  modify $ addMapConstraint r c
+  queue <- use $ envConstraints.conPointQueue
+  keys <- M.keys <$> getMapInstance r
+  let points = filter (\p -> isNothing $ Seq.elemIndexL p queue) (zip (repeat r) keys) -- All points of r that are not in the queue
+  envConstraints.conPointQueue .= queue >< (Seq.fromList points) -- A new constraint has been added for r, so put all good points back into the bad queue
 
 -- | 'extendLogicalConstraints' @c@ : add @c@ to the logical constraints
 extendLogicalConstraints c = if node c == tt
@@ -917,24 +922,46 @@ checkNameConstraints name pos = do
       c' <- eval c
       extendLogicalConstraints c'
 
--- | 'checkMapConstraints' @r actuals pos@ : assume one of the constraints for the value at index @actuals@ 
+-- | 'checkMapConstraints' @r actuals pos@ : assume all unduarded and some of the guarded constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
 checkMapConstraints r actuals pos = do
   cs <- gets $ lookupMapConstraints r
-  let csIdxs = [0 .. length cs - 1]
+  let (guardedCs, unguardedCs) = partition isGuarded cs
+  mapM_ applyMapConstaint unguardedCs
+  
+  let csIdxs = [0 .. length guardedCs - 1]
   counts <- mapM (getMapCaseCount r) csIdxs
   let orderedCs = sortBy (compare `on` snd) (zip csIdxs counts)
-  i <- generate $ flip genIndex (length cs)
-  let (idx, count) = orderedCs !! i
-  envMapCaseCount %= M.insert (r, idx) (succ count)  
-  -- traceShow (text "for" <+> refDoc r <> brackets (commaSep (map pretty actuals)) <+> text "chose" <+> pretty (cs !! idx)) $ return ()
-  c' <- applyMapConstraint (cs !! idx) actuals pos
-  extendLogicalConstraints c'
+  enabled <- replicateM (length guardedCs) (generate genBool)
+  -- traceShow (text "for" <+> refDoc r <> brackets (commaSep (map pretty actuals)) <+> text "chose" <+> pretty enabled) $ return ()
+  mapM_ (processMapConstraint guardedCs) (zip enabled orderedCs)  
+  where
+    isGuarded (Pos _ (Quantified Lambda _ _ body)) = case node body of
+      BinaryExpression Implies guard _ -> True
+      _ -> False
+    -- | Disable constraint
+    processMapConstraint guardedCs (False, (idx, count)) = do
+      forceMapConstraint (guardedCs !! idx) False
+      envMapCaseCount %= M.insert (r, idx) (succ count)
+    -- | Enable constraint
+    processMapConstraint guardedCs (True, (idx, count)) = do
+      let c = guardedCs !! idx
+      forceMapConstraint c True
+      applyMapConstaint c      
+    applyMapConstaint c = do
+      c' <- evalMapConstraint c actuals pos
+      extendLogicalConstraints c'
+    forceMapConstraint c val = case c of
+      (Pos p (Quantified Lambda tv formals body)) -> case node body of
+        BinaryExpression Implies guard _ -> do
+          let cond = if val then guard else enot guard
+          g' <- evalMapConstraint (Pos p (Quantified Lambda tv formals cond)) actuals pos
+          extendLogicalConstraints g'
 
--- | 'applyMapConstraint' @c actuals pos@ : 
+-- | 'evalMapConstraint' @c actuals pos@ : 
 -- constraint @c@ applied to @actuals@
-applyMapConstraint :: (Monad m, Functor m) => Thunk -> [Thunk] -> SourcePos -> Execution m Thunk
-applyMapConstraint c actuals pos = 
+evalMapConstraint :: (Monad m, Functor m) => Thunk -> [Thunk] -> SourcePos -> Execution m Thunk
+evalMapConstraint c actuals pos = 
   let
     Quantified Lambda tv formals body = node c
     formalNames = map fst formals
@@ -942,11 +969,9 @@ applyMapConstraint c actuals pos =
     actualTypes = map thunkType actuals
     locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []
   in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
-    then return $ gen ff
-    else case node body of
+    then return $ gen tt
+    else locally . eval $ body
       -- Quantified Forall tv' vars e -> locally (forceForall tv' vars e pos True) -- parametrized forall constraint: force it to true
-      BinaryExpression Implies guard e -> locally . eval $ guard |&| e  -- Guarded constraint: assume the guard and the consraint
-      _ -> locally . eval $ body                                        -- Unconditional constraint: assume the consraint
           
 -- | 'callSolver' @f cs@ : apply solver's function @f@ to constraints @cs@
 callSolver :: (Monad m, Functor m) => (Solver m -> ConstraintSet -> m a) -> ConstraintSet -> Execution m a

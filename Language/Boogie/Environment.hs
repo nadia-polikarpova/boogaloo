@@ -253,7 +253,7 @@ data Environment m = Environment
     _envLogicalCount :: Int,                    -- ^ Number of logical varibles currently in use
     _envCustomCount :: Map Type Int,            -- ^ For each user-defined type, number of distinct values of this type already generated
     _envLabelCount :: Map (Id, Id) Integer,     -- ^ For each procedure-label pair, number of times a transition with that label was taken
-    _envMapCaseCount :: Map (Ref, Int) Integer, -- ^ For each guarded map constraint, number of times it was applied
+    _envMapCaseCount :: Map (Ref, Int) Integer, -- ^ For each guarded map constraint, number of times it was disabled
     _envInOld :: Bool                           -- ^ Is an old expression currently being evaluated?
   }
   
