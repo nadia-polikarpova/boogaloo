@@ -21,12 +21,13 @@ module Language.Boogie.Environment (
   userMemory,
   memoryDoc,
   NameConstraints,
-  -- MapConstraints,
+  MapConstraints,
   constraintUnion,  
   ConstraintMemory,
   conLocals,
   conGlobals,
-  -- conMaps,
+  conMaps,
+  conPointQueue,
   conLogical,
   conChanged,
   Environment,
@@ -42,14 +43,15 @@ module Language.Boogie.Environment (
   envLogicalCount,
   envInOld,
   envLabelCount,
+  envMapCaseCount,
   initEnv,
   lookupProcedure,
   lookupNameConstraints,
-  -- lookupMapConstraints,
+  lookupMapConstraints,
   lookupCustomCount,
   addProcedureImpl,
   addNameConstraint,
-  -- addMapConstraint,
+  addMapConstraint,
   addLogicalConstraint,
   setCustomCount,
   markModified,
@@ -64,11 +66,14 @@ import Language.Boogie.Generator
 import Language.Boogie.TypeChecker (Context, ctxGlobals)
 import Language.Boogie.Pretty
 import Language.Boogie.PrettyAST
+import Data.Foldable (toList)
 import Data.List
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.Sequence (Seq, (|>), viewl)
+import qualified Data.Sequence as Seq
 import Control.Lens hiding (Context, at)
   
 {- Memory -}
@@ -179,22 +184,30 @@ type NameConstraints = Map Id ConstraintSet
 instance Pretty NameConstraints where
   pretty = vMapDoc pretty constraintSetDoc
 
--- -- | Mapping from map references to their parametrized constraints
--- type MapConstraints = Map Ref ConstraintSet
+-- | Mapping from map references to their parametrized constraints
+type MapConstraints = Map Ref ConstraintSet
 
--- instance Pretty MapConstraints where
-  -- pretty = vMapDoc refDoc constraintSetDoc  
+instance Pretty MapConstraints where
+  pretty = vMapDoc refDoc constraintSetDoc  
   
 -- | Union of constraints (values at the same key are concatenated)
 constraintUnion s1 s2 = M.unionWith (++) s1 s2  
 
+-- | Sequence of map points (ref-args pairs)
+type PointQueue = Seq (Ref, [Thunk])
+
+instance Pretty PointQueue where
+  pretty queue = let pointDoc (r, args) = refDoc r <> brackets (commaSep (map pretty args))
+    in commaSep (map pointDoc $ toList queue)
+
 -- | Constraint memory: stores constraints associated with names, map references and logical variables
 data ConstraintMemory = ConstraintMemory {
-  _conLocals :: NameConstraints,        -- ^ Local name constraints
-  _conGlobals :: NameConstraints,       -- ^ Global name constraints
-  -- _conMaps :: MapConstraints,        -- ^ Parametrized map constraints
-  _conLogical :: ConstraintSet,         -- ^ Constraint on logical variables
-  _conChanged :: Bool                   -- ^ Have the constraints changed since the last check?
+  _conLocals :: NameConstraints,   -- ^ Local name constraints
+  _conGlobals :: NameConstraints,  -- ^ Global name constraints
+  _conMaps :: MapConstraints,      -- ^ Parametrized map constraints
+  _conPointQueue :: PointQueue,    -- ^ Map points that have been accessed, but not constrainted yet 
+  _conLogical :: ConstraintSet,    -- ^ Constraint on logical variables
+  _conChanged :: Bool              -- ^ Have the constraints changed since the last check?
 }
 
 makeLenses ''ConstraintMemory
@@ -203,7 +216,8 @@ makeLenses ''ConstraintMemory
 emptyConstraintMemory = ConstraintMemory {
   _conLocals = M.empty,
   _conGlobals = M.empty,
-  -- _conMaps = M.empty,
+  _conMaps = M.empty,
+  _conPointQueue = Seq.empty,
   _conLogical = [],
   _conChanged = True
 }
@@ -212,7 +226,8 @@ constraintMemoryDoc :: ConstraintMemory -> Doc
 constraintMemoryDoc mem = vsep $ 
   docNonEmpty (mem^.conLocals) (labeledDoc "CLocal") ++
   docNonEmpty (mem^.conGlobals) (labeledDoc "CGlobal") ++
-  -- docNonEmpty (mem^.conMaps) (labeledDoc "CMap") ++
+  docNonEmpty (mem^.conMaps) (labeledDoc "CMap") ++
+  docWhen (not$ Seq.null (mem^.conPointQueue)) ((text "CPoints" <> text ":") <+> align (pretty (mem^.conPointQueue))) ++ 
   docWhen (not $ null (mem^.conLogical)) ((text "CLogical" <> text ":") <+> align (constraintSetDoc (mem^.conLogical)))
   where
     labeledDoc label x = (text label <> text ":") <+> align (pretty x)
@@ -227,18 +242,19 @@ instance Pretty ConstraintMemory where
 -- | Execution state
 data Environment m = Environment
   {
-    _envMemory :: Memory,                   -- ^ Values
-    _envConstraints :: ConstraintMemory,    -- ^ Constraints
-    _envProcedures :: Map Id [PDef],        -- ^ Procedure implementations
-    _envFunctions :: Map Id Expression,     -- ^ Functions with definitions
-    _envTypeContext :: Context,             -- ^ Type context
-    _envSolver :: Solver m,                 -- ^ Constraint solver
-    _envGenerator :: Generator m,           -- ^ Value generator
-    _envMapCount :: Int,                    -- ^ Number of map references currently in use
-    _envLogicalCount :: Int,                -- ^ Number of logical varibles currently in use
-    _envCustomCount :: Map Type Int,        -- ^ For each user-defined type, number of distinct values of this type already generated
-    _envLabelCount :: Map (Id, Id) Integer, -- ^ For each procedure-label pair, number of times a transition with that label was taken
-    _envInOld :: Bool                       -- ^ Is an old expression currently being evaluated?
+    _envMemory :: Memory,                       -- ^ Values
+    _envConstraints :: ConstraintMemory,        -- ^ Constraints
+    _envProcedures :: Map Id [PDef],            -- ^ Procedure implementations
+    _envFunctions :: Map Id Expression,         -- ^ Functions with definitions
+    _envTypeContext :: Context,                 -- ^ Type context
+    _envSolver :: Solver m,                     -- ^ Constraint solver
+    _envGenerator :: Generator m,               -- ^ Value generator
+    _envMapCount :: Int,                        -- ^ Number of map references currently in use
+    _envLogicalCount :: Int,                    -- ^ Number of logical varibles currently in use
+    _envCustomCount :: Map Type Int,            -- ^ For each user-defined type, number of distinct values of this type already generated
+    _envLabelCount :: Map (Id, Id) Integer,     -- ^ For each procedure-label pair, number of times a transition with that label was taken
+    _envMapCaseCount :: Map (Ref, Int) Integer, -- ^ For each guarded map constraint, number of times it was applied
+    _envInOld :: Bool                           -- ^ Is an old expression currently being evaluated?
   }
   
 makeLenses ''Environment
@@ -257,6 +273,7 @@ initEnv tc s g = Environment
     _envMapCount = 0,
     _envLogicalCount = 0,
     _envLabelCount = M.empty,
+    _envMapCaseCount = M.empty,
     _envInOld = False
   }
   
@@ -270,14 +287,14 @@ combineGetters f g1 g2 = to $ \env -> (env ^. g1) `f` (env ^. g2)
 -- Environment queries  
 lookupProcedure = lookupGetter envProcedures []  
 lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.conLocals) (envConstraints.conGlobals)) []
--- lookupMapConstraints = lookupGetter (envConstraints.conMaps) []
+lookupMapConstraints = lookupGetter (envConstraints.conMaps) []
 lookupCustomCount = lookupGetter envCustomCount 0
 
 -- Environment modifications
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
 addNameConstraint :: Id -> SimpleLens (Environment m) NameConstraints -> Expression -> Environment m -> Environment m
 addNameConstraint name lens c env = over lens (M.insert name (nub $ c : lookupGetter lens [] name env)) env
--- addMapConstraint r c env = over (envConstraints.conMaps) (M.insert r (nub $ c : lookupMapConstraints r env)) env
+addMapConstraint r c env = over (envConstraints.conMaps) (M.insert r (nub $ c : lookupMapConstraints r env)) env
 addLogicalConstraint c = over (envConstraints.conLogical) (nub . (c :))
 setCustomCount t n = over envCustomCount (M.insert t n)
 markModified name env = if M.member name (env^.envTypeContext.to ctxGlobals) 

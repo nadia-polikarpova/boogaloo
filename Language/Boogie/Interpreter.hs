@@ -35,6 +35,7 @@ import Language.Boogie.Util
 import Language.Boogie.Position
 import Language.Boogie.Tokens (nonIdChar)
 import Language.Boogie.Pretty
+import Language.Boogie.PrettyAST
 import Language.Boogie.TypeChecker
 import Language.Boogie.NormalForm
 import Language.Boogie.BasicBlocks
@@ -45,6 +46,8 @@ import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.Sequence (Seq, (|>), viewl, ViewL(..))
+import qualified Data.Sequence as Seq
 import qualified Data.Traversable as T
 import Control.Monad.Error hiding (join)
 import Control.Applicative hiding (empty)
@@ -52,6 +55,7 @@ import Control.Monad.State hiding (join)
 import Control.Monad.Identity hiding (join)
 import Control.Monad.Stream
 import Control.Lens hiding (Context, at)
+import Debug.Trace
 
 {- Interface -}
       
@@ -463,6 +467,26 @@ forgetMapValue r index = do
   case M.lookup index inst of
     Nothing -> return ()
     Just val -> envMemory.memMaps %= M.insert r (M.delete index inst)
+    
+-- | 'getLabelCount' @proc_ lb@: current jump count of label @lb@ in procedure @proc_@
+getLabelCount proc_ lb = do
+  counts <- use envLabelCount
+  case M.lookup (proc_, lb) counts of
+    Just n -> do
+      return n
+    Nothing -> do
+      envLabelCount %= M.insert (proc_, lb) 0
+      return 0
+      
+-- | 'getMapCaseCount' @r i@: current application count of constraint number @i@ for map @r@
+getMapCaseCount r i = do
+  counts <- use envMapCaseCount
+  case M.lookup (r, i) counts of
+    Just n -> do
+      return n
+    Nothing -> do
+      envMapCaseCount %= M.insert (r, i) 0
+      return 0      
 
 {- Expressions -}
          
@@ -545,7 +569,7 @@ evalMapSelection m args pos = do
           let rangeType = thunkType (gen $ MapSelection m' args')
           chosenValue <- generateValue rangeType pos
           setMapValue r args' chosenValue
-          -- checkMapConstraints r args' pos
+          envConstraints.conPointQueue %= (|> (r, args')) 
           return chosenValue
     _ -> return m' -- function without arguments (ToDo: is this how it should be handled?)
         
@@ -565,12 +589,9 @@ evalMapUpdate m args new pos = do
       appOld = attachPos pos $ MapSelection m' bvExprs
       appNew = attachPos pos $ MapSelection newM' bvExprs
       guardNeq = disjunction (zipWith (|!=|) bvExprs args')
-      -- lambda = inheritPos (Quantified Lambda tv bv)
-      forall = inheritPos (Quantified Forall tv bv)
-  -- extendMapConstraints r $ lambda (guardNeq |=>| (appOld |=| appNew))
-  -- extendMapConstraints r' $ lambda (guardNeq |=>| (appOld |=| appNew))  
-  extendLogicalConstraints $ forall (guardNeq |=>| (appOld |=| appNew))
-  extendLogicalConstraints $ forall (guardNeq |=>| (appOld |=| appNew))    
+      lambda = inheritPos (Quantified Lambda tv bv)
+  extendMapConstraints r $ lambda (guardNeq |=>| (appOld |=| appNew))
+  extendMapConstraints r' $ lambda (guardNeq |=>| (appOld |=| appNew))  
   return newM'
   
 evalIf cond e1 e2 = do
@@ -675,12 +696,10 @@ evalLambda tv vars e pos = do
   let var = attachPos pos . Var      
       app = attachPos pos $ MapSelection m' (map (var . fst) vars)
       Reference _ r = fromLiteral m'
-  -- extendMapConstraints r (lambda $ app |=| symBody)
-  extendLogicalConstraints (forall $ app |=| symBody)
+  extendMapConstraints r (lambda $ app |=| symBody)
   return m'
   where
     lambda = attachPos pos . Quantified Lambda tv vars
-    forall = attachPos pos . Quantified Forall tv vars
     
 evalForall tv vars e pos = do
   res <- generate genBool
@@ -691,33 +710,27 @@ forceForall tv vars e pos res = do
   qExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)  
   if res
     then do -- we decided that e always holds: attach it to all occurring maps
-      -- let mapConstraints = M.toList $ extractMapConstraints qExpr
-      -- cached <- concat <$> mapM evalForMap mapConstraints
-      -- mapM_ extendLogicalConstraints cached      
-      -- mapM_ (\(r, cs) -> mapM_ (extendMapConstraints r) cs) mapConstraints
-      extendLogicalConstraints qExpr
+      let mapConstraints = M.toList $ extractMapConstraints qExpr
+      mapM_ (\(r, cs) -> mapM_ (extendMapConstraints r) cs) mapConstraints
     else do -- we decided that e does not always hold: find a counterexample  
       let typeBinding = M.fromList $ zip tv (repeat anyType)
       counterExample <- executeNested typeBinding vars (eval $ enot e')
       extendLogicalConstraints counterExample    
   return $ Pos pos $ Literal $ BoolValue res
-  -- where
-    -- evalForMap (r, constraints) = concat <$> mapM (evalConstraint r) constraints
-    -- evalConstraint r c = do       
-      -- inst <- getMapInstance r
-      -- mapM (\actuals -> applyMapConstraint c actuals pos) (M.keys inst)      
           
 {- Statements -}
 
 -- | Execute a basic statement
 -- (no jump, if or while statements allowed)
 exec :: (Monad m, Functor m) => Statement -> Execution m ()
-exec stmt = case node stmt of
+exec stmt = do  
+  case node stmt of
     Predicate specClause -> execPredicate specClause (position stmt)
     Havoc ids -> execHavoc ids (position stmt)
     Assign lhss rhss -> execAssign lhss rhss
     Call lhss name args -> execCall name lhss args (position stmt)
     CallForall name args -> return ()
+  checkSat (position stmt)
   
 execPredicate (SpecClause source True expr) pos = do  
   c <- eval expr
@@ -784,21 +797,12 @@ execBlock :: (Monad m, Functor m) => Id -> Map Id [Statement] -> Id -> Execution
 execBlock proc_ blocks label = let
   block = blocks ! label
   statements = init block
-  labelCount lb = do
-    lCounts <- use envLabelCount
-    case M.lookup (proc_, lb) lCounts of
-      Just n -> do
-        return n
-      Nothing -> do
-        envLabelCount %= M.insert (proc_, lb) 0
-        return 0
   in do
     mapM exec statements
-    when (not $ null statements) (checkSat $ position (last statements))
     case last block of
       Pos pos Return -> return pos
       Pos _ (Goto lbs) -> do
-        counts <- mapM labelCount lbs
+        counts <- mapM (getLabelCount proc_) lbs
         let orderedLbs = sortBy (compare `on` snd) (zip lbs counts)
         i <- generate $ flip genIndex (length lbs)
         let (lb, c) = orderedLbs !! i
@@ -843,8 +847,8 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
 extendNameConstraints :: (MonadState (Environment m) s, Finalizer s) => SimpleLens ConstraintMemory NameConstraints -> Expression -> s ()
 extendNameConstraints lens c = mapM_ (\name -> modify $ addNameConstraint name (envConstraints.lens) c) (freeVars c)
 
--- -- | 'extendMapConstraints' @r c@ : add @c@ to the constraints of the map @r@  
--- extendMapConstraints r c = modify $ addMapConstraint r c
+-- | 'extendMapConstraints' @r c@ : add @c@ to the constraints of the map @r@  
+extendMapConstraints r c = modify $ addMapConstraint r c
 
 -- | 'extendLogicalConstraints' @c@ : add @c@ to the logical constraints
 extendLogicalConstraints c = if node c == tt
@@ -912,33 +916,38 @@ checkNameConstraints name pos = do
     checkConstraint c = do
       c' <- eval c
       extendLogicalConstraints c'
-  
--- | 'checkMapConstraints' @r actuals pos@ : assume all constraints for the value at index @actuals@ 
+
+-- | 'checkMapConstraints' @r actuals pos@ : assume one of the constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
--- checkMapConstraints r actuals pos = do
-  -- cs <- gets $ lookupMapConstraints r
-  -- mapM_ checkConstraint cs
-  -- where
-    -- checkConstraint c = do
-      -- c' <- applyMapConstraint c actuals pos
-      -- extendLogicalConstraints c'    
-  
+checkMapConstraints r actuals pos = do
+  cs <- gets $ lookupMapConstraints r
+  let csIdxs = [0 .. length cs - 1]
+  counts <- mapM (getMapCaseCount r) csIdxs
+  let orderedCs = sortBy (compare `on` snd) (zip csIdxs counts)
+  i <- generate $ flip genIndex (length cs)
+  let (idx, count) = orderedCs !! i
+  envMapCaseCount %= M.insert (r, idx) (succ count)  
+  -- traceShow (text "for" <+> refDoc r <> brackets (commaSep (map pretty actuals)) <+> text "chose" <+> pretty (cs !! idx)) $ return ()
+  c' <- applyMapConstraint (cs !! idx) actuals pos
+  extendLogicalConstraints c'
+
 -- | 'applyMapConstraint' @c actuals pos@ : 
--- return if @c (actuals)@ holds
--- (@pos@ is the position of the constraint invocation)      
--- applyMapConstraint c actuals pos = 
-  -- let
-    -- Quantified Lambda tv formals body = node c
-    -- formalNames = map fst formals
-    -- formalTypes = map snd formals
-    -- actualTypes = map thunkType actuals
-    -- locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []
-  -- in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
-    -- then return $ attachPos pos $ tt
-    -- else case node body of
+-- constraint @c@ applied to @actuals@
+applyMapConstraint :: (Monad m, Functor m) => Thunk -> [Thunk] -> SourcePos -> Execution m Thunk
+applyMapConstraint c actuals pos = 
+  let
+    Quantified Lambda tv formals body = node c
+    formalNames = map fst formals
+    formalTypes = map snd formals
+    actualTypes = map thunkType actuals
+    locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []
+  in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
+    then return $ gen ff
+    else case node body of
       -- Quantified Forall tv' vars e -> locally (forceForall tv' vars e pos True) -- parametrized forall constraint: force it to true
-      -- _ -> locally (eval body)
-    
+      BinaryExpression Implies guard e -> locally . eval $ guard |&| e  -- Guarded constraint: assume the guard and the consraint
+      _ -> locally . eval $ body                                        -- Unconditional constraint: assume the consraint
+          
 -- | 'callSolver' @f cs@ : apply solver's function @f@ to constraints @cs@
 callSolver :: (Monad m, Functor m) => (Solver m -> ConstraintSet -> m a) -> ConstraintSet -> Execution m a
 callSolver f cs = do    
@@ -953,36 +962,49 @@ instanceConstraints = (concatMap constraintsFromMap . M.toList) <$> use (envMemo
     pointConstraint r (args, val) = let
         mapType = MapType [] (map thunkType args) (thunkType val)
         mapExpr = gen $ Literal $ Reference mapType r
-      in gen (MapSelection mapExpr args) |=| val  
-  
+      in gen (MapSelection mapExpr args) |=| val
+      
 -- | Check if the current logical variable constraints are satisfiable,
 -- otherwise throw an assumption violation  
 checkSat :: (Monad m, Functor m) => SourcePos -> Execution m ()
-checkSat pos = do
+checkSat pos = do  
   changed <- use $ envConstraints.conChanged
+  queueEmpty <- uses (envConstraints.conPointQueue) Seq.null
   constraints <- use $ envConstraints.conLogical
-  when (changed && not (null constraints)) (do    
-    ic <- instanceConstraints  
-    sat <- (callSolver solCheck) (constraints ++ ic)
-    when (not sat) $ throwRuntimeFailure Unreachable pos
-    envConstraints.conChanged .= False
-    )
+  when (changed || not queueEmpty)
+    (do
+      ic <- instanceConstraints  
+      sat <- (callSolver solCheck) (constraints ++ ic)    
+      if sat
+        then do
+          envConstraints.conChanged .= False
+          if queueEmpty
+            then return ()
+            else do
+              dequeueMapPoint pos
+              checkSat pos
+        else throwRuntimeFailure Unreachable pos)
+  where
+    dequeueMapPoint pos = do
+      ((r, args) :< points) <- uses (envConstraints.conPointQueue) viewl
+      envConstraints.conPointQueue .= points
+      checkMapConstraints r args pos  
     
 -- | Solve current logical variable constraints
 solveConstraints :: (Monad m, Functor m) => SourcePos -> Execution m ()
 solveConstraints pos = do
+  checkSat pos
   constraints <- use $ envConstraints.conLogical      
   ic <- instanceConstraints
   envConstraints.conLogical .= []  
   -- if null constraints
     -- then eliminateLogicals                                  -- We are done: instantiate the memory with the solution 
     -- else solveAndCheck (constraints ++ instanceConstraints) -- Something to solve
-  when (not $ null constraints) $ solveAndCheck (constraints ++ ic)
+  solveAndCheck (constraints ++ ic)
   eliminateLogicals
   where
     solveAndCheck constraints = do      
       mSolution <- (callSolver solPick) constraints      
-      -- dumpState []
       case mSolution of
         Nothing -> throwRuntimeFailure Unreachable pos
         Just solution -> do
@@ -1019,17 +1041,17 @@ eliminateLogicals = do
       evalStore memOld
       evalStore memLocals
       evalStore memConstants
-      -- evalMapConstraints    
+      evalMapConstraints    
     evalStore :: (Monad m, Functor m) => StoreLens -> Execution m ()
     evalStore lens = do
       store <- use $ envMemory.lens
       newStore <- T.mapM eval store
       envMemory.lens .= newStore
-    -- evalMapConstraints :: (Monad m, Functor m) => Execution m ()
-    -- evalMapConstraints = do
-      -- mc <- use $ envConstraints.conMaps
-      -- newMC <- T.mapM (mapM evalQuantified) mc
-      -- envConstraints.conMaps .= newMC
+    evalMapConstraints :: (Monad m, Functor m) => Execution m ()
+    evalMapConstraints = do
+      mc <- use $ envConstraints.conMaps
+      newMC <- T.mapM (mapM evalQuantified) mc
+      envConstraints.conMaps .= newMC
   
 -- | 'generate' @f@ : computation that extracts @f@ from the generator
 generate :: (Monad m, Functor m) => (Generator m -> m a) -> Execution m a
@@ -1092,73 +1114,74 @@ makeUnique typ name = do
 
 {- Extracting constraints -}
 
--- -- | 'extractMapConstraints' @bExpr@ : extract parametrized constraints from @bExpr@
--- -- @bExpr@ must not contain any free variables
--- extractMapConstraints :: Expression -> MapConstraints
--- extractMapConstraints bExpr = extractConstraints' [] [] [] (negationNF bExpr)
+-- | 'extractMapConstraints' @bExpr@ : extract parametrized constraints from @bExpr@
+-- @bExpr@ must not contain any free variables
+extractMapConstraints :: Expression -> MapConstraints
+extractMapConstraints bExpr = extractConstraints' [] [] [] (negationNF bExpr)
 
--- -- | 'extractConstraints'' @tv vars guards body@ : extract parametrized constraints from expression @guards@ ==> @body@
--- -- with bound type variables @tv@ and bound variables @vars@
--- extractConstraints' :: [Id] -> [IdType] -> [Expression] -> Expression -> MapConstraints
--- extractConstraints' tv vars guards body = case (node body) of
-  -- Quantified Forall tv' vars' bExpr -> extractConstraints' (tv ++ tv') (vars ++ vars') guards bExpr
-  -- Quantified Exists _ _ _ -> M.empty -- ToDo: skolemize?
-  -- BinaryExpression And bExpr1 bExpr2 -> let
-    -- constraints1 = extractConstraints' tv vars guards bExpr1
-    -- constraints2 = extractConstraints' tv vars guards bExpr2
-    -- in constraints1 `constraintUnion` constraints2
-  -- BinaryExpression Or bExpr1 bExpr2 -> let
-    -- constraints1 = extractConstraints' tv vars ((negationNF $ enot bExpr1) : guards) bExpr2
-    -- constraints2 = extractConstraints' tv vars ((negationNF $ enot bExpr2) : guards) bExpr1
-    -- in constraints1 `constraintUnion` constraints2
-  -- _ -> extractConstraintsAtomic
-  -- where
-    -- -- | Bound variables used in body or guards:
-    -- allFreeVars = freeVars body ++ concatMap freeVars guards
-    -- usedVars = [(v, t) | (v, t) <- vars, v `elem` allFreeVars]
-    -- boundTC = emptyContext { ctxTypeVars = tv, ctxLocals = M.fromList vars }
+-- | 'extractConstraints'' @tv vars guards body@ : extract parametrized constraints from expression @guards@ ==> @body@
+-- with bound type variables @tv@ and bound variables @vars@
+extractConstraints' :: [Id] -> [IdType] -> [Expression] -> Expression -> MapConstraints
+extractConstraints' tv vars guards body = case (node body) of
+  Quantified Forall tv' vars' bExpr -> extractConstraints' (tv ++ tv') (vars ++ vars') guards bExpr
+  Quantified Exists _ _ _ -> M.empty -- ToDo: skolemize?
+  BinaryExpression And bExpr1 bExpr2 -> let
+    constraints1 = extractConstraints' tv vars guards bExpr1
+    constraints2 = extractConstraints' tv vars guards bExpr2
+    in constraints1 `constraintUnion` constraints2
+  BinaryExpression Or bExpr1 bExpr2 -> let
+    constraints1 = extractConstraints' tv vars ((negationNF $ enot bExpr1) : guards) bExpr2
+    constraints2 = extractConstraints' tv vars ((negationNF $ enot bExpr2) : guards) bExpr1
+    in constraints1 `constraintUnion` constraints2
+  _ -> extractConstraintsAtomic
+  where
+    -- | Bound variables used in body or guards:
+    allFreeVars = freeVars body ++ concatMap freeVars guards
+    usedVars = [(v, t) | (v, t) <- vars, v `elem` allFreeVars]
+    boundTC = emptyContext { ctxTypeVars = tv, ctxLocals = M.fromList vars }
   
-    -- -- We extract a parametrized constraint from an application if its arguments contain at least one bound variable
-    -- extractConstraintsAtomic = foldr constraintUnion M.empty $ map addConstraintFor (refSelections body)
-    -- addConstraintFor (x, args) = let
-        -- argTypes = map (exprType boundTC) args
-        -- (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
-        -- allArgGuards = concat argGuards
-        -- (argVars, extraVars) = partition (\(v, t) -> v `elem` formals) usedVars
+    -- We extract a parametrized constraint from an application if its arguments contain at least one bound variable
+    extractConstraintsAtomic = foldr constraintUnion M.empty $ map addConstraintFor (refSelections body)
+    addConstraintFor (x, args) = let
+        argTypes = map (exprType boundTC) args
+        (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
+        allArgGuards = concat argGuards
+        (argVars, extraVars) = partition (\(v, t) -> v `elem` formals) usedVars
         -- constraint = if null extraVars
           -- then guardWith guards body
           -- else inheritPos (Quantified Forall tv extraVars) (guardWith guards body) -- outer guards are inserted into the body, because they might contain extraVars
-      -- in if not (null argVars) &&       -- argumnets contain bound variables
-          -- length formals == length args -- all arguments are simple
-        -- then M.singleton x [inheritPos (Quantified Lambda tv (zip formals argTypes)) (guardWith allArgGuards constraint)]
-        -- else M.empty
+      in if not (null argVars) &&           -- arguments contain bound variables
+          length formals == length args &&  -- all arguments are simple
+          null extraVars                    -- now for simplicity
+        then M.singleton x [inheritPos (Quantified Lambda tv (zip formals argTypes)) (guardWith (allArgGuards ++ guards) body)]
+        else M.empty
         
-    -- defLhs e = case node e of
-      -- MapSelection (Pos _ (Literal (Reference _ r))) args -> Just (r, args)
-      -- _ -> Nothing        
+    defLhs e = case node e of
+      MapSelection (Pos _ (Literal (Reference _ r))) args -> Just (r, args)
+      _ -> Nothing        
             
--- -- | 'extractArgs' @vars args@: extract simple arguments from @args@;
--- -- an argument is simple if it is either one of variables in @vars@ or does not contain any of @vars@;
--- -- in the latter case the argument is represented as a fresh name and a guard
--- extractArgs :: [Id] -> [Expression] -> [(Id, [Expression])]
--- extractArgs vars args = foldl extractArg [] (zip args [0..])
-  -- where
-    -- extractArg res ((Pos p e), i) = let 
-      -- x = freshArgName i 
-      -- xExpr = attachPos p $ Var x
-      -- in res ++
-        -- case e of
-          -- Var arg -> if arg `elem` vars
-            -- then if arg `elem` map fst res
-              -- then [(x, [xExpr |=| Pos p e])]      -- Bound variable that already occurred: use fresh variable as formal, add equality guard
-              -- else [(arg, [])]                     -- New bound variable: use variable name as formal, no additional guards
-            -- else [(x, [xExpr |=| Pos p e])]        -- Constant: use fresh variable as formal, add equality guard
-          -- _ -> if null $ freeVars (Pos p e) `intersect` nonfixedBV
-                  -- then [(x, [xExpr |=| Pos p e])]  -- Expression where all bound variables are already fixed: use fresh variable as formal, add equality guard
-                  -- else []                          -- Expression involving non-fixed bound variables: not a simple argument, omit
-    -- freshArgName i = nonIdChar : show i
-    -- varArgs = [v | (Pos p (Var v)) <- args]
-    -- nonfixedBV = vars \\ varArgs
+-- | 'extractArgs' @vars args@: extract simple arguments from @args@;
+-- an argument is simple if it is either one of variables in @vars@ or does not contain any of @vars@;
+-- in the latter case the argument is represented as a fresh name and a guard
+extractArgs :: [Id] -> [Expression] -> [(Id, [Expression])]
+extractArgs vars args = foldl extractArg [] (zip args [0..])
+  where
+    extractArg res ((Pos p e), i) = let 
+      x = freshArgName i 
+      xExpr = attachPos p $ Var x
+      in res ++
+        case e of
+          Var arg -> if arg `elem` vars
+            then if arg `elem` map fst res
+              then [(x, [xExpr |=| Pos p e])]      -- Bound variable that already occurred: use fresh variable as formal, add equality guard
+              else [(arg, [])]                     -- New bound variable: use variable name as formal, no additional guards
+            else [(x, [xExpr |=| Pos p e])]        -- Constant: use fresh variable as formal, add equality guard
+          _ -> if null $ freeVars (Pos p e) `intersect` nonfixedBV
+                  then [(x, [xExpr |=| Pos p e])]  -- Expression where all bound variables are already fixed: use fresh variable as formal, add equality guard
+                  else []                          -- Expression involving non-fixed bound variables: not a simple argument, omit
+    freshArgName i = nonIdChar : show i
+    varArgs = [v | (Pos p (Var v)) <- args]
+    nonfixedBV = vars \\ varArgs
 
 {- Debugging -}
 
@@ -1166,5 +1189,5 @@ dumpState :: (Monad m, Functor m) => ConstraintSet -> Execution m ()
 dumpState constraints = do
   mem <- use envMemory
   con <- use envConstraints
-  (error . show) (punctuate linebreak [pretty mem, pretty con, text "Constraints" $+$ constraintSetDoc constraints])    
+  traceShow (punctuate linebreak [pretty mem, pretty con, text "Constraints" $+$ constraintSetDoc constraints]) $ return ()
        

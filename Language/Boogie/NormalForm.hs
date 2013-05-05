@@ -32,7 +32,14 @@ negationNF boolExpr = case node boolExpr of
   BinaryExpression Implies e1 e2 -> negationNF (enot e1) ||| negationNF e2
   BinaryExpression Explies e1 e2 -> negationNF e1 ||| negationNF (enot e2)
   BinaryExpression Equiv e1 e2 -> (negationNF (enot e1) ||| negationNF e2) |&| (negationNF e1 ||| negationNF (enot e2))
-  BinaryExpression op e1 e2 | op == And || op == Or -> inheritPos2 (BinaryExpression op) (negationNF e1) (negationNF e2)    
+  BinaryExpression op e1 e2 
+    | op == And || op == Or -> inheritPos2 (BinaryExpression op) (negationNF e1) (negationNF e2)
+    | otherwise -> case node e1 of -- relational operator
+      IfExpr cond e11 e12 -> negationNF ((cond |=>| inheritPos2 (BinaryExpression op) e11 e2) |&| (enot cond |=>| inheritPos2 (BinaryExpression op) e12 e2))
+      _ -> case node e2 of
+        IfExpr cond e21 e22 -> negationNF ((cond |=>| inheritPos2 (BinaryExpression op) e1 e21) |&| (enot cond |=>| inheritPos2 (BinaryExpression op) e1 e22))
+        _ -> boolExpr
+  IfExpr cond e1 e2 -> negationNF ((cond |=>| e1) |&| (enot cond |=>| e2))
   Quantified qop tv vars e -> attachPos (position boolExpr) $ Quantified qop tv vars (negationNF e)
   _ -> boolExpr
 
