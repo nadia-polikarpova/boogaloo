@@ -38,7 +38,6 @@ module Language.Boogie.Environment (
   envTypeContext,
   envSolver,
   envGenerator,
-  envCustomCount,
   envMapCount,
   envLogicalCount,
   envInOld,
@@ -48,12 +47,10 @@ module Language.Boogie.Environment (
   lookupProcedure,
   lookupNameConstraints,
   lookupMapConstraints,
-  lookupCustomCount,
   addProcedureImpl,
   addNameConstraint,
   addMapConstraint,
   addLogicalConstraint,
-  setCustomCount,
   markModified,
   isRecursive
 ) where
@@ -251,7 +248,6 @@ data Environment m = Environment
     _envGenerator :: Generator m,               -- ^ Value generator
     _envMapCount :: Int,                        -- ^ Number of map references currently in use
     _envLogicalCount :: Int,                    -- ^ Number of logical varibles currently in use
-    _envCustomCount :: Map Type Int,            -- ^ For each user-defined type, number of distinct values of this type already generated
     _envLabelCount :: Map (Id, Id) Integer,     -- ^ For each procedure-label pair, number of times a transition with that label was taken
     _envMapCaseCount :: Map (Ref, Int) Integer, -- ^ For each guarded map constraint, number of times it was disabled
     _envInOld :: Bool                           -- ^ Is an old expression currently being evaluated?
@@ -269,7 +265,6 @@ initEnv tc s g = Environment
     _envTypeContext = tc,
     _envSolver = s,
     _envGenerator = g,
-    _envCustomCount = M.empty,
     _envMapCount = 0,
     _envLogicalCount = 0,
     _envLabelCount = M.empty,
@@ -288,7 +283,6 @@ combineGetters f g1 g2 = to $ \env -> (env ^. g1) `f` (env ^. g2)
 lookupProcedure = lookupGetter envProcedures []  
 lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.conLocals) (envConstraints.conGlobals)) []
 lookupMapConstraints = lookupGetter (envConstraints.conMaps) []
-lookupCustomCount = lookupGetter envCustomCount 0
 
 -- Environment modifications
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
@@ -296,7 +290,6 @@ addNameConstraint :: Id -> SimpleLens (Environment m) NameConstraints -> Express
 addNameConstraint name lens c env = over lens (M.insert name (nub $ c : lookupGetter lens [] name env)) env
 addMapConstraint r c env = over (envConstraints.conMaps) (M.insert r (nub $ c : lookupMapConstraints r env)) env
 addLogicalConstraint c = over (envConstraints.conLogical) (nub . (c :))
-setCustomCount t n = over envCustomCount (M.insert t n)
 markModified name env = if M.member name (env^.envTypeContext.to ctxGlobals) 
   then over (envMemory.memModified) (S.insert name) env
   else env

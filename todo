@@ -16,11 +16,13 @@
   - Annotate AST with expr types
   
 - Interpreter
+  - Change types of checkSat, solveConstraints
+  - Fix unique
+  - Multidimensional quantifiers
   - User interface
     - Put back map dereferencing
     - Command line options (e.g. generate first n distinct errors)
-  - Pass forall constraints to Z3
-    - Split quantifications over types
+  - Better case extraction for map constraints (BDD?)
   
   - Error reporting: when violated spec has logical vars, output their values  
   - Refactor executeLocally, execCall and execProcedure (and saveOld/restoreOld?)
@@ -30,7 +32,6 @@
   - Turn source positions into spans; use the end of the span to report postcondition violations  
     
 - User interface
-  - pass more information with failures other than spec violations, so that relevant variables can be determined
   - settings for disabling checking of different specs
   - interactive sessions
   - debugger: generated logs and traverse them?
