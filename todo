@@ -16,9 +16,7 @@
   - Annotate AST with expr types
   
 - Interpreter
-  - Change types of checkSat, solveConstraints
-  - Fix unique
-  - Multidimensional quantifiers
+  - Extract map constraints from nonsimple arguments
   - User interface
     - Put back map dereferencing
     - Command line options (e.g. generate first n distinct errors)

@@ -718,7 +718,7 @@ forceForall tv vars e pos res = do
       counterExample <- executeNested typeBinding vars (eval $ enot e')
       extendLogicalConstraints counterExample    
   return $ Pos pos $ Literal $ BoolValue res
-          
+            
 {- Statements -}
 
 -- | Execute a basic statement
@@ -850,11 +850,15 @@ extendNameConstraints lens c = mapM_ (\name -> modify $ addNameConstraint name (
 
 -- | 'extendMapConstraints' @r c@ : add @c@ to the constraints of the map @r@  
 extendMapConstraints r c = do
+  n <- gets (length . lookupMapConstraints r)
   modify $ addMapConstraint r c
-  queue <- use $ envConstraints.conPointQueue
-  keys <- M.keys <$> getMapInstance r
-  let points = filter (\p -> isNothing $ Seq.elemIndexL p queue) (zip (repeat r) keys) -- All points of r that are not in the queue
-  envConstraints.conPointQueue .= queue >< (Seq.fromList points) -- A new constraint has been added for r, so put all good points back into the bad queue
+  n' <- gets (length . lookupMapConstraints r)
+  when (n' > n) (do
+    queue <- use $ envConstraints.conPointQueue
+    keys <- M.keys <$> getMapInstance r
+    let points = filter (\p -> isNothing $ Seq.elemIndexL p queue) (zip (repeat r) keys) -- All points of r that are not in the queue
+    envConstraints.conPointQueue .= queue >< (Seq.fromList points) -- A new constraint has been added for r, so put all good points back into the bad queue
+    )
 
 -- | 'extendLogicalConstraints' @c@ : add @c@ to the logical constraints
 extendLogicalConstraints c = if node c == tt
@@ -937,7 +941,7 @@ checkUniqueConstraints name t = do
 checkMapConstraints r actuals pos = do
   cs <- gets $ lookupMapConstraints r
   let (guardedCs, unguardedCs) = partition isGuarded cs
-  mapM_ applyMapConstaint unguardedCs
+  mapM_ (\c -> enforceMapConstraint c actuals pos) unguardedCs
   
   let csIdxs = [0 .. length guardedCs - 1]
   counts <- mapM (getMapCaseCount r) csIdxs
@@ -951,27 +955,23 @@ checkMapConstraints r actuals pos = do
       _ -> False
     -- | Disable constraint
     processMapConstraint guardedCs (False, (idx, count)) = do
-      forceMapConstraint (guardedCs !! idx) False
+      enableMapConstraint (guardedCs !! idx) False
       envMapCaseCount %= M.insert (r, idx) (succ count)
     -- | Enable constraint
     processMapConstraint guardedCs (True, (idx, count)) = do
       let c = guardedCs !! idx
-      forceMapConstraint c True
-      applyMapConstaint c      
-    applyMapConstaint c = do
-      c' <- evalMapConstraint c actuals pos
-      extendLogicalConstraints c'
-    forceMapConstraint c val = case c of
+      enableMapConstraint c True
+      enforceMapConstraint c actuals pos     
+    enableMapConstraint c val = case c of
       (Pos p (Quantified Lambda tv formals body)) -> case node body of
         BinaryExpression Implies guard _ -> do
           let cond = if val then guard else enot guard
-          g' <- evalMapConstraint (Pos p (Quantified Lambda tv formals cond)) actuals pos
-          extendLogicalConstraints g'
+          enforceMapConstraint (Pos p (Quantified Lambda tv formals cond)) actuals pos
 
--- | 'evalMapConstraint' @c actuals pos@ : 
--- constraint @c@ applied to @actuals@
-evalMapConstraint :: (Monad m, Functor m) => Thunk -> [Thunk] -> SourcePos -> Execution m Thunk
-evalMapConstraint c actuals pos = 
+-- | 'enforceMapConstraint' @c actuals pos@ : 
+-- enforce constraint @c@ for point @actuals@
+enforceMapConstraint :: (Monad m, Functor m) => Thunk -> [Thunk] -> SourcePos -> Execution m ()
+enforceMapConstraint c actuals pos = 
   let
     Quantified Lambda tv formals body = node c
     formalNames = map fst formals
@@ -979,9 +979,21 @@ evalMapConstraint c actuals pos =
     actualTypes = map thunkType actuals
     locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []
   in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
-    then return $ gen tt
-    else locally . eval $ body
-      -- Quantified Forall tv' vars e -> locally (forceForall tv' vars e pos True) -- parametrized forall constraint: force it to true
+    then return ()
+    else case node body of
+      Quantified Forall tv' vars e -> locally (enforceOnCache tv' vars e) -- parametrized forall constraint: check it on cached values
+      _ -> do 
+        c' <- locally . eval $ body
+        extendLogicalConstraints c'
+  where      
+    enforceOnCache tv vars e = do  
+      qExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)  
+      let mapConstraints = M.toList $ extractMapConstraints qExpr
+      mapM_ forceForMap mapConstraints
+    forceForMap (r, constraints) = mapM_ (forceConstraint r) constraints
+    forceConstraint r c = do       
+      inst <- getMapInstance r
+      mapM_ (\actuals -> enforceMapConstraint c actuals pos) (M.keys inst)          
           
 -- | 'callSolver' @f cs@ : apply solver's function @f@ to constraints @cs@
 callSolver :: (Monad m, Functor m) => (Solver m -> ConstraintSet -> m a) -> ConstraintSet -> Execution m a
@@ -1008,7 +1020,7 @@ checkSat pos = do
   constraints <- use $ envConstraints.conLogical
   when (changed || not queueEmpty)
     (do
-      ic <- instanceConstraints  
+      ic <- instanceConstraints
       s <- use envSolver
       if solCheck s (constraints ++ ic)
         then do
@@ -1169,18 +1181,13 @@ extractConstraints' tv vars guards body = case (node body) of
         (formals, argGuards) = unzip $ extractArgs (map fst usedVars) args
         allArgGuards = concat argGuards
         (argVars, extraVars) = partition (\(v, t) -> v `elem` formals) usedVars
-        -- constraint = if null extraVars
-          -- then guardWith guards body
-          -- else inheritPos (Quantified Forall tv extraVars) (guardWith guards body) -- outer guards are inserted into the body, because they might contain extraVars
+        constraint = if null extraVars
+          then guardWith (allArgGuards ++ guards) body
+          else inheritPos (Quantified Forall tv extraVars) (guardWith (allArgGuards ++ guards) body) -- outer guards are inserted into the body, because they might contain extraVars
       in if not (null argVars) &&           -- arguments contain bound variables
-          length formals == length args &&  -- all arguments are simple
-          null extraVars                    -- now for simplicity
-        then M.singleton x [inheritPos (Quantified Lambda tv (zip formals argTypes)) (guardWith (allArgGuards ++ guards) body)]
+          length formals == length args  -- all arguments are simple
+        then M.singleton x [inheritPos (Quantified Lambda tv (zip formals argTypes)) constraint]
         else M.empty
-        
-    defLhs e = case node e of
-      MapSelection (Pos _ (Literal (Reference _ r))) args -> Just (r, args)
-      _ -> Nothing        
             
 -- | 'extractArgs' @vars args@: extract simple arguments from @args@;
 -- an argument is simple if it is either one of variables in @vars@ or does not contain any of @vars@;
