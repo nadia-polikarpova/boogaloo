@@ -26,10 +26,8 @@ solver :: (MonadPlus m, Functor m)
       => Maybe Int     -- ^ Bound on number of solutions
       -> Solver m
 solver mBound = Solver {
-  solPick = solve mBound,
-  solCheck = \cs -> do
-    s <- solve (Just 1) cs
-    return $ isJust s
+  solPick = \cs -> liftM fromJust $ solve mBound cs,
+  solCheck = const True
 }      
 
 genValOfType :: (MonadPlus m, Functor m) => Generator m -> Type -> m Thunk

@@ -70,7 +70,7 @@ executeProgram p tc solver solvePassing generator entryPoint = result <$> runSta
       execUnsafely $ preprocess p      
       execRootCall
       if solvePassing
-        then solveConstraints noPos
+        then concretize noPos
         else checkSat noPos
     sig = procSig entryPoint tc
     execRootCall = do
@@ -747,7 +747,7 @@ execPredicate clause@(SpecClause source False expr) pos = do
         then extendLogicalConstraints c
         else do          
           extendLogicalConstraints (enot c)          
-          solveConstraints pos
+          concretize pos
           throwRuntimeFailure (Error clause) pos          
     
 execHavoc names pos = do
@@ -1009,8 +1009,8 @@ checkSat pos = do
   when (changed || not queueEmpty)
     (do
       ic <- instanceConstraints  
-      sat <- (callSolver solCheck) (constraints ++ ic)    
-      if sat
+      s <- use envSolver
+      if solCheck s (constraints ++ ic)
         then do
           envConstraints.conChanged .= False
           if queueEmpty
@@ -1025,28 +1025,23 @@ checkSat pos = do
       envConstraints.conPointQueue .= points
       checkMapConstraints r args pos  
     
--- | Solve current logical variable constraints
-solveConstraints :: (Monad m, Functor m) => SourcePos -> Execution m ()
-solveConstraints pos = do
+-- | Fix values of logical variables
+concretize :: (Monad m, Functor m) => SourcePos -> Execution m ()
+concretize pos = do
   checkSat pos
   constraints <- use $ envConstraints.conLogical      
   ic <- instanceConstraints
   envConstraints.conLogical .= []  
-  -- if null constraints
-    -- then eliminateLogicals                                  -- We are done: instantiate the memory with the solution 
-    -- else solveAndCheck (constraints ++ instanceConstraints) -- Something to solve
-  solveAndCheck (constraints ++ ic)
-  eliminateLogicals
+  if null constraints
+    then eliminateLogicals                 -- We are done: instantiate the memory with the solution 
+    else solveAndCheck (constraints ++ ic) -- Something to solve
   where
     solveAndCheck constraints = do      
-      mSolution <- (callSolver solPick) constraints      
-      case mSolution of
-        Nothing -> throwRuntimeFailure Unreachable pos
-        Just solution -> do
-          envMemory.memLogical %= M.union solution          
-          updateMapCache
-          -- mapM_ checkConstraint constraints      
-          -- solveConstraints -- the previous two lines might have generated more constraints, so we should solve again    
+      solution <- (callSolver solPick) constraints      
+      envMemory.memLogical %= M.union solution          
+      updateMapCache
+      mapM_ checkConstraint constraints      
+      concretize pos -- the previous two lines might have generated more constraints, so we should solve again    
     -- | Instantiate all logical variables inside map cache
     updateMapCache = do
       maps <- use $ envMemory.memMaps
@@ -1057,12 +1052,12 @@ solveConstraints pos = do
       return (args', val')
     -- | Check validity of a constraint with the current assignment to logicals;
     -- if the constraint does not evaluate to a literal, add it to constraints again
-    -- checkConstraint c = do
-      -- res <- eval c
-      -- case node res of
-        -- Literal (BoolValue True) -> return ()
-        -- Literal (BoolValue False) -> throwRuntimeFailure (SpecViolation (SpecClause Axiom True c)) (position res)
-        -- _ -> extendLogicalConstraints res      
+    checkConstraint c = do
+      res <- eval c
+      case node res of
+        Literal (BoolValue True) -> return ()
+        Literal (BoolValue False) -> throwRuntimeFailure Unreachable (position res)
+        _ -> extendLogicalConstraints res
   
 -- | Assuming that all logical variables have been assigned values,
 -- re-evaluate the store and the map constraints, and wipe out logical store.

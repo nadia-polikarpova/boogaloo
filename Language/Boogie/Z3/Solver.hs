@@ -6,7 +6,7 @@ import           Control.Monad
 import           Control.Concurrent
 import           Control.Exception
 
-import           Data.Foldable (Foldable)
+import           Data.Foldable (Foldable, toList)
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.Maybe
@@ -30,10 +30,12 @@ solver :: (MonadPlus m, Foldable m)
       -> Maybe Int     -- ^ Bound on number of solutions
       -> Solver m
 solver minWanted mBound = Solver {
-  solPick = solve minWanted mBound,
-  solCheck = \cs -> do
-    s <- solve False (Just 1) cs
-    return $ isJust s
+  solPick = \cs -> do 
+    mSolution <- solve minWanted mBound cs
+    case mSolution of
+      Nothing -> mzero
+      Just solution -> return solution,
+  solCheck = \cs -> isJust . head $ solve False (Just 1) cs
 }      
 
 solve :: (MonadPlus m, Foldable m)
@@ -55,34 +57,8 @@ solve minWanted mBound constrs =
       Nothing -> return Nothing    
 
 stepConstrs :: Bool -> [Expression] -> Maybe (Solution, Expression)
-stepConstrs minWanted constrs = unsafePerformIO withoutMBQI
+stepConstrs minWanted constrs = unsafePerformIO $ act opts
     where
-      timedAct :: IO (Maybe (Solution, Expression))
-      timedAct = runInBoundThread $
-          do workerId <- myThreadId
-             timerId <- forkIO (timer workerId)
-             
-             mask ( \release ->
-                        handle handleAsync
-                               (do putStrLn "Starting with MBQI"
-                                   res <- release withMBQI
-                                   putStrLn "Stopping MBQI"
-                                   killThread timerId
-                                   return res
-                               )
-                  )
-
-      handleAsync :: AsyncException -> IO (Maybe (Solution, Expression))
-      handleAsync _ = putStrLn "Switching to without MBQI" >> withoutMBQI
-
-      timer threadId =
-          do putStrLn "Starting timer thread" >> threadDelay (100*1000)
-             putStrLn "Sending kill"
-             killThread threadId
-
-      withMBQI = act stdOpts
-      withoutMBQI = act opts
-
       act opts = evalZ3GenWith opts $
           do debug ("stepConstrs: start")
              solnMb <- solveConstr minWanted constrs
@@ -94,7 +70,7 @@ stepConstrs minWanted constrs = unsafePerformIO withoutMBQI
       opts = stdOpts +? (opt "AUTO_CONFIG" False)
                      +? (opt "MBQI" False)
                      -- +? (opt "SOFT_TIMEOUT" (100::Int))
-                     +? (opt "MODEL_ON_TIMEOUT" True)
+                     -- +? (opt "MODEL_ON_TIMEOUT" True)
 
 newConstraint :: Solution -> Expression
 newConstraint soln = enot (conjunction (logicEqs ++ customEqs))
