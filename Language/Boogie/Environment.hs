@@ -26,6 +26,7 @@ module Language.Boogie.Environment (
   ConstraintMemory,
   conLocals,
   conGlobals,
+  conUnique,
   conMaps,
   conPointQueue,
   conLogical,
@@ -46,9 +47,11 @@ module Language.Boogie.Environment (
   initEnv,
   lookupProcedure,
   lookupNameConstraints,
+  lookupUnique,
   lookupMapConstraints,
   addProcedureImpl,
   addNameConstraint,
+  addUniqueConst,
   addMapConstraint,
   addLogicalConstraint,
   markModified,
@@ -201,6 +204,7 @@ instance Pretty PointQueue where
 data ConstraintMemory = ConstraintMemory {
   _conLocals :: NameConstraints,   -- ^ Local name constraints
   _conGlobals :: NameConstraints,  -- ^ Global name constraints
+  _conUnique :: Map Type [Id],     -- ^ For each type, the list of constants of that type declared unique
   _conMaps :: MapConstraints,      -- ^ Parametrized map constraints
   _conPointQueue :: PointQueue,    -- ^ Map points that have been accessed, but not constrainted yet 
   _conLogical :: ConstraintSet,    -- ^ Constraint on logical variables
@@ -213,6 +217,7 @@ makeLenses ''ConstraintMemory
 emptyConstraintMemory = ConstraintMemory {
   _conLocals = M.empty,
   _conGlobals = M.empty,
+  _conUnique = M.empty,
   _conMaps = M.empty,
   _conPointQueue = Seq.empty,
   _conLogical = [],
@@ -282,12 +287,14 @@ combineGetters f g1 g2 = to $ \env -> (env ^. g1) `f` (env ^. g2)
 -- Environment queries  
 lookupProcedure = lookupGetter envProcedures []  
 lookupNameConstraints = lookupGetter (combineGetters M.union (envConstraints.conLocals) (envConstraints.conGlobals)) []
+lookupUnique = lookupGetter (envConstraints.conUnique) []
 lookupMapConstraints = lookupGetter (envConstraints.conMaps) []
 
 -- Environment modifications
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
 addNameConstraint :: Id -> SimpleLens (Environment m) NameConstraints -> Expression -> Environment m -> Environment m
 addNameConstraint name lens c env = over lens (M.insert name (nub $ c : lookupGetter lens [] name env)) env
+addUniqueConst t name env = over (envConstraints.conUnique) (M.insert t (name : lookupUnique t env)) env
 addMapConstraint r c env = over (envConstraints.conMaps) (M.insert r (nub $ c : lookupMapConstraints r env)) env
 addLogicalConstraint c = over (envConstraints.conLogical) (nub . (c :))
 markModified name env = if M.member name (env^.envTypeContext.to ctxGlobals) 

@@ -518,19 +518,19 @@ evalLogical t r pos = do
 evalVar name pos = do
   tc <- use envTypeContext
   case M.lookup name (localScope tc) of
-    Just t -> evalVarWith t memLocals False
+    Just t -> evalVarWith t memLocals False False
     Nothing -> case M.lookup name (ctxGlobals tc) of
       Just t -> do
         inOld <- use envInOld
         modified <- use $ envMemory.memModified
         -- Also initialize the old value of the global, unless we are evaluating and old expression (because of garbage collection) or the variable has been already modified:
-        executeGlobally $ evalVarWith t memGlobals (not inOld && S.notMember name modified)
+        executeGlobally $ evalVarWith t memGlobals (not inOld && S.notMember name modified) False
       Nothing -> case M.lookup name (ctxConstants tc) of
-        Just t -> executeGlobally $ evalVarWith t memConstants False
+        Just t -> executeGlobally $ evalVarWith t memConstants False True
         Nothing -> internalError $ text "Encountered unknown identifier during execution:" <+> text name
   where  
-    evalVarWith :: (Monad m, Functor m) => Type -> StoreLens -> Bool -> Execution m Thunk
-    evalVarWith t lens initOld = do
+    evalVarWith :: (Monad m, Functor m) => Type -> StoreLens -> Bool -> Bool -> Execution m Thunk
+    evalVarWith t lens initOld checkUnique = do
       s <- use $ envMemory.lens
       case M.lookup name s of         -- Lookup a cached value
         Just val -> eval val
@@ -538,7 +538,8 @@ evalVar name pos = do
           chosenValue <- generateValue t pos
           setVar lens name chosenValue
           when initOld $ setVar memOld name chosenValue
-          checkNameConstraints name pos
+          when checkUnique $ checkUniqueConstraints name t
+          checkNameConstraints name pos          
           return chosenValue
               
 evalApplication name args pos = do
@@ -921,6 +922,15 @@ checkNameConstraints name pos = do
     checkConstraint c = do
       c' <- eval c
       extendLogicalConstraints c'
+      
+-- | 'checkUniqueConstraints' @name t@: if @name@ is a unique constant of type @t@ add constraints
+-- that it os different from all other unique constants of this type.
+checkUniqueConstraints name t = do
+  names <- gets $ lookupUnique t
+  let other = filter (/= name) names
+  when (length other < length names) $ mapM_ (\n -> extendNameConstraints conGlobals (axiom n)) other  
+  where
+    axiom n = (gen . Var) (min n name) |!=| (gen . Var) (max n name)        
 
 -- | 'checkMapConstraints' @r actuals pos@ : assume all unduarded and some of the guarded constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
@@ -1096,7 +1106,9 @@ preprocess (Program decls) = mapM_ processDecl decls
       ImplementationDecl name _ args rets bodies -> mapM_ (processProcedureBody name (position decl) args rets) bodies
       AxiomDecl expr -> extendNameConstraints conGlobals expr
       VarDecl vars -> mapM_ (extendNameConstraints conGlobals) (map itwWhere vars)      
-      ConstantDecl True names t _ _ -> mapM_ (makeUnique t) names
+      ConstantDecl True names t _ _ -> do
+        typ <- flip resolve t <$> use envTypeContext
+        mapM_ (modify . addUniqueConst typ) names
       _ -> return ()
       
 processFunction name argNames mBody = do
@@ -1126,16 +1138,6 @@ processProcedureBody name pos args rets body = do
   where
     argNames = map fst args
     retNames = map fst rets
-    
--- | 'makeUnique' @typ name@: add constraints for a constant @name@ of type @typ@
--- that it os different from all other constants of this type.
-makeUnique typ name = do
-  tc <- use envTypeContext
-  let other = M.filterWithKey (\n t -> n /= name && t == typ) (ctxConstants tc)
-  mapM_ (\n -> extendNameConstraints conGlobals (axiom n)) (M.keys other)
-  where
-    axiom n = (gen . Var) (min n name) |!=| (gen . Var) (max n name)
-  
 
 {- Extracting constraints -}
 
