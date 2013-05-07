@@ -63,8 +63,8 @@ import Debug.Trace
 -- Execute program @p@ in type context @tc@ with solver @solver@ and non-deterministic value generator @generator@, starting from procedure @entryPoint@;
 -- concretize passing executions iff @solvePassing@;
 -- return the outcome(s) embedded into the solver's monad.
-executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Bool -> Generator m -> Id -> m (TestCase)
-executeProgram p tc solver solvePassing generator entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver generator)
+executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Bool -> Generator m -> Maybe Int -> Id -> m (TestCase)
+executeProgram p tc solver solvePassing generator unrollMax entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver generator unrollMax)
   where
     programExecution = do
       execUnsafely $ preprocess p      
@@ -802,13 +802,18 @@ execBlock proc_ blocks label = let
     mapM exec statements
     case last block of
       Pos pos Return -> return pos
-      Pos _ (Goto lbs) -> do
+      Pos pos (Goto lbs) -> do
         counts <- mapM (getLabelCount proc_) lbs
         let orderedLbs = sortBy (compare `on` snd) (zip lbs counts)
         i <- generate $ flip genIndex (length lbs)
         let (lb, c) = orderedLbs !! i
-        envLabelCount %= M.insert (proc_, lb) (succ c)
-        execBlock proc_ blocks lb
+        max <- use envUnrollMax
+        if isNothing max || c < fromJust max 
+          then do
+            envLabelCount %= M.insert (proc_, lb) (succ c)
+            execBlock proc_ blocks lb
+          else
+            throwRuntimeFailure (Nonexecutable $ text "Maximum unroll depth exceeded for label" <+> pretty lb) pos 
     
 -- | 'execProcedure' @sig def args lhss@ :
 -- Execute definition @def@ of procedure @sig@ with actual arguments @args@ and call left-hand sides @lhss@
@@ -945,7 +950,7 @@ checkMapConstraints r actuals pos = do
   
   let csIdxs = [0 .. length guardedCs - 1]
   counts <- mapM (getMapCaseCount r) csIdxs
-  let orderedCs = sortBy (compare `on` snd) (zip csIdxs counts)
+  let orderedCs = sortBy (flip compare `on` snd) (zip csIdxs counts)
   enabled <- replicateM (length guardedCs) (generate genBool)
   -- traceShow (text "for" <+> refDoc r <> brackets (commaSep (map pretty actuals)) <+> text "chose" <+> pretty enabled) $ return ()
   mapM_ (processMapConstraint guardedCs) (zip enabled orderedCs)  
@@ -954,14 +959,18 @@ checkMapConstraints r actuals pos = do
       BinaryExpression Implies guard _ -> True
       _ -> False
     -- | Disable constraint
-    processMapConstraint guardedCs (False, (idx, count)) = do
-      enableMapConstraint (guardedCs !! idx) False
-      envMapCaseCount %= M.insert (r, idx) (succ count)
+    processMapConstraint guardedCs (False, (idx, count)) = enableMapConstraint (guardedCs !! idx) False      
     -- | Enable constraint
     processMapConstraint guardedCs (True, (idx, count)) = do
       let c = guardedCs !! idx
-      enableMapConstraint c True
-      enforceMapConstraint c actuals pos     
+      max <- use envUnrollMax
+      if isNothing max || count < fromJust max
+        then do
+          envMapCaseCount %= M.insert (r, idx) (succ count)
+          enableMapConstraint c True
+          enforceMapConstraint c actuals pos
+        else
+          throwRuntimeFailure (Nonexecutable $ text "Maximum unroll depth exceeded for map constraint" <+> pretty c) pos
     enableMapConstraint c val = case c of
       (Pos p (Quantified Lambda tv formals body)) -> case node body of
         BinaryExpression Implies guard _ -> do

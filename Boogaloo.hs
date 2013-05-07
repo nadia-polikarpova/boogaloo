@@ -31,10 +31,10 @@ releaseDate = fromGregorian 2013 2 5
 main = do
   res <- cmdArgsRun $ mode
   case res of
-    Exec file proc_ solver minimize bound exec_max invalid nexec pass fail outMax sum debug format -> 
-      executeFromFile file proc_ solver minimize (natToMaybe bound) (natToMaybe exec_max) invalid nexec pass fail (natToMaybe outMax) sum debug format
-    Test file proc_ solver minimize exec_max outMax debug format ->
-      executeFromFile file proc_ solver minimize (Just 1) (natToMaybe exec_max) False False False True (natToMaybe outMax) False debug format
+    Exec file proc_ solver minimize branch_max unroll_max exec_max invalid nexec pass fail outMax sum debug format -> 
+      executeFromFile file proc_ solver minimize (natToMaybe branch_max) (natToMaybe unroll_max) (natToMaybe exec_max) invalid nexec pass fail (natToMaybe outMax) sum debug format
+    Test file proc_ solver minimize unroll_max exec_max outMax debug format ->
+      executeFromFile file proc_ solver minimize (Just 1) (natToMaybe unroll_max) (natToMaybe exec_max) False False False True (natToMaybe outMax) False debug format
   where
     natToMaybe n
       | n >= 0      = Just n
@@ -49,6 +49,7 @@ data CommandLineArgs
         solver :: ConstraintSolver,
         minimize :: Bool,
         branch_max :: Int,
+        unroll_max :: Int,
         exec_max :: Int, 
         invalid :: Bool, 
         nexec :: Bool,
@@ -64,6 +65,7 @@ data CommandLineArgs
         proc_ :: String,
         solver :: ConstraintSolver,
         minimize :: Bool,
+        unroll_max :: Int,
         exec_max :: Int, 
         out_max :: Int, 
         debug :: Bool,
@@ -93,6 +95,7 @@ execute = Exec {
   minimize    = True            &= help ("Should solutions be minimized? (default: True)"),
   branch_max  = defaultBranch   &= help ("Maximum number of solutions to try per path; " ++
                                        "unbounded if negative (default: " ++ show defaultBranch ++ ")"),
+  unroll_max  = -1              &= help ("Maximum number of unrolls for a loop or a recursive definition; unbounded if negative (default: -1)"),
   exec_max    = -1              &= help ("Maximum number of executions to try; unbounded if negative (default: -1)"),
   invalid     = False           &= help "Display invalid executions (default: false)" &= name "I",
   nexec       = True            &= help "Display executions that cannot be carried out completely (default: true)" &= name "N",
@@ -109,6 +112,7 @@ test = Test {
   file        = ""              &= typFile &= argPos 0,
   solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
   minimize    = True            &= help ("Should solutions be minimized? (default: True)"),
+  unroll_max  = -1              &= help ("Maximum number of unrolls for a loop or a recursive definition; unbounded if negative (default: -1)"),  
   exec_max    = defaultTCCount  &= help ("Maximum number of executions to try (default: " ++ show defaultTCCount ++ ")"),
   out_max     = 1               &= help "Maximum number of faults to look for; unbounded if negative (default: 1)",
   debug       = False           &= help "Debug output (default: false)",
@@ -124,18 +128,18 @@ mode = cmdArgsMode $ modes [execute, test] &=
 
 -- | Execute procedure proc_ from file
 -- | and output either errors or the final values of global variables
-executeFromFile :: String -> String -> ConstraintSolver -> Bool -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Maybe Int -> Bool -> Bool -> OutputFormat -> IO ()
-executeFromFile file proc_ solverId minimize branch_max exec_max invalid nexec pass fail out_max summary debug format = runOnFile printFinalState file format
+executeFromFile :: String -> String -> ConstraintSolver -> Bool -> Maybe Int -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Maybe Int -> Bool -> Bool -> OutputFormat -> IO ()
+executeFromFile file proc_ solverId minimize branch_max unroll_max exec_max invalid nexec pass fail out_max summary debug format = runOnFile printFinalState file format
   where
     printFinalState p context = case M.lookup proc_ (ctxProcedures context) of
       Nothing -> printDoc format $ errorDoc (text "Cannot find procedure" <+> text proc_)
-      Just _ -> let outs = maybeTake out_max . filter keep . maybeTake exec_max . toList $ executeProgram p context solver pass generator proc_
+      Just _ -> let outs = maybeTake out_max . filter keep . maybeTake exec_max . toList $ executeProgram p context solver pass generator unroll_max proc_
         in if summary
               then printDoc format $ sessionSummaryDoc debug outs
               else if null outs
                 then printDoc format $ auxDoc (text "No executions to display")
                 else mapM_ (printDoc format) $ zipWith outcomeDoc [0..] outs
-    solver :: Solver []
+    solver :: Solver Stream
     solver = case solverId of
       Exhaustive -> Trivial.solver branch_max
       Z3 -> Z3.solver minimize branch_max

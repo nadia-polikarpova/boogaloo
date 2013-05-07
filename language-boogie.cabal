@@ -65,7 +65,6 @@ library
       z3 >=0.3
     
 executable boogaloo
-  ghc-options: -threaded
   main-is:             Boogaloo.hs             
   build-depends:
       base ==4.*,
@@ -89,7 +88,6 @@ executable boogaloo
     buildable: False  
   
 executable boogaloo-tests
-  ghc-options: -threaded
   main-is:             Tests.hs
   build-depends:
       base ==4.*,
