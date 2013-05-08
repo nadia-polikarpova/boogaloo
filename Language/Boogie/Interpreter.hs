@@ -19,10 +19,6 @@ module Language.Boogie.Interpreter (
   isFail,
   testCaseDoc,
   sessionSummaryDoc,
-  -- * Executing parts of programs
-  eval,
-  exec,
-  preprocess,
   -- * Debugging
   dumpState
   ) where
@@ -724,14 +720,12 @@ forceForall tv vars e pos res = do
 -- | Execute a basic statement
 -- (no jump, if or while statements allowed)
 exec :: (Monad m, Functor m) => Statement -> Execution m ()
-exec stmt = do  
-  case node stmt of
+exec stmt = case node stmt of
     Predicate specClause -> execPredicate specClause (position stmt)
     Havoc ids -> execHavoc ids (position stmt)
     Assign lhss rhss -> execAssign lhss rhss
     Call lhss name args -> execCall name lhss args (position stmt)
     CallForall name args -> return ()
-  checkSat (position stmt)
   
 execPredicate (SpecClause source True expr) pos = do  
   c <- eval expr
@@ -810,6 +804,7 @@ execBlock proc_ blocks label = let
         max <- use envUnrollMax
         if isNothing max || c < fromJust max 
           then do
+            checkSat pos
             envLabelCount %= M.insert (proc_, lb) (succ c)
             execBlock proc_ blocks lb
           else
