@@ -171,14 +171,14 @@ executeFromFile file proc_ backtrack solverId minimize concretize branch_max unr
     outcomeDoc n tc = option (n > 0) linebreak <> testCaseDoc debug "Execution" n tc
     
 interpreter :: BacktrackStrategy -> ConstraintSolver -> Bool -> Bool -> Bool -> Maybe Int -> Maybe Int -> Interpreter
-interpreter DF solverId minimize concretize solvePassing branch_max unroll_max p context proc_ = toList $ executeProgram p context solver concretize solvePassing generator unroll_max proc_
+interpreter DF solverId minimize concretize solvePassing branch_max unroll_max p context proc_ = toList $ executeProgram p context solver unroll_max concretize solvePassing generator proc_
   where
     solver :: Solver Logic
     solver = case solverId of
       Exhaustive -> Trivial.solver branch_max
       Z3 -> Z3.solver minimize branch_max
     generator = exhaustiveGenerator Nothing
-interpreter Fair solverId minimize concretize solvePassing branch_max unroll_max p context proc_ = toList $ executeProgram p context solver concretize solvePassing generator unroll_max proc_
+interpreter Fair solverId minimize concretize solvePassing branch_max unroll_max p context proc_ = toList $ executeProgram p context solver unroll_max concretize solvePassing generator proc_
   where
     solver :: Solver Stream
     solver = case solverId of

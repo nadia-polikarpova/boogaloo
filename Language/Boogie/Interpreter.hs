@@ -59,8 +59,8 @@ import Debug.Trace
 -- Execute program @p@ in type context @tc@ with solver @solver@ and non-deterministic value generator @generator@, starting from procedure @entryPoint@;
 -- concretize passing executions iff @solvePassing@;
 -- return the outcome(s) embedded into the solver's monad.
-executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Bool -> Bool -> Generator m -> Maybe Int -> Id -> m (TestCase)
-executeProgram p tc solver concretize_ solvePassing generator unrollMax entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver generator unrollMax concretize_)
+executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Maybe Int -> Bool -> Bool -> Generator m -> Id -> m (TestCase)
+executeProgram p tc solver unrollMax concretize_ solvePassing generator entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver generator unrollMax concretize_)
   where
     programExecution = do
       execUnsafely $ preprocess p      
