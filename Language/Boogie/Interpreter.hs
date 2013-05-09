@@ -550,9 +550,7 @@ expandMacro name args = do
   fs <- use envFunctions
   case M.lookup name fs of
     Nothing -> return Nothing
-    Just (Pos _ (Quantified Lambda tv vars body)) -> if isRecursive name fs
-      then return Nothing  
-      else return . Just $ exprSubst (M.fromList $ zip (map fst vars) args) body
+    Just (Pos _ (Quantified Lambda tv vars body)) -> return . Just $ exprSubst (M.fromList $ zip (map fst vars) args) body
 
 evalMapSelection m args pos = do  
   m' <- eval m
@@ -1109,7 +1107,10 @@ generate f = do
 
 -- | Collect procedure implementations, and constant/function/global variable constraints
 preprocess :: (Monad m, Functor m) => Program -> SafeExecution m ()
-preprocess (Program decls) = mapM_ processDecl decls
+preprocess (Program decls) = do
+  mapM_ processDecl decls
+  fs <- use envFunctions
+  mapM_ (detectMacro fs) (M.keys fs)
   where
     processDecl decl = case node decl of
       FunctionDecl name _ args _ mBody -> processFunction name (map fst args) mBody
@@ -1121,6 +1122,14 @@ preprocess (Program decls) = mapM_ processDecl decls
         typ <- flip resolve t <$> use envTypeContext
         mapM_ (modify . addUniqueConst typ) names
       _ -> return ()
+    detectMacro fs name = if isRecursive name fs
+      then do
+        let Pos pos (Quantified Lambda tv formals body) = fs ! name
+        let app = attachPos pos $ Application name (map (attachPos pos . Var . fst) formals)
+        let axiom = inheritPos (Quantified Forall tv formals) (app |=| body)        
+        extendNameConstraints conGlobals axiom
+        envFunctions %= M.delete name
+      else return ()  
       
 processFunction name argNames mBody = do
   sig@(MapType tv argTypes retType) <- funSig name <$> use envTypeContext
@@ -1129,12 +1138,8 @@ processFunction name argNames mBody = do
   case mBody of
     Nothing -> return ()
     Just body -> do
-      let pos = position body
       let formals = zip (map formalName argNames) argTypes
-      let app = attachPos pos $ Application name (map (attachPos pos . Var . fst) formals)
-      let axiom = inheritPos (Quantified Forall tv formals) (app |=| body)
       envFunctions %= M.insert name (inheritPos (Quantified Lambda tv formals) body)
-      extendNameConstraints conGlobals axiom
   where        
     formalName Nothing = dummyFArg 
     formalName (Just n) = n
