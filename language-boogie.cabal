@@ -62,6 +62,7 @@ library
       random ==1.0.*,
       syb >=0.1,
       lens ==3.7.*,
+      logict,
       z3 >=0.3
     
 executable boogaloo
@@ -79,6 +80,7 @@ executable boogaloo
       random ==1.0.*,
       syb >=0.1,
       lens ==3.7.*,
+      logict,
       z3 >=0.3,
       language-boogie ==0.2.*,
       cmdargs ==0.10.*,
