@@ -32,10 +32,10 @@ releaseDate = fromGregorian 2013 2 5
 main = do
   res <- cmdArgsRun $ mode
   case res of
-    Exec file proc_ backtrack solver minimize per_path unroll exec invalid nexec pass fail out sum debug format -> 
-      executeFromFile file proc_ backtrack solver minimize (natToMaybe per_path) (natToMaybe unroll) (natToMaybe exec) invalid nexec pass fail (natToMaybe out) sum debug format
-    Test file proc_ backtrack solver minimize unroll exec out debug format ->
-      executeFromFile file proc_ backtrack solver minimize (Just 1) (natToMaybe unroll) (natToMaybe exec) False False False True (natToMaybe out) False debug format
+    Exec file proc_ backtrack solver minimize concretize per_path unroll exec invalid nexec pass fail out sum debug format -> 
+      executeFromFile file proc_ backtrack solver minimize concretize (natToMaybe per_path) (natToMaybe unroll) (natToMaybe exec) invalid nexec pass fail (natToMaybe out) sum debug format
+    Test file proc_ backtrack solver minimize concretize unroll exec out debug format ->
+      executeFromFile file proc_ backtrack solver minimize concretize (Just 1) (natToMaybe unroll) (natToMaybe exec) False False False True (natToMaybe out) False debug format
   where
     natToMaybe n
       | n >= 0      = Just n
@@ -50,6 +50,7 @@ data CommandLineArgs
         backtrack :: BacktrackStrategy,
         solver :: ConstraintSolver,
         minimize :: Bool,
+        concretize :: Bool,
         per_path :: Int,
         unroll :: Int,
         exec :: Int, 
@@ -68,6 +69,7 @@ data CommandLineArgs
         backtrack :: BacktrackStrategy,
         solver :: ConstraintSolver,
         minimize :: Bool,
+        concretize :: Bool,
         unroll :: Int,
         exec :: Int, 
         out :: Int, 
@@ -106,6 +108,7 @@ execute = Exec {
   backtrack   = defaultBT       &= help ("Backtracking strategy: DF (depth-first) or Fair (default: " ++ show defaultBT ++ ")"),
   solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
   minimize    = True            &= help ("Should solutions be minimized? (default: True)"),
+  concretize  = True            &= help ("Concretize in the middle of an execution? (default: True)"),
   per_path    = defaultPerPath  &= help ("Maximum number of solutions to try per path; " ++
                                         "unbounded if negative (default: " ++ show defaultPerPath ++ ")") &= name "n",
   unroll      = -1              &= help ("Maximum number of unrolls for a loop or a recursive definition; unbounded if negative (default: -1)"),
@@ -126,6 +129,7 @@ test = Test {
   backtrack   = defaultBT       &= help ("Backtracking strategy: DF (depth-first) or Fair (default: " ++ show defaultBT ++ ")"),
   solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
   minimize    = True            &= help ("Should solutions be minimized? (default: True)"),
+  concretize  = True            &= help ("Concretize in the middle of an execution? (default: True)"),
   unroll      = -1              &= help ("Maximum number of unrolls for a loop or a recursive definition; unbounded if negative (default: -1)"),  
   exec        = defaultTCCount  &= help ("Maximum number of executions to try (default: " ++ show defaultTCCount ++ ")"),
   out         = 1               &= help "Maximum number of faults to look for; unbounded if negative (default: 1)",
@@ -144,12 +148,12 @@ type Interpreter = Program -> Context -> Id -> [TestCase]
 
 -- | Execute procedure proc_ from file
 -- | and output either errors or the final values of global variables
-executeFromFile :: String -> String -> BacktrackStrategy -> ConstraintSolver -> Bool -> Maybe Int -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Maybe Int -> Bool -> Bool -> OutputFormat -> IO ()
-executeFromFile file proc_ backtrack solverId minimize branch_max unroll_max exec_max invalid nexec pass fail out_max summary debug format = runOnFile printFinalState file format
+executeFromFile :: String -> String -> BacktrackStrategy -> ConstraintSolver -> Bool -> Bool -> Maybe Int -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Maybe Int -> Bool -> Bool -> OutputFormat -> IO ()
+executeFromFile file proc_ backtrack solverId minimize concretize branch_max unroll_max exec_max invalid nexec pass fail out_max summary debug format = runOnFile printFinalState file format
   where
     printFinalState p context = case M.lookup proc_ (ctxProcedures context) of
       Nothing -> printDoc format $ errorDoc (text "Cannot find procedure" <+> text proc_)
-      Just _ -> let int = interpreter backtrack solverId minimize pass branch_max unroll_max
+      Just _ -> let int = interpreter backtrack solverId minimize concretize pass branch_max unroll_max
                     outs = maybeTake out_max . filter keep . maybeTake exec_max $ int p context proc_   
         in if summary
               then printDoc format $ sessionSummaryDoc debug outs
@@ -166,15 +170,15 @@ executeFromFile file proc_ backtrack solverId minimize branch_max unroll_max exe
       (if fail then True else (not . isFail) tc)
     outcomeDoc n tc = option (n > 0) linebreak <> testCaseDoc debug "Execution" n tc
     
-interpreter :: BacktrackStrategy -> ConstraintSolver -> Bool -> Bool -> Maybe Int -> Maybe Int -> Interpreter
-interpreter DF solverId minimize solvePassing branch_max unroll_max p context proc_ = toList $ executeProgram p context solver solvePassing generator unroll_max proc_
+interpreter :: BacktrackStrategy -> ConstraintSolver -> Bool -> Bool -> Bool -> Maybe Int -> Maybe Int -> Interpreter
+interpreter DF solverId minimize concretize solvePassing branch_max unroll_max p context proc_ = toList $ executeProgram p context solver concretize solvePassing generator unroll_max proc_
   where
     solver :: Solver Logic
     solver = case solverId of
       Exhaustive -> Trivial.solver branch_max
       Z3 -> Z3.solver minimize branch_max
     generator = exhaustiveGenerator Nothing
-interpreter Fair solverId minimize solvePassing branch_max unroll_max p context proc_ = toList $ executeProgram p context solver solvePassing generator unroll_max proc_
+interpreter Fair solverId minimize concretize solvePassing branch_max unroll_max p context proc_ = toList $ executeProgram p context solver concretize solvePassing generator unroll_max proc_
   where
     solver :: Solver Stream
     solver = case solverId of

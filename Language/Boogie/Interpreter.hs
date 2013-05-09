@@ -59,8 +59,8 @@ import Debug.Trace
 -- Execute program @p@ in type context @tc@ with solver @solver@ and non-deterministic value generator @generator@, starting from procedure @entryPoint@;
 -- concretize passing executions iff @solvePassing@;
 -- return the outcome(s) embedded into the solver's monad.
-executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Bool -> Generator m -> Maybe Int -> Id -> m (TestCase)
-executeProgram p tc solver solvePassing generator unrollMax entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver generator unrollMax)
+executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Bool -> Bool -> Generator m -> Maybe Int -> Id -> m (TestCase)
+executeProgram p tc solver concretize_ solvePassing generator unrollMax entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver generator unrollMax concretize_)
   where
     programExecution = do
       execUnsafely $ preprocess p      
@@ -564,7 +564,8 @@ evalMapSelection m args pos = do
           let rangeType = thunkType (gen $ MapSelection m' args')
           chosenValue <- generateValue rangeType pos
           setMapValue r args' chosenValue
-          envConstraints.conPointQueue %= (|> (r, args')) 
+          hasConstraints <- gets (not . null . lookupMapConstraints r)
+          when hasConstraints $ envConstraints.conPointQueue %= (|> (r, args')) 
           return chosenValue
     _ -> return m' -- function without arguments (ToDo: is this how it should be handled?)
         
@@ -802,7 +803,10 @@ execBlock proc_ blocks label = let
         max <- use envUnrollMax
         if isNothing max || c < fromJust max 
           then do
-            checkSat pos
+            concr <- use envConcretize
+            if concr
+              then concretize pos
+              else checkSat pos
             envLabelCount %= M.insert (proc_, lb) (succ c)
             execBlock proc_ blocks lb
           else
@@ -1012,7 +1016,7 @@ instanceConstraints = (concatMap constraintsFromMap . M.toList) <$> use (envMemo
         mapType = MapType [] (map thunkType args) (thunkType val)
         mapExpr = gen $ Literal $ Reference mapType r
       in gen (MapSelection mapExpr args) |=| val
-      
+
 -- | Check if the current logical variable constraints are satisfiable,
 -- otherwise throw an assumption violation  
 checkSat :: (Monad m, Functor m) => SourcePos -> Execution m ()
@@ -1022,7 +1026,7 @@ checkSat pos = do
   constraints <- use $ envConstraints.conLogical
   when (changed || not queueEmpty)
     (do
-      ic <- instanceConstraints
+      ic <- instanceConstraints 
       s <- use envSolver
       if solCheck s (constraints ++ ic)
         then do
@@ -1193,7 +1197,7 @@ extractConstraints' tv vars guards body = case (node body) of
         constraint = if null extraVars
           then guardWith (allArgGuards ++ guards) body
           else inheritPos (Quantified Forall tv extraVars) (guardWith (allArgGuards ++ guards) body) -- outer guards are inserted into the body, because they might contain extraVars
-      in if not (null argVars) &&           -- arguments contain bound variables
+      in if not (null argVars) &&        -- arguments contain bound variables
           length formals == length args  -- all arguments are simple
         then M.singleton x [inheritPos (Quantified Lambda tv (zip formals argTypes)) constraint]
         else M.empty

@@ -42,9 +42,10 @@ module Language.Boogie.Environment (
   envMapCount,
   envLogicalCount,
   envInOld,
-  envUnrollMax,
   envLabelCount,
   envMapCaseCount,
+  envUnrollMax,
+  envConcretize,
   initEnv,
   lookupProcedure,
   lookupNameConstraints,
@@ -254,16 +255,17 @@ data Environment m = Environment
     _envGenerator :: Generator m,               -- ^ Value generator
     _envMapCount :: Int,                        -- ^ Number of map references currently in use
     _envLogicalCount :: Int,                    -- ^ Number of logical varibles currently in use
-    _envUnrollMax :: Maybe Int,                 -- ^ Limit on the number of transitions for a label or applications for a map constraint
     _envLabelCount :: Map (Id, Id) Int,         -- ^ For each procedure-label pair, number of times a transition with that label was taken
     _envMapCaseCount :: Map (Ref, Int) Int,     -- ^ For each guarded map constraint, number of times it was applied
-    _envInOld :: Bool                           -- ^ Is an old expression currently being evaluated?
+    _envInOld :: Bool,                          -- ^ Is an old expression currently being evaluated?
+    _envUnrollMax :: Maybe Int,                 -- ^ Limit on the number of transitions for a label or applications for a map constraint
+    _envConcretize :: Bool                      -- ^ Concretize in the middle of the execution?
   }
   
 makeLenses ''Environment
    
 -- | 'initEnv' @tc s@: Initial environment in a type context @tc@ with constraint solver @s@  
-initEnv tc s g depth = Environment
+initEnv tc s g depth concr = Environment
   {
     _envMemory = emptyMemory,
     _envConstraints = emptyConstraintMemory,
@@ -274,10 +276,11 @@ initEnv tc s g depth = Environment
     _envGenerator = g,
     _envMapCount = 0,
     _envLogicalCount = 0,
-    _envUnrollMax = depth,
     _envLabelCount = M.empty,
     _envMapCaseCount = M.empty,
-    _envInOld = False
+    _envInOld = False,
+    _envUnrollMax = depth,    
+    _envConcretize = concr
   }
   
 -- | 'lookupGetter' @getter def key env@ : lookup @key@ in a map accessible with @getter@ from @env@; if it does not occur return @def@
