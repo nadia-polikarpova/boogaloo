@@ -725,6 +725,7 @@ exec stmt = case node stmt of
     Assign lhss rhss -> execAssign lhss rhss
     Call lhss name args -> execCall name lhss args (position stmt)
     CallForall name args -> return ()
+    Pick -> concretize (position stmt)
   
 execPredicate (SpecClause source True expr) pos = do  
   c <- eval expr

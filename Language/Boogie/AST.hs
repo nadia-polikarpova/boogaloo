@@ -121,7 +121,8 @@ data BareStatement = Predicate SpecClause |      -- ^ Predicate statement (assum
   Break (Maybe Id) |                             -- ^ 'Break' @label@
   Return |
   Goto [Id] |                                    -- ^ 'Goto' @labels@
-  Skip                                           -- ^ only used at the end of a block
+  Skip |                                         -- ^ only used at the end of a block
+  Pick                                           -- ^ concretization directive
   deriving Eq -- syntactic equality
 
 -- | Statement labeled by multiple labels with a source position attached  

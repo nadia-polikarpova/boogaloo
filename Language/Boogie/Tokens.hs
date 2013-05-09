@@ -11,7 +11,8 @@ keywords = ["assert", "assume", "axiom", "bool", "break", "call", "complete", "c
     "else", "div", "ensures", "exists", "extends", "false", "forall", "free", "function",
     "goto", "havoc", "if", "implementation", "int", "invariant", "lambda", "mod", "modifies",
     "old", "procedure", "requires", "return", "returns", "then", "true", "type", "unique",
-    "var", "where", "while"]
+    "var", "where", "while",
+    "pick"]
 
 -- | Names of unary operators    
 unOpTokens :: Map UnOp String

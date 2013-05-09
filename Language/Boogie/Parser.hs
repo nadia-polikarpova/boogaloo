@@ -292,7 +292,8 @@ statement = attachPosBefore (choice [
   whileStatement,
   do { reserved "break"; id <- optionMaybe identifier; semi; return $ Break id },
   do { reserved "return"; semi; return Return },
-  do { reserved "goto"; ids <- commaSep1 identifier; semi; return $ Goto ids }
+  do { reserved "goto"; ids <- commaSep1 identifier; semi; return $ Goto ids },
+  do { reserved "pick"; semi; return $ Pick }
   ] <?> "statement")
   
 label :: Parser Id
