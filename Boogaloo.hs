@@ -33,9 +33,17 @@ main = do
   res <- cmdArgsRun $ mode
   case res of
     Exec file proc_ backtrack solver minimize concretize per_path unroll exec invalid nexec pass fail out sum debug format -> 
-      executeFromFile file proc_ backtrack solver minimize concretize (natToMaybe per_path) (natToMaybe unroll) (natToMaybe exec) invalid nexec pass fail (natToMaybe out) sum debug format
+      executeFromFile file proc_ 
+                      solver minimize concretize (natToMaybe unroll) 
+                      backtrack (natToMaybe per_path) (natToMaybe exec) 
+                      invalid nexec pass fail (natToMaybe out)
+                      sum debug format
     Test file proc_ backtrack solver minimize concretize unroll exec out debug format ->
-      executeFromFile file proc_ backtrack solver minimize concretize (Just 1) (natToMaybe unroll) (natToMaybe exec) False False False True (natToMaybe out) False debug format
+      executeFromFile file proc_ 
+                      solver minimize concretize (natToMaybe unroll) 
+                      backtrack (Just $ if concretize then defaultPerPath else 1) (natToMaybe exec) 
+                      False False False True (natToMaybe out) 
+                      False debug format
   where
     natToMaybe n
       | n >= 0      = Just n
@@ -46,7 +54,7 @@ main = do
 data CommandLineArgs
     = Exec { 
         file :: String, 
-        proc_ :: String,
+        proc_ :: Maybe String,
         backtrack :: BacktrackStrategy,
         solver :: ConstraintSolver,
         minimize :: Bool,
@@ -65,7 +73,7 @@ data CommandLineArgs
       }
     | Test { 
         file :: String, 
-        proc_ :: String,
+        proc_ :: Maybe String,
         backtrack :: BacktrackStrategy,
         solver :: ConstraintSolver,
         minimize :: Bool,
@@ -103,7 +111,7 @@ defaultPerPath = 8
 defaultTCCount = 1024
 
 execute = Exec {
-  proc_       = "Main"          &= help "Program entry point (default: Main)" &= typ "PROCEDURE" &= name "p",
+  proc_       = Nothing         &= help "Program entry point (default: Main or the only procedure in a file)" &= typ "PROCEDURE" &= name "p",
   file        = ""              &= typFile &= argPos 0,
   backtrack   = defaultBT       &= help ("Backtracking strategy: DF (depth-first) or Fair (default: " ++ show defaultBT ++ ")"),
   solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
@@ -124,7 +132,7 @@ execute = Exec {
   } &= auto &= help "Execute program"
   
 test = Test {
-  proc_       = "Main"          &= help "Program entry point (default: Main)" &= typ "PROCEDURE" &= name "p",
+  proc_       = Nothing         &= help "Program entry point (default: Main or the only procedure in a file)" &= typ "PROCEDURE" &= name "p",
   file        = ""              &= typFile &= argPos 0,
   backtrack   = defaultBT       &= help ("Backtracking strategy: DF (depth-first) or Fair (default: " ++ show defaultBT ++ ")"),
   solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
@@ -146,20 +154,36 @@ mode = cmdArgsMode $ modes [execute, test] &=
 
 type Interpreter = Program -> Context -> Id -> [TestCase]
 
--- | Execute procedure proc_ from file
+-- | Execute procedure mProc from file
 -- | and output either errors or the final values of global variables
-executeFromFile :: String -> String -> BacktrackStrategy -> ConstraintSolver -> Bool -> Bool -> Maybe Int -> Maybe Int -> Maybe Int -> Bool -> Bool -> Bool -> Bool -> Maybe Int -> Bool -> Bool -> OutputFormat -> IO ()
-executeFromFile file proc_ backtrack solverId minimize concretize branch_max unroll_max exec_max invalid nexec pass fail out_max summary debug format = runOnFile printFinalState file format
+executeFromFile :: String -> Maybe String ->
+                   ConstraintSolver -> Bool -> Bool -> Maybe Int ->
+                   BacktrackStrategy -> Maybe Int -> Maybe Int ->
+                   Bool -> Bool -> Bool -> Bool -> Maybe Int ->
+                   Bool -> Bool -> OutputFormat ->
+                   IO ()
+executeFromFile file mProc  -- Source options
+                solverId minimize concretize unroll_max -- Constraint solving options
+                backtrack branch_max exec_max -- Backtracking options 
+                invalid nexec pass fail out_max -- Execution filtering
+                summary debug format -- Output format options 
+  = runOnFile printFinalState file format
   where
-    printFinalState p context = case M.lookup proc_ (ctxProcedures context) of
-      Nothing -> printDoc format $ errorDoc (text "Cannot find procedure" <+> text proc_)
-      Just _ -> let int = interpreter backtrack solverId minimize concretize pass branch_max unroll_max
-                    outs = maybeTake out_max . filter keep . maybeTake exec_max $ int p context proc_   
-        in if summary
-              then printDoc format $ sessionSummaryDoc debug outs
-              else if null outs
-                then printDoc format $ auxDoc (text "No executions to display")
-                else mapM_ (printDoc format) $ zipWith outcomeDoc [0..] outs
+    printFinalState p context = let proc_ = entryPoint context 
+      in case M.lookup proc_ (ctxProcedures context) of
+        Nothing -> printDoc format $ errorDoc (text "Cannot find procedure" <+> text proc_)
+        Just _ -> let int = interpreter backtrack solverId minimize concretize pass branch_max unroll_max
+                      outs = maybeTake out_max . filter keep . maybeTake exec_max $ int p context proc_   
+          in if summary
+                then printDoc format $ sessionSummaryDoc debug outs
+                else if null outs
+                  then printDoc format $ auxDoc (text "No executions to display")
+                  else mapM_ (printDoc format) $ zipWith outcomeDoc [0..] outs
+    entryPoint context = case mProc of
+      Just proc_ -> proc_
+      Nothing -> if M.size (ctxProcedures context) == 1
+        then fst $ M.findMin $ ctxProcedures context
+        else "Main"
     maybeTake mLimit = case mLimit of
       Nothing -> id
       Just n -> take n
