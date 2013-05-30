@@ -234,7 +234,7 @@ implementationDoc name fv args rets bodies =
 
 -- | Pretty-printed map reference
 refDoc :: Ref -> Doc
-refDoc r = text "r'" <> int r
+refDoc r = text "m'" <> int r
 
 -- | Pretty-printed logical variable
 logDoc :: Ref -> Doc
