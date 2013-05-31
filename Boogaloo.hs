@@ -105,10 +105,10 @@ defaultSolver = Z3
 defaultBT = DF
 
 -- | Default solutions per path
-defaultPerPath = 8
+defaultPerPath = 128
 
 -- | Default number of test cases for testing
-defaultTCCount = 1024
+defaultTCCount = 2048
 
 execute = Exec {
   proc_       = Nothing         &= help "Program entry point (default: Main or the only procedure in a file)" &= typ "PROCEDURE" &= name "p",
