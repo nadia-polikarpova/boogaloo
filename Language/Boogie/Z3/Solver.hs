@@ -1,5 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
-module Language.Boogie.Z3.Solver (solve, solver) where
+module Language.Boogie.Z3.Solver (solverContext, solve, solver) where
 
 import           Control.Applicative
 import           Control.Monad
@@ -14,7 +14,9 @@ import qualified Data.Set as Set
 
 import           System.IO.Unsafe
 
-import           Z3.Monad
+import           Z3.Base (mkConfig, mkContext)
+import           Z3.Monad hiding (Context)
+import qualified Z3.Monad as Z3 (Context)
 
 import           Language.Boogie.AST
 import           Language.Boogie.Generator
@@ -25,26 +27,40 @@ import           Language.Boogie.Util ((|=|), conjunction, enot)
 import           Language.Boogie.Z3.GenMonad
 import           Language.Boogie.Z3.Solution
 
+solverContext :: IO Z3.Context
+solverContext =
+  do cfg <- mkConfig
+     setOpts cfg opts
+     mkContext cfg
+    where
+      opts = stdOpts +? (opt "AUTO_CONFIG" False)
+                     +? (opt "MBQI" False)
+                     -- +? (opt "SOFT_TIMEOUT" (100::Int))
+                     -- +? (opt "MODEL_ON_TIMEOUT" True)
+
 solver :: (MonadPlus m, Foldable m)
       => Bool          -- ^ Is a minimal solution desired?
       -> Maybe Int     -- ^ Bound on number of solutions
       -> Solver m
 solver minWanted mBound = Solver {
-  solPick = \cs -> do 
-    mSolution <- solve minWanted mBound cs
+  solPick = \cs backtrackPoints ctx -> do 
+    mSolution <- solve minWanted mBound cs backtrackPoints ctx
     case mSolution of
       Nothing -> mzero
       Just solution -> return solution,
-  solCheck = \cs -> isJust . head $ solve False (Just 1) cs
+  solCheck = \cs backtrackPoints ctx -> 
+             isJust . head $ solve False (Just 1) cs backtrackPoints ctx
 }      
 
 solve :: (MonadPlus m, Foldable m)
       => Bool          -- ^ Is a minimal solution desired?
       -> Maybe Int     -- ^ Bound on number of solutions
-      -> ConstraintSet 
+      -> ConstraintSet -- ^ Set of constraints
+      -> Int           -- ^ Desired number of backtracking points in the solver
+      -> Z3.Context    -- ^ Z3 Context to use for the computation
       -> m (Maybe Solution)
-solve minWanted mBound constrs = 
-    case stepConstrs minWanted constrs of
+solve minWanted mBound constrs backtrackPoints ctx = 
+    case stepConstrs minWanted constrs backtrackPoints ctx of
       Just (soln, neq) -> return (Just soln) `mplus` go
           where
             go = if mBound == Nothing || (fromJust mBound > 1)
@@ -52,25 +68,22 @@ solve minWanted mBound constrs =
                       -- (ref, e) <- fromList (Map.toList soln)
                       -- let notE = enot (gen (Logical (thunkType e) ref) |=| e)
                       -- solve (fmap pred mBound) (notE : constrs)
-                      solve minWanted (fmap pred mBound) (neq : constrs)
+                      solve minWanted (fmap pred mBound) (neq : constrs) backtrackPoints ctx
                     else mzero
       Nothing -> return Nothing    
 
-stepConstrs :: Bool -> [Expression] -> Maybe (Solution, Expression)
-stepConstrs minWanted constrs = unsafePerformIO $ act opts
+stepConstrs :: Bool -> [Expression] -> Int -> Z3.Context -> Maybe (Solution, Expression)
+stepConstrs minWanted constrs backtrackPoints ctx = unsafePerformIO act
     where
-      act opts = evalZ3GenWith opts $
+      act = evalZ3GenWith ctx $
           do debug ("stepConstrs: start")
+             rollback =<< getNumScopes
              solnMb <- solveConstr minWanted constrs
              debug ("stepConstrs: done")
              case solnMb of
                Just soln -> return $ Just (soln, newConstraint soln)
                Nothing -> return Nothing
-
-      opts = stdOpts +? (opt "AUTO_CONFIG" False)
-                     +? (opt "MBQI" False)
-                     -- +? (opt "SOFT_TIMEOUT" (100::Int))
-                     -- +? (opt "MODEL_ON_TIMEOUT" True)
+      rollback currentDepth = mapM_ pop [1 .. currentDepth - backtrackPoints]
 
 newConstraint :: Solution -> Expression
 newConstraint soln = enot (conjunction (logicEqs ++ customEqs))

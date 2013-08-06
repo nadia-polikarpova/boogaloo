@@ -79,9 +79,9 @@ emptyEnv = Z3Env Map.empty Map.empty Map.empty Map.empty
 evalZ3Gen :: Z3Gen a -> IO a
 evalZ3Gen act = evalZ3 $ evalStateT act emptyEnv
 
-
-evalZ3GenWith :: Opts -> Z3Gen a -> IO a
-evalZ3GenWith opts act = evalZ3With Nothing opts $ evalStateT act emptyEnv
+evalZ3GenWith :: Context -> Z3Gen a -> IO a
+evalZ3GenWith ctx act = evalZ3WithContext ctx (Just AUFLIA) $
+                        evalStateT act emptyEnv
 
 
 debug :: MonadIO m => String -> m ()

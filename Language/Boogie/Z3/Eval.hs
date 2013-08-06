@@ -7,7 +7,8 @@ import           Control.Monad
 import           Data.Map (Map)
 import qualified Data.Map as Map
 
-import           Z3.Monad
+import           Z3.Monad hiding (Context)
+import qualified Z3.Monad as Z3 (Context)
 
 import           Language.Boogie.AST
 import           Language.Boogie.Position
