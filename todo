@@ -1,3 +1,6 @@
+- Push should be done after every call to solver (but what to do with multiple solutions?)
+- In GenMonad "evalZ3WithContext ctx (Just AUFLIA)" causes segfault (probably what the warning is talking about)
+
 - Overall
   - Unsupported syntax    
     - bit vectors    

@@ -404,6 +404,13 @@ freshLogical = do
   envLogicalCount %= (+ 1)
   return l
   
+-- | 'freshSolverCall': generate a fresh solver call identifier
+freshSolverCall :: (Monad m, Functor m) => Execution m Int
+freshSolverCall = do
+  l <- use envSolverCalls
+  envSolverCalls %= (+ 1)
+  return l  
+  
 -- | 'freshMapRef' @inst@: store @inst@ at a fresh map reference and return it
 freshMapRef :: (Monad m, Functor m) => MapInstance -> Execution m Ref
 freshMapRef inst = do
@@ -1003,10 +1010,10 @@ enforceMapConstraint c actuals pos =
       mapM_ (\actuals -> enforceMapConstraint c actuals pos) (M.keys inst)          
           
 -- | 'callSolver' @f cs@ : apply solver's function @f@ to constraints @cs@
-callSolver :: (Monad m, Functor m) => (Solver m -> ConstraintSet -> m a) -> ConstraintSet -> Execution m a
-callSolver f cs = do    
+callSolver :: (Monad m, Functor m) => (Solver m -> ConstraintSet -> Int -> m a) -> ConstraintSet -> Int -> Execution m a
+callSolver f cs n = do    
   s <- uses envSolver f
-  lift $ lift $ s cs
+  lift $ lift $ s cs n
   
 -- | Extract constraints form map cache
 instanceConstraints :: (Monad m, Functor m) => Execution m ConstraintSet 
@@ -1029,7 +1036,8 @@ checkSat pos = do
     (do
       ic <- instanceConstraints 
       s <- use envSolver
-      if solCheck s (constraints ++ ic)
+      callId <- freshSolverCall
+      if solCheck s (constraints ++ ic) callId
         then do
           envConstraints.conChanged .= False
           if queueEmpty
@@ -1055,8 +1063,9 @@ concretize pos = do
     then eliminateLogicals                 -- We are done: instantiate the memory with the solution 
     else solveAndCheck (constraints ++ ic) -- Something to solve
   where
-    solveAndCheck constraints = do      
-      solution <- (callSolver solPick) constraints      
+    solveAndCheck constraints = do
+      callId <- freshSolverCall
+      solution <- (callSolver solPick) constraints callId     
       envMemory.memLogical %= M.union solution          
       updateMapCache
       mapM_ checkConstraint constraints      

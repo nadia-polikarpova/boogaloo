@@ -38,6 +38,7 @@ module Language.Boogie.Environment (
   envConstraints,
   envTypeContext,
   envSolver,
+  envSolverCalls,
   envGenerator,
   envMapCount,
   envLogicalCount,
@@ -252,9 +253,10 @@ data Environment m = Environment
     _envFunctions :: Map Id Expression,         -- ^ Functions with definitions
     _envTypeContext :: Context,                 -- ^ Type context
     _envSolver :: Solver m,                     -- ^ Constraint solver
+    _envSolverCalls :: Int,                     -- ^ Number of solver calls so far
     _envGenerator :: Generator m,               -- ^ Value generator
     _envMapCount :: Int,                        -- ^ Number of map references currently in use
-    _envLogicalCount :: Int,                    -- ^ Number of logical varibles currently in use
+    _envLogicalCount :: Int,                    -- ^ Number of logical variables currently in use
     _envLabelCount :: Map (Id, Id) Int,         -- ^ For each procedure-label pair, number of times a transition with that label was taken
     _envMapCaseCount :: Map (Ref, Int) Int,     -- ^ For each guarded map constraint, number of times it was applied
     _envInOld :: Bool,                          -- ^ Is an old expression currently being evaluated?
@@ -273,6 +275,7 @@ initEnv tc s g depth concr = Environment
     _envFunctions = M.empty,
     _envTypeContext = tc,
     _envSolver = s,
+    _envSolverCalls = 0,
     _envGenerator = g,
     _envMapCount = 0,
     _envLogicalCount = 0,

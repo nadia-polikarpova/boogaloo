@@ -27,6 +27,37 @@ import           Language.Boogie.Util ((|=|), conjunction, enot)
 import           Language.Boogie.Z3.GenMonad
 import           Language.Boogie.Z3.Solution
 
+solver :: (MonadPlus m, Foldable m)
+      => Bool          -- ^ Is a minimal solution desired?
+      -> Maybe Int     -- ^ Bound on number of solutions
+      -> Solver m
+-- solver minWanted mBound = Solver {
+  -- solPick = \cs backtrackPoints ctx -> do 
+    -- mSolution <- solve minWanted mBound cs backtrackPoints ctx
+    -- case mSolution of
+      -- Nothing -> mzero
+      -- Just solution -> return solution,
+  -- solCheck = \cs backtrackPoints ctx -> 
+             -- isJust . head $ solve False (Just 1) cs backtrackPoints ctx
+-- }
+solver minWanted mBound = unsafePerformIO $ mkSolver minWanted mBound
+
+mkSolver :: (MonadPlus m, Foldable m)
+      => Bool          -- ^ Is a minimal solution desired?
+      -> Maybe Int     -- ^ Bound on number of solutions
+      -> IO (Solver m)
+mkSolver minWanted mBound = do
+    ctx <- solverContext
+    return Solver {
+          solPick = \cs backtrackPoints -> do 
+            mSolution <- solve minWanted mBound cs backtrackPoints ctx
+            case mSolution of
+              Nothing -> mzero
+              Just solution -> return solution,
+          solCheck = \cs backtrackPoints -> 
+                     isJust . head $ solve False (Just 1) cs backtrackPoints ctx
+        }
+
 solverContext :: IO Z3.Context
 solverContext =
   do cfg <- mkConfig
@@ -37,20 +68,6 @@ solverContext =
                      +? (opt "MBQI" False)
                      -- +? (opt "SOFT_TIMEOUT" (100::Int))
                      -- +? (opt "MODEL_ON_TIMEOUT" True)
-
-solver :: (MonadPlus m, Foldable m)
-      => Bool          -- ^ Is a minimal solution desired?
-      -> Maybe Int     -- ^ Bound on number of solutions
-      -> Solver m
-solver minWanted mBound = Solver {
-  solPick = \cs backtrackPoints ctx -> do 
-    mSolution <- solve minWanted mBound cs backtrackPoints ctx
-    case mSolution of
-      Nothing -> mzero
-      Just solution -> return solution,
-  solCheck = \cs backtrackPoints ctx -> 
-             isJust . head $ solve False (Just 1) cs backtrackPoints ctx
-}      
 
 solve :: (MonadPlus m, Foldable m)
       => Bool          -- ^ Is a minimal solution desired?
@@ -70,8 +87,8 @@ solve minWanted mBound constrs backtrackPoints ctx =
                       -- solve (fmap pred mBound) (notE : constrs)
                       solve minWanted (fmap pred mBound) (neq : constrs) backtrackPoints ctx
                     else mzero
-      Nothing -> return Nothing    
-
+      Nothing -> return Nothing  
+      
 stepConstrs :: Bool -> [Expression] -> Int -> Z3.Context -> Maybe (Solution, Expression)
 stepConstrs minWanted constrs backtrackPoints ctx = unsafePerformIO act
     where

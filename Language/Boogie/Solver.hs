@@ -24,6 +24,6 @@ instance Pretty Solution where
 
 -- | Solver: produces solutions of constraint sets
 data Solver m = Solver {
-  solCheck :: ConstraintSet -> Int -> Z3.Context -> Bool,      -- | Return false if a constraint set is unsatisfiable
-  solPick :: ConstraintSet -> Int -> Z3.Context -> m Solution  -- | Return solution(s) of a constraint set
+  solCheck :: ConstraintSet -> Int -> Bool,      -- | Return false if a constraint set is unsatisfiable
+  solPick :: ConstraintSet -> Int -> m Solution  -- | Return solution(s) of a constraint set
 }
