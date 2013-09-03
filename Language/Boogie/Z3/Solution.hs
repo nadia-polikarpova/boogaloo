@@ -101,6 +101,7 @@ solveConstr minWanted constrs =
        dummyPreds
        debug ("solveConstr: asserting constraints")
        (_result, modelMb) <- getModel
+       debug ("solveConstr: minimizing: " ++ show minWanted)
        case modelMb of
          Just model ->
              do m <- if minWanted
@@ -175,7 +176,9 @@ extract model ref t ast =
 -- values from the model.
 reconstruct :: Model -> Z3Gen Solution
 reconstruct model =
-    do logicMap <- reconMaps
+    do debug ("reconstruct: start")
+       logicMap <- reconMaps
+       debug ("reconstruct: end")
        return (Map.map (gen . Literal) logicMap)
     where
       extract' = extract model
@@ -195,6 +198,8 @@ reconstruct model =
       -- | Reconstruct a ref/value pair for a logical reference.
       reconLogicRef :: Type -> Ref -> AST -> Z3Gen (Ref, Value)
       reconLogicRef t ref ast =
-          do Just ast' <- eval model ast
+          do debug ("reconLogicRef: start")
+             Just ast' <- eval model ast
              x <- extract' ref t ast'
+             debug ("reconLogicRef: end")
              return (ref, x)

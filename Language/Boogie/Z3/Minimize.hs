@@ -2,6 +2,7 @@ module Language.Boogie.Z3.Minimize where
 
 import           Control.Applicative
 import           Control.Lens
+import           Control.Monad.IO.Class
 
 import           Data.Maybe
 import qualified Data.Map as Map
@@ -57,7 +58,7 @@ minimizeModel model constrs =
 
       evalObj :: Model -> Z3Gen Integer
       evalObj m =
-          do objAst <- objective 
+          do objAst <- objective
              Just objVal <- eval m objAst
              v <- getInt objVal
              str <- astToString objAst

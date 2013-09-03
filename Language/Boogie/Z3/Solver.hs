@@ -1,8 +1,10 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE BangPatterns #-}
 module Language.Boogie.Z3.Solver (solverContext, solve, solver) where
 
 import           Control.Applicative
 import           Control.Monad
+import           Control.Monad.IO.Class
 import           Control.Concurrent
 import           Control.Exception
 
@@ -14,9 +16,9 @@ import qualified Data.Set as Set
 
 import           System.IO.Unsafe
 
-import           Z3.Base (mkConfig, mkContext)
-import           Z3.Monad hiding (Context)
-import qualified Z3.Monad as Z3 (Context)
+import qualified Z3.Base as Z3 (mkConfig, mkContext, mkSolver, mkSimpleSolver)
+import           Z3.Monad hiding (Context, Solver)
+import qualified Z3.Monad as Z3 (Context, Solver)
 
 import           Language.Boogie.AST
 import           Language.Boogie.Generator
@@ -47,24 +49,27 @@ mkSolver :: (MonadPlus m, Foldable m)
       -> Maybe Int     -- ^ Bound on number of solutions
       -> IO (Solver m)
 mkSolver minWanted mBound = do
-    ctx <- solverContext
+    (slv, ctx) <- solverContext
     return Solver {
           solPick = \cs backtrackPoints -> do 
-            mSolution <- solve minWanted mBound cs backtrackPoints ctx
+            mSolution <- solve minWanted mBound cs backtrackPoints slv ctx
             case mSolution of
               Nothing -> mzero
               Just solution -> return solution,
           solCheck = \cs backtrackPoints -> 
-                     isJust . head $ solve False (Just 1) cs backtrackPoints ctx
+                     isJust . head $ solve False (Just 1) cs backtrackPoints slv ctx
         }
 
-solverContext :: IO Z3.Context
+solverContext :: IO (Z3.Solver, Z3.Context)
 solverContext =
-  do cfg <- mkConfig
+  do cfg <- Z3.mkConfig
      setOpts cfg opts
-     mkContext cfg
+     ctx <- Z3.mkContext cfg
+     slv <- Z3.mkSolver ctx
+     return (slv, ctx)
     where
       opts = stdOpts +? (opt "AUTO_CONFIG" False)
+                     +? (opt "MODEL" True)
                      +? (opt "MBQI" False)
                      -- +? (opt "SOFT_TIMEOUT" (100::Int))
                      -- +? (opt "MODEL_ON_TIMEOUT" True)
@@ -74,10 +79,11 @@ solve :: (MonadPlus m, Foldable m)
       -> Maybe Int     -- ^ Bound on number of solutions
       -> ConstraintSet -- ^ Set of constraints
       -> Int           -- ^ Desired number of backtracking points in the solver
-      -> Z3.Context    -- ^ Z3 Context to use for the computation
+      -> Z3.Solver     -- ^ Z3 solver to use
+      -> Z3.Context    -- ^ Z3 context to use
       -> m (Maybe Solution)
-solve minWanted mBound constrs backtrackPoints ctx = 
-    case stepConstrs minWanted constrs backtrackPoints ctx of
+solve minWanted mBound constrs backtrackPoints slv ctx = 
+    case stepConstrs minWanted constrs backtrackPoints slv ctx of
       Just (soln, neq) -> return (Just soln) `mplus` go
           where
             go = if mBound == Nothing || (fromJust mBound > 1)
@@ -85,22 +91,34 @@ solve minWanted mBound constrs backtrackPoints ctx =
                       -- (ref, e) <- fromList (Map.toList soln)
                       -- let notE = enot (gen (Logical (thunkType e) ref) |=| e)
                       -- solve (fmap pred mBound) (notE : constrs)
-                      solve minWanted (fmap pred mBound) (neq : constrs) backtrackPoints ctx
+                      solve minWanted (fmap pred mBound) (neq : constrs) backtrackPoints slv ctx
                     else mzero
       Nothing -> return Nothing  
-      
-stepConstrs :: Bool -> [Expression] -> Int -> Z3.Context -> Maybe (Solution, Expression)
-stepConstrs minWanted constrs backtrackPoints ctx = unsafePerformIO act
+
+stepConstrs :: Bool
+            -> [Expression]
+            -> Int
+            -> Z3.Solver
+            -> Z3.Context
+            -> Maybe (Solution, Expression)
+stepConstrs minWanted constrs backtrackPoints slv ctx = unsafePerformIO act
     where
-      act = evalZ3GenWith ctx $
-          do debug ("stepConstrs: start")
-             rollback =<< getNumScopes
-             solnMb <- solveConstr minWanted constrs
-             debug ("stepConstrs: done")
-             case solnMb of
-               Just soln -> return $ Just (soln, newConstraint soln)
-               Nothing -> return Nothing
-      rollback currentDepth = mapM_ pop [1 .. currentDepth - backtrackPoints]
+      act = 
+       do evalZ3GenWith slv ctx $ 
+           do debug ("stepConstrs: start")
+              debug ("stepConstrs: " ++ show (minWanted, constrs, backtrackPoints))
+              push
+              stackDepth1 <- getNumScopes
+              debug ("stepConstrs: rollback " ++ show stackDepth1)
+              solnMb <- solveConstr minWanted constrs
+              debug ("stepConstrs: depth")
+              stackDepth2 <- getNumScopes
+              debug ("stepConstrs: rollback " ++ show stackDepth2)
+              pop 1
+              debug ("stepConstrs: done")
+              case solnMb of
+                Just !soln -> return $ Just (soln, newConstraint soln)
+                Nothing -> return Nothing
 
 newConstraint :: Solution -> Expression
 newConstraint soln = enot (conjunction (logicEqs ++ customEqs))

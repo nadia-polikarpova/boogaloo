@@ -66,7 +66,8 @@ library
       z3 >=0.3
     
 executable boogaloo
-  main-is:             Boogaloo.hs             
+  main-is:             Boogaloo.hs
+  ghc-options: -threaded
   build-depends:
       base ==4.*,
       random ==1.0.*,
