@@ -106,7 +106,7 @@ interpreterSuccess file = do
     Right p -> case typeCheckProgram p of
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
       Right context -> let 
-          solver :: Solver Stream
+          solver :: Solver []
           solver = Z3.solver True Nothing
           generator = exhaustiveGenerator Nothing
         in case (head . filter (not . isInvalid) . toList) (executeProgram p context solver Nothing True True generator entryPoint) of

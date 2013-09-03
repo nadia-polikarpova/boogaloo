@@ -30,7 +30,7 @@ module Language.Boogie.Environment (
   conMaps,
   conPointQueue,
   conLogical,
-  conChanged,
+  conLogicalChecked,
   Environment,
   envMemory,
   envProcedures,
@@ -38,7 +38,7 @@ module Language.Boogie.Environment (
   envConstraints,
   envTypeContext,
   envSolver,
-  envSolverCalls,
+  envSolverState,
   envGenerator,
   envMapCount,
   envLogicalCount,
@@ -205,13 +205,13 @@ instance Pretty PointQueue where
 
 -- | Constraint memory: stores constraints associated with names, map references and logical variables
 data ConstraintMemory = ConstraintMemory {
-  _conLocals :: NameConstraints,   -- ^ Local name constraints
-  _conGlobals :: NameConstraints,  -- ^ Global name constraints
-  _conUnique :: Map Type [Id],     -- ^ For each type, the list of constants of that type declared unique
-  _conMaps :: MapConstraints,      -- ^ Parametrized map constraints
-  _conPointQueue :: PointQueue,    -- ^ Map points that have been accessed, but not constrainted yet 
-  _conLogical :: ConstraintSet,    -- ^ Constraint on logical variables
-  _conChanged :: Bool              -- ^ Have the constraints changed since the last check?
+  _conLocals :: NameConstraints,        -- ^ Local name constraints
+  _conGlobals :: NameConstraints,       -- ^ Global name constraints
+  _conUnique :: Map Type [Id],          -- ^ For each type, the list of constants of that type declared unique
+  _conMaps :: MapConstraints,           -- ^ Parametrized map constraints
+  _conPointQueue :: PointQueue,         -- ^ Map points that have been accessed, but not constrained yet 
+  _conLogical :: ConstraintSet,         -- ^ Constraint on logical variables
+  _conLogicalChecked :: ConstraintSet   -- ^ Constraint on logical variables already checked and stored by the solver
 }
 
 makeLenses ''ConstraintMemory
@@ -224,7 +224,7 @@ emptyConstraintMemory = ConstraintMemory {
   _conMaps = M.empty,
   _conPointQueue = Seq.empty,
   _conLogical = [],
-  _conChanged = True
+  _conLogicalChecked = []
 }
 
 constraintMemoryDoc :: ConstraintMemory -> Doc
@@ -253,7 +253,7 @@ data Environment m = Environment
     _envFunctions :: Map Id Expression,         -- ^ Functions with definitions
     _envTypeContext :: Context,                 -- ^ Type context
     _envSolver :: Solver m,                     -- ^ Constraint solver
-    _envSolverCalls :: Int,                     -- ^ Number of solver calls so far
+    _envSolverState :: Int,                     -- ^ An identifier of solver state
     _envGenerator :: Generator m,               -- ^ Value generator
     _envMapCount :: Int,                        -- ^ Number of map references currently in use
     _envLogicalCount :: Int,                    -- ^ Number of logical variables currently in use
@@ -275,7 +275,7 @@ initEnv tc s g depth concr = Environment
     _envFunctions = M.empty,
     _envTypeContext = tc,
     _envSolver = s,
-    _envSolverCalls = 0,
+    _envSolverState = 0,
     _envGenerator = g,
     _envMapCount = 0,
     _envLogicalCount = 0,

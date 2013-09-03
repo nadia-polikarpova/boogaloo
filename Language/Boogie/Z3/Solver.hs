@@ -13,6 +13,7 @@ import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.Maybe
 import qualified Data.Set as Set
+import           Data.List
 
 import           System.IO.Unsafe
 
@@ -33,15 +34,6 @@ solver :: (MonadPlus m, Foldable m)
       => Bool          -- ^ Is a minimal solution desired?
       -> Maybe Int     -- ^ Bound on number of solutions
       -> Solver m
--- solver minWanted mBound = Solver {
-  -- solPick = \cs backtrackPoints ctx -> do 
-    -- mSolution <- solve minWanted mBound cs backtrackPoints ctx
-    -- case mSolution of
-      -- Nothing -> mzero
-      -- Just solution -> return solution,
-  -- solCheck = \cs backtrackPoints ctx -> 
-             -- isJust . head $ solve False (Just 1) cs backtrackPoints ctx
--- }
 solver minWanted mBound = unsafePerformIO $ mkSolver minWanted mBound
 
 mkSolver :: (MonadPlus m, Foldable m)
@@ -51,13 +43,14 @@ mkSolver :: (MonadPlus m, Foldable m)
 mkSolver minWanted mBound = do
     (slv, ctx) <- solverContext
     return Solver {
-          solPick = \cs backtrackPoints -> do 
-            mSolution <- solve minWanted mBound cs backtrackPoints slv ctx
+          solPick = \cs nAssert -> do 
+            (mSolution, newNAssert) <- solve minWanted mBound cs nAssert slv ctx
             case mSolution of
               Nothing -> mzero
-              Just solution -> return solution,
-          solCheck = \cs backtrackPoints -> 
-                     isJust . head $ solve False (Just 1) cs backtrackPoints slv ctx
+              Just solution -> return (solution, newNAssert),
+          solCheck = \cs nAssert ->
+                      let (mSolution, newNAssert) = head $ solve False (Just 1) cs nAssert slv ctx in
+                     (isJust mSolution, newNAssert)
         }
 
 solverContext :: IO (Z3.Solver, Z3.Context)
@@ -81,44 +74,53 @@ solve :: (MonadPlus m, Foldable m)
       -> Int           -- ^ Desired number of backtracking points in the solver
       -> Z3.Solver     -- ^ Z3 solver to use
       -> Z3.Context    -- ^ Z3 context to use
-      -> m (Maybe Solution)
-solve minWanted mBound constrs backtrackPoints slv ctx = 
-    case stepConstrs minWanted constrs backtrackPoints slv ctx of
-      Just (soln, neq) -> return (Just soln) `mplus` go
+      -> m (Maybe Solution, Int)
+solve minWanted mBound constrs nAssert slv ctx = 
+    case stepConstrs minWanted constrs nAssert slv ctx of
+      (Just (soln, neq), newNAssert) -> return (Just soln, newNAssert) `mplus` go
           where
             go = if mBound == Nothing || (fromJust mBound > 1)
-                    then do 
-                      -- (ref, e) <- fromList (Map.toList soln)
-                      -- let notE = enot (gen (Logical (thunkType e) ref) |=| e)
-                      -- solve (fmap pred mBound) (notE : constrs)
-                      solve minWanted (fmap pred mBound) (neq : constrs) backtrackPoints slv ctx
+                    then solve minWanted (fmap pred mBound) (neq : constrs) nAssert slv ctx
                     else mzero
-      Nothing -> return Nothing  
+      (Nothing, newNAssert) -> return (Nothing, newNAssert)
 
 stepConstrs :: Bool
             -> [Expression]
             -> Int
             -> Z3.Solver
             -> Z3.Context
-            -> Maybe (Solution, Expression)
-stepConstrs minWanted constrs backtrackPoints slv ctx = unsafePerformIO act
+            -> (Maybe (Solution, Expression), Int)
+stepConstrs minWanted constrs nAssert slv ctx = unsafePerformIO act
     where
       act = 
        do evalZ3GenWith slv ctx $ 
-           do debug ("stepConstrs: start")
-              debug ("stepConstrs: " ++ show (minWanted, constrs, backtrackPoints))
+           do 
+              debug ("stepConstrs: start")
+              debug ("stepConstrs: " ++ show (minWanted, constrs, nAssert))
+              debug ("interpreter thinks " ++ show nAssert)              
+              popStack
               push
-              stackDepth1 <- getNumScopes
-              debug ("stepConstrs: rollback " ++ show stackDepth1)
+              debug ("constraints " ++ show (length constrs) ++ "\n" ++ (intercalate "\n" $ map show constrs))              
               solnMb <- solveConstr minWanted constrs
-              debug ("stepConstrs: depth")
-              stackDepth2 <- getNumScopes
-              debug ("stepConstrs: rollback " ++ show stackDepth2)
-              pop 1
-              debug ("stepConstrs: done")
+              newNAssert <- getNumScopes
+              debug ("new " ++ show newNAssert) 
+              debug ("stepConstrs: done")                            
               case solnMb of
-                Just !soln -> return $ Just (soln, newConstraint soln)
-                Nothing -> return Nothing
+                Just !soln -> return $ (Just (soln, newConstraint soln), newNAssert)
+                Nothing -> return (Nothing, newNAssert)
+      popStack = do
+        nAssertSolver <- getNumScopes
+        debug ("solver thinks " ++ show nAssertSolver)
+        if nAssert == 0
+          then reset
+          else if nAssert > nAssertSolver
+            then error "Solver has fewer assertions than the interpreter"
+            else if nAssert < nAssertSolver
+              then do
+                debug ("pop")
+                pop 1
+                popStack
+              else return ()
 
 newConstraint :: Solution -> Expression
 newConstraint soln = enot (conjunction (logicEqs ++ customEqs))

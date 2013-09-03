@@ -45,6 +45,7 @@ import qualified Data.Set as S
 import Data.Sequence (Seq, (|>), (><), viewl, ViewL(..))
 import qualified Data.Sequence as Seq
 import qualified Data.Traversable as T
+import qualified Data.Foldable as F
 import Control.Monad.Error hiding (join)
 import Control.Applicative hiding (empty)
 import Control.Monad.State hiding (join)
@@ -403,14 +404,7 @@ freshLogical = do
   l <- use envLogicalCount
   envLogicalCount %= (+ 1)
   return l
-  
--- | 'freshSolverCall': generate a fresh solver call identifier
-freshSolverCall :: (Monad m, Functor m) => Execution m Int
-freshSolverCall = do
-  l <- use envSolverCalls
-  envSolverCalls %= (+ 1)
-  return l  
-  
+    
 -- | 'freshMapRef' @inst@: store @inst@ at a fresh map reference and return it
 freshMapRef :: (Monad m, Functor m) => MapInstance -> Execution m Ref
 freshMapRef inst = do
@@ -462,14 +456,12 @@ getMapInstance r = (! r) <$> use (envMemory.memMaps)
 setMapValue r index val = do
   inst <- getMapInstance r
   envMemory.memMaps %= M.insert r (M.insert index val inst)
-  
--- | 'forgetMapValue' @r index@ : forget value at @index@ in the map referenced by @r@  
--- (@r@ has to be a source map)
-forgetMapValue r index = do
-  inst <- getMapInstance r
-  case M.lookup index inst of
-    Nothing -> return ()
-    Just val -> envMemory.memMaps %= M.insert r (M.delete index inst)
+  extendLogicalConstraints pointConstraint
+  where
+    pointConstraint = let
+        mapType = MapType [] (map thunkType index) (thunkType val)
+        mapExpr = gen $ Literal $ Reference mapType r
+      in gen (MapSelection mapExpr index) |=| val
     
 -- | 'getLabelCount' @proc_ lb@: current jump count of label @lb@ in procedure @proc_@
 getLabelCount proc_ lb = do
@@ -875,9 +867,7 @@ extendLogicalConstraints c = if node c == tt
   then return ()
   else if node c == ff 
     then throwRuntimeFailure Unreachable (position c)
-    else do
-      envConstraints.conChanged .= True
-      modify $ addLogicalConstraint c
+    else modify $ addLogicalConstraint c
 
 -- | 'evalQuantified' @expr@ : evaluate @expr@ modulo quantification
 evalQuantified expr = evalQuantified' [] expr
@@ -1024,51 +1014,57 @@ instanceConstraints = (concatMap constraintsFromMap . M.toList) <$> use (envMemo
         mapType = MapType [] (map thunkType args) (thunkType val)
         mapExpr = gen $ Literal $ Reference mapType r
       in gen (MapSelection mapExpr args) |=| val
-
+      
 -- | Check if the current logical variable constraints are satisfiable,
 -- otherwise throw an assumption violation  
 checkSat :: (Monad m, Functor m) => SourcePos -> Execution m ()
 checkSat pos = do  
-  changed <- use $ envConstraints.conChanged
-  queueEmpty <- uses (envConstraints.conPointQueue) Seq.null
   constraints <- use $ envConstraints.conLogical
-  when (changed || not queueEmpty)
+  when (not $ null constraints)
     (do
-      ic <- instanceConstraints 
       s <- use envSolver
-      callId <- freshSolverCall
-      if solCheck s (constraints ++ ic) callId
-        then do
-          envConstraints.conChanged .= False
-          if queueEmpty
-            then return ()
-            else do
-              dequeueMapPoint pos
-              checkSat pos
-        else throwRuntimeFailure Unreachable pos)
+      solState <- use envSolverState
+      let (sat, newState) = solCheck s constraints solState
+      when (not sat) $ throwRuntimeFailure Unreachable pos
+      envSolverState .= newState
+      envConstraints.conLogicalChecked %= (++ constraints)
+      envConstraints.conLogical .= []
+    )
+  queueEmpty <- uses (envConstraints.conPointQueue) Seq.null
+  if queueEmpty
+    then return ()
+    else do
+      dequeueMapPoint pos
+      checkSat pos
   where
     dequeueMapPoint pos = do
       ((r, args) :< points) <- uses (envConstraints.conPointQueue) viewl
       envConstraints.conPointQueue .= points
-      checkMapConstraints r args pos  
+      checkMapConstraints r args pos
     
 -- | Fix values of logical variables
 concretize :: (Monad m, Functor m) => SourcePos -> Execution m ()
 concretize pos = do
   checkSat pos
-  constraints <- use $ envConstraints.conLogical      
-  ic <- instanceConstraints
-  envConstraints.conLogical .= []  
+  c1 <- use $ envConstraints.conLogical
+  c2 <- use $ envConstraints.conLogicalChecked
+  let constraints = c1 ++ c2
+  envConstraints.conLogical .= []
+  envConstraints.conLogicalChecked .= []
   if null constraints
-    then eliminateLogicals                 -- We are done: instantiate the memory with the solution 
-    else solveAndCheck (constraints ++ ic) -- Something to solve
+    then do
+      eliminateLogicals                 -- We are done: instantiate the memory with the solution and restore map instance constraints
+      ic <- instanceConstraints
+      envConstraints.conLogical .= ic
+    else solveAndCheck constraints -- Something to solve
   where
     solveAndCheck constraints = do
-      callId <- freshSolverCall
-      solution <- (callSolver solPick) constraints callId     
+      solState <- use envSolverState
+      (solution, newState) <- (callSolver solPick) constraints solState     
+      envSolverState .= newState
       envMemory.memLogical %= M.union solution          
       updateMapCache
-      mapM_ checkConstraint constraints      
+      mapM_ checkConstraint constraints
       concretize pos -- the previous two lines might have generated more constraints, so we should solve again    
     -- | Instantiate all logical variables inside map cache
     updateMapCache = do

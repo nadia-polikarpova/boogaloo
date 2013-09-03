@@ -14,20 +14,17 @@ import           Data.Map (Map)
 import qualified Data.Map as Map
 
 import           Language.Boogie.AST
-import           Language.Boogie.Environment
 import           Language.Boogie.Generator
-import           Language.Boogie.Interpreter
 import           Language.Boogie.Position
 import           Language.Boogie.Pretty
 import           Language.Boogie.Solver
-import           Language.Boogie.TypeChecker
 
 solver :: (MonadPlus m, Functor m)
       => Maybe Int     -- ^ Bound on number of solutions
       -> Solver m
 solver mBound = Solver {
-  solPick = \cs n -> liftM fromJust $ solve mBound cs,
-  solCheck = \cs n -> True
+  solPick = \cs n -> liftM ((flip (,) n) . fromJust) $ solve mBound cs,
+  solCheck = \cs n -> (True, n)
 }      
 
 genValOfType :: (MonadPlus m, Functor m) => Generator m -> Type -> m Thunk
