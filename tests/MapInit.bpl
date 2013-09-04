@@ -39,5 +39,5 @@ procedure Test() returns ()
   
   m1[1] := a;
   m2[1] := b;
-  // assert m1 == m2; // still works when values are maps // ToDo: loops with DFS
+  assert m1 == m2; // still works when values are maps
 }

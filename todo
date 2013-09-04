@@ -1,6 +1,3 @@
-- Push should be done after every call to solver (but what to do with multiple solutions?)
-- In GenMonad "evalZ3WithContext ctx (Just AUFLIA)" causes segfault (probably what the warning is talking about)
-
 - Overall
   - Unsupported syntax    
     - bit vectors    
@@ -19,6 +16,11 @@
   - Annotate AST with expr types
   
 - Interpreter
+  - Try nullifying nAssert with concretize
+  - Try to remove constraint repetition from BubbleSort
+  - Force boolean expressions instead of evaluating them to save on backtracking
+  - Merge constraints with the same guard?
+
   - Extract map constraints from nonsimple arguments
   - User interface
     - Put back map dereferencing

@@ -563,6 +563,7 @@ evalMapSelection m args pos = do
           let rangeType = thunkType (gen $ MapSelection m' args')
           chosenValue <- generateValue rangeType pos
           setMapValue r args' chosenValue
+          addLeibniz (thunkType m') r pos
           hasConstraints <- gets (not . null . lookupMapConstraints r)
           when hasConstraints $ envConstraints.conPointQueue %= (|> (r, args')) 
           return chosenValue
@@ -587,7 +588,26 @@ evalMapUpdate m args new pos = do
       lambda = inheritPos (Quantified Lambda tv bv)
   extendMapConstraints r $ lambda (guardNeq |=>| (appOld |=| appNew))
   extendMapConstraints r' $ lambda (guardNeq |=>| (appOld |=| appNew))  
+  addLeibniz t r' pos
   return newM'
+  
+-- | 'addLeibniz' @t r pos@ :  If @r@ of type @t@ is a map with map-type range, add an constraint (forall i, j :: i == j ==> r[i] == r[j])
+-- which helps avoid some inconsistencies.
+addLeibniz t r pos = do
+  let var = attachPos pos . Var
+      freshVarNames = map (\i -> nonIdChar : show i) [0..]
+      bv = zip freshVarNames (domains ++ domains)
+      (bv1, bv2) = splitAt (length domains) bv 
+      (bvExprs1, bvExprs2) = splitAt (length domains) $ map (var . fst) bv
+      MapType tv domains range = t
+      m = attachPos pos $ Literal $ Reference t r
+      app1 = attachPos pos $ MapSelection m bvExprs1
+      app2 = attachPos pos $ MapSelection m bvExprs2
+      lambda = inheritPos (Quantified Lambda tv bv1)
+      forall = inheritPos (Quantified Forall tv bv2)
+  case range of
+    MapType _ _ _ -> extendMapConstraints r $ lambda (forall (app1 |=| app2))
+    _ -> return ()
   
 evalIf cond e1 e2 = do
   cond' <- eval cond
@@ -712,7 +732,7 @@ forceForall tv vars e pos res = do
       counterExample <- executeNested typeBinding vars (eval $ enot e')
       extendLogicalConstraints counterExample    
   return $ Pos pos $ Literal $ BoolValue res
-            
+  
 {- Statements -}
 
 -- | Execute a basic statement
@@ -936,7 +956,7 @@ checkUniqueConstraints name t = do
   where
     axiom n = (gen . Var) (min n name) |!=| (gen . Var) (max n name)        
 
--- | 'checkMapConstraints' @r actuals pos@ : assume all unduarded and some of the guarded constraints for the value at index @actuals@ 
+-- | 'checkMapConstraints' @r actuals pos@ : assume all unguarded and some of the guarded constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
 checkMapConstraints r actuals pos = do
   cs <- gets $ lookupMapConstraints r
@@ -1064,7 +1084,6 @@ concretize pos = do
       envSolverState .= newState
       envMemory.memLogical %= M.union solution          
       updateMapCache
-      mapM_ checkConstraint constraints
       concretize pos -- the previous two lines might have generated more constraints, so we should solve again    
     -- | Instantiate all logical variables inside map cache
     updateMapCache = do
@@ -1074,14 +1093,6 @@ concretize pos = do
     evalPoint (args, val) = do
       val' : args' <- mapM eval (val : args)
       return (args', val')
-    -- | Check validity of a constraint with the current assignment to logicals;
-    -- if the constraint does not evaluate to a literal, add it to constraints again
-    checkConstraint c = do
-      res <- eval c
-      case node res of
-        Literal (BoolValue True) -> return ()
-        Literal (BoolValue False) -> throwRuntimeFailure Unreachable (position res)
-        _ -> extendLogicalConstraints res
   
 -- | Assuming that all logical variables have been assigned values,
 -- re-evaluate the store and the map constraints, and wipe out logical store.
@@ -1111,7 +1122,7 @@ eliminateLogicals = do
 generate :: (Monad m, Functor m) => (Generator m -> m a) -> Execution m a
 generate f = do
   gen <- use envGenerator
-  lift (lift (f gen))
+  lift (lift (f gen))  
           
 {- Preprocessing -}
 

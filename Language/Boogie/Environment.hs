@@ -233,7 +233,8 @@ constraintMemoryDoc mem = vsep $
   docNonEmpty (mem^.conGlobals) (labeledDoc "CGlobal") ++
   docNonEmpty (mem^.conMaps) (labeledDoc "CMap") ++
   docWhen (not$ Seq.null (mem^.conPointQueue)) ((text "CPoints" <> text ":") <+> align (pretty (mem^.conPointQueue))) ++ 
-  docWhen (not $ null (mem^.conLogical)) ((text "CLogical" <> text ":") <+> align (constraintSetDoc (mem^.conLogical)))
+  docWhen (not $ null (mem^.conLogical)) ((text "CLogical" <> text ":") <+> align (constraintSetDoc (mem^.conLogical))) ++
+  docWhen (not $ null (mem^.conLogicalChecked)) ((text "CChecked" <> text ":") <+> align (constraintSetDoc (mem^.conLogicalChecked)))
   where
     labeledDoc label x = (text label <> text ":") <+> align (pretty x)
     docWhen flag doc = if flag then [doc] else [] 

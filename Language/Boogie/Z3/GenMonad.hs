@@ -10,6 +10,7 @@ module Language.Boogie.Z3.GenMonad
     , ctorMap
     , refMap
     , debug
+    , debug1
     , lookup'
     , justElse
     , justElseM
@@ -86,6 +87,9 @@ evalZ3GenWith slv ctx act =
 
 debug :: MonadIO m => String -> m ()
 debug = const (return ()) -- liftIO . putStrLn
+
+debug1 :: MonadIO m => String -> m ()
+debug1 = const (return ())
 
 lookup' :: Ord k => String -> k -> Map k a -> a
 lookup' errMsg key m =

@@ -79,7 +79,7 @@ procedure QuickSort(lower, upper: int)
 }
 
 // One way to call QuickSort
-procedure Main() returns (index: int)
+procedure Main() returns ()
   modifies a;
 {
   assume N == 3;
