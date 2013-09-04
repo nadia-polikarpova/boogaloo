@@ -16,7 +16,6 @@
   - Annotate AST with expr types
   
 - Interpreter
-  - Try nullifying nAssert with concretize
   - Try to remove constraint repetition from BubbleSort
   - Force boolean expressions instead of evaluating them to save on backtracking
   - Merge constraints with the same guard?

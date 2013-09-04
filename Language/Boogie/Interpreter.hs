@@ -565,7 +565,7 @@ evalMapSelection m args pos = do
           setMapValue r args' chosenValue
           addLeibniz (thunkType m') r pos
           hasConstraints <- gets (not . null . lookupMapConstraints r)
-          when hasConstraints $ envConstraints.conPointQueue %= (|> (r, args')) 
+          when hasConstraints $ envConstraints.conPointQueue %= (|> (r, args'))
           return chosenValue
     _ -> return m' -- function without arguments (ToDo: is this how it should be handled?)
         
@@ -717,6 +717,7 @@ evalLambda tv vars e pos = do
     lambda = attachPos pos . Quantified Lambda tv vars
     
 evalForall tv vars e pos = do
+  checkSat pos
   res <- generate genBool
   forceForall tv vars e pos res
       
@@ -755,6 +756,7 @@ execPredicate clause@(SpecClause source False expr) pos = do
   if node c == tt
     then return ()
     else do
+      checkSat pos
       res <- generate genBool
       if res
         then extendLogicalConstraints c
@@ -816,6 +818,10 @@ execBlock proc_ blocks label = let
     case last block of
       Pos pos Return -> return pos
       Pos pos (Goto lbs) -> do
+        concr <- use envConcretize
+        if concr
+          then concretize pos
+          else checkSat pos      
         counts <- mapM (getLabelCount proc_) lbs
         let orderedLbs = sortBy (compare `on` snd) (zip lbs counts)
         i <- generate $ flip genIndex (length lbs)
@@ -823,10 +829,6 @@ execBlock proc_ blocks label = let
         max <- use envUnrollMax
         if isNothing max || c < fromJust max 
           then do
-            concr <- use envConcretize
-            if concr
-              then concretize pos
-              else checkSat pos
             envLabelCount %= M.insert (proc_, lb) (succ c)
             execBlock proc_ blocks lb
           else
@@ -962,6 +964,7 @@ checkMapConstraints r actuals pos = do
   cs <- gets $ lookupMapConstraints r
   let (guardedCs, unguardedCs) = partition isGuarded cs
   mapM_ (\c -> enforceMapConstraint c actuals pos) unguardedCs
+  checkSat pos
   
   let csIdxs = [0 .. length guardedCs - 1]
   counts <- mapM (getMapCaseCount r) csIdxs

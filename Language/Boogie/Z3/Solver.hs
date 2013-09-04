@@ -97,10 +97,10 @@ stepConstrs minWanted constrs nAssert slv ctx = unsafePerformIO act
            do 
               debug ("stepConstrs: start")
               debug ("stepConstrs: " ++ show (minWanted, constrs, nAssert))
-              debug ("interpreter thinks " ++ show nAssert)              
+              debug1 ("interpreter thinks " ++ show nAssert)              
               popStack
               push
-              debug ("constraints " ++ show (length constrs) ++ "\n" ++ (intercalate "\n" $ map show constrs))              
+              debug1 ("constraints " ++ show (length constrs) ++ "\n" ++ (intercalate "\n" $ map show constrs))              
               solnMb <- solveConstr minWanted constrs
               newNAssert <- getNumScopes
               debug ("new " ++ show newNAssert) 
@@ -110,7 +110,7 @@ stepConstrs minWanted constrs nAssert slv ctx = unsafePerformIO act
                 Nothing -> return (Nothing, newNAssert)
       popStack = do
         nAssertSolver <- getNumScopes
-        debug ("solver thinks " ++ show nAssertSolver)
+        debug1 ("solver thinks " ++ show nAssertSolver)
         if nAssert == 0
           then reset
           else if nAssert > nAssertSolver
