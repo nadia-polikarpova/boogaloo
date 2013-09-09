@@ -1,3 +1,6 @@
+- Figure out why QSortPartial is slower
+- Try forcing expressions
+
 - Overall
   - Unsupported syntax    
     - bit vectors    

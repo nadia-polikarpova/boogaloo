@@ -37,30 +37,26 @@ procedure Swap(i: int, j: int) returns ()
 
 // Partition the array a[lower, upper) such that all elements of a[lower, index) are <= pivot
 // and all elements of a[index, upper) are >= pivot
-procedure Partition(lower, upper, pivot: int) returns (index: int)
+procedure Partition(lower, upper, pivotIndex: int) returns (index: int)
   modifies a;
-  requires lower < upper;
+  requires lower < upper - 1;
 	ensures lower <= index && index <= upper;
-	ensures leqPivot (pivot, a, lower, index);
-	ensures geqPivot (pivot, a, index, upper);
+  ensures old(a[pivotIndex]) == a[index];
+	ensures leqPivot (a[index], a, lower, index);
+	ensures geqPivot (a[index], a, index, upper);
 {
-  var left, right: int;
-  left, right := lower, upper - 1;
-	while (left != right) {
-		while (left != right && a[left] <= pivot) {
-			left := left + 1;
-		}
-		while (left != right && pivot <= a[right]) {
-			right := right - 1;
-		}		
-		call Swap(left, right);
-	}
-	
-	if (pivot <= a[left]) {
-    index := left;
-	} else {
-    index := left + 1;
-  }  
+  var i, pivot: int;
+  index, i, pivot := lower, lower, a[pivotIndex]; 
+  call Swap(pivotIndex, upper - 1); // Move pivot to the end
+  
+  while (i < upper - 1) {
+    if (a[i] < pivot) {
+      call Swap(i, index);
+      index := index + 1;
+    }
+    i := i + 1;
+  }
+  call Swap(index, upper - 1);
 }
 
 // Sort the array a[lower, upper)
@@ -72,9 +68,9 @@ procedure QuickSort(lower, upper: int)
   if (lower < upper - 1) {
     pivotIndex := (lower + upper) div 2;
     
-    call pivotIndex := Partition(lower, upper, a[pivotIndex]);
+    call pivotIndex := Partition(lower, upper, pivotIndex);
     call QuickSort(lower, pivotIndex);
-    call QuickSort(pivotIndex, upper);
+    call QuickSort(pivotIndex + 1, upper);
   }
 }
 
@@ -82,7 +78,7 @@ procedure QuickSort(lower, upper: int)
 procedure Main() returns ()
   modifies a;
 {
-  assume N == 3;
+  assume N == 5;
   assume !isSorted(a, 0, N);
   call QuickSort(0, N);
 }
