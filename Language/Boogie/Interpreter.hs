@@ -450,7 +450,7 @@ forgetAnyVar name = do
       else forgetVar memConstants name
       
 -- | 'getMapInstance' @r@: current instance of map @r@
-getMapInstance r = (! r) <$> use (envMemory.memMaps)      
+getMapInstance r = (! r) <$> use (envMemory.memMaps)
       
 -- | 'setMapValue' @r index val@ : map @index@ to @val@ in the map referenced by @r@
 setMapValue r index val = do
@@ -461,7 +461,7 @@ setMapValue r index val = do
     pointConstraint = let
         mapType = MapType [] (map thunkType index) (thunkType val)
         mapExpr = gen $ Literal $ Reference mapType r
-      in gen (MapSelection mapExpr index) |=| val
+      in gen (MapSelection mapExpr index) |=| val  
     
 -- | 'getLabelCount' @proc_ lb@: current jump count of label @lb@ in procedure @proc_@
 getLabelCount proc_ lb = do
@@ -559,16 +559,28 @@ evalMapSelection m args pos = do
       inst <- getMapInstance r
       case M.lookup args' inst of    -- Lookup a cached value
         Just val -> eval val
-        Nothing -> do                       -- If not found, choose a value non-deterministically
-          let rangeType = thunkType (gen $ MapSelection m' args')
-          chosenValue <- generateValue rangeType pos
-          setMapValue r args' chosenValue
-          addLeibniz (thunkType m') r pos
-          hasConstraints <- gets (not . null . lookupMapConstraints r)
-          when hasConstraints $ envConstraints.conPointQueue %= (|> (r, args'))
+        Nothing -> do 
+          let rangeType = thunkType (gen $ MapSelection m' args')                    
+          chosenValue <- generateValue rangeType pos          
+          -- Decide if the point is new or already cached
+          isNewPoint <- if M.null inst || (all isLiteral (args' ++ concat (M.keys inst)))
+                          then return True      -- No choice if the arguments are literal or the map is empty
+                          else generate genBool -- Otherwise choose non-deterministically
+          if isNewPoint
+            then do -- New point: save it in the cache, add it to the queue and constrain not to be one of the cached points
+              let pointNew = enot $ disjunction (map (\points -> conjunction (zipWith (|=|) args' points)) (M.keys inst))
+              c <- eval pointNew
+              extendLogicalConstraints c
+              setMapValue r args' chosenValue
+              hasConstraints <- gets (not . null . lookupMapConstraints r)
+              when hasConstraints $ envConstraints.conPointQueue %= (|> (r, args'))
+            else do -- Old point: connect it to the chosen value and constrain to be one of the cached points
+              let pointPresent = M.foldlWithKey (\expr point val -> expr ||| (conjunction (zipWith (|=|) args' point) |&| (chosenValue |=| val))) (gen ff) inst
+              c <- eval pointPresent
+              extendLogicalConstraints c
           return chosenValue
     _ -> return m' -- function without arguments (ToDo: is this how it should be handled?)
-        
+            
 evalMapUpdate m args new pos = do
   m' <- eval m
   let Reference t r = fromLiteral m'
@@ -588,26 +600,7 @@ evalMapUpdate m args new pos = do
       lambda = inheritPos (Quantified Lambda tv bv)
   extendMapConstraints r $ lambda (guardNeq |=>| (appOld |=| appNew))
   extendMapConstraints r' $ lambda (guardNeq |=>| (appOld |=| appNew))  
-  addLeibniz t r' pos
   return newM'
-  
--- | 'addLeibniz' @t r pos@ :  If @r@ of type @t@ is a map with map-type range, add an constraint (forall i, j :: i == j ==> r[i] == r[j])
--- which helps avoid some inconsistencies.
-addLeibniz t r pos = do
-  let var = attachPos pos . Var
-      freshVarNames = map (\i -> nonIdChar : show i) [0..]
-      bv = zip freshVarNames (domains ++ domains)
-      (bv1, bv2) = splitAt (length domains) bv 
-      (bvExprs1, bvExprs2) = splitAt (length domains) $ map (var . fst) bv
-      MapType tv domains range = t
-      m = attachPos pos $ Literal $ Reference t r
-      app1 = attachPos pos $ MapSelection m bvExprs1
-      app2 = attachPos pos $ MapSelection m bvExprs2
-      lambda = inheritPos (Quantified Lambda tv bv1)
-      forall = inheritPos (Quantified Forall tv bv2)
-  case range of
-    MapType _ _ _ -> extendMapConstraints r $ lambda (forall (app1 |=| app2))
-    _ -> return ()
   
 evalIf cond e1 e2 = do
   cond' <- eval cond
@@ -761,7 +754,7 @@ execPredicate clause@(SpecClause source False expr) pos = do
       if res
         then extendLogicalConstraints c
         else do          
-          extendLogicalConstraints (enot c)          
+          extendLogicalConstraints (enot c)
           concretize pos
           throwRuntimeFailure (Error clause) pos          
     
