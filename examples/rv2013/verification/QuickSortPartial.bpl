@@ -23,12 +23,13 @@ function geqPivot(pivot: int, a: [int] int, lower, upper: int): bool
 
 // Partition the array a[lower, upper) such that all elements of a[lower, index) are <= pivot
 // and all elements of a[index, upper) are >= pivot
-procedure Partition(lower, upper, pivot: int) returns (index: int, perm: [int] int);
+procedure Partition(lower, upper, pivotIndex: int) returns (index: int, perm: [int] int);
   modifies a;
-  requires lower < upper;
-	ensures lower <= index && index <= upper;
-	ensures leqPivot (pivot, a, lower, index);
-	ensures geqPivot (pivot, a, index, upper);
+  requires lower < upper - 1;
+  ensures lower <= index && index < upper;
+  ensures old(a[pivotIndex]) == a[index];
+  ensures leqPivot (a[index], a, lower, index);
+  ensures geqPivot (a[index], a, index, upper);  
   // perm is a permutation
   ensures (forall i: int :: lower <= i && i < upper ==> lower <= perm[i] && perm[i] < upper);
   ensures (forall i, j: int :: lower <= i && i < j && j < upper ==> perm[i] != perm[j]);
@@ -50,9 +51,9 @@ procedure QuickSort(lower, upper: int)
   
   if (lower < upper - 1) {
     pivotIndex := (lower + upper) div 2;
-    call pivotIndex, _ := Partition(lower, upper, a[pivotIndex]);
+    call pivotIndex, _ := Partition(lower, upper, pivotIndex);
     call QuickSort(lower, pivotIndex);
-    call QuickSort(pivotIndex, upper);
+    call QuickSort(pivotIndex + 1, upper);
   }
 }
 
@@ -71,7 +72,7 @@ procedure Touch(a: [int] int, N: int) returns ()
 procedure Main() returns ()
   modifies a;
 {
-  assume N >= 3;  
+  assume N == 3;  
   assume !isSorted(a, 0, N);
   call Touch(a, N);
   call QuickSort(0, N);

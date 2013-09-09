@@ -40,7 +40,7 @@ procedure Swap(i: int, j: int) returns ()
 procedure Partition(lower, upper, pivotIndex: int) returns (index: int)
   modifies a;
   requires lower < upper - 1;
-	ensures lower <= index && index <= upper;
+	ensures lower <= index && index < upper;
   ensures old(a[pivotIndex]) == a[index];
 	ensures leqPivot (a[index], a, lower, index);
 	ensures geqPivot (a[index], a, index, upper);
@@ -61,6 +61,7 @@ procedure Partition(lower, upper, pivotIndex: int) returns (index: int)
 
 // Sort the array a[lower, upper)
 procedure QuickSort(lower, upper: int)
+  requires 0 <= lower && lower <= upper && upper <= N; 
   modifies a;
   ensures isSorted(a, lower, upper);
 {
@@ -78,7 +79,7 @@ procedure QuickSort(lower, upper: int)
 procedure Main() returns ()
   modifies a;
 {
-  assume N == 5;
+  assume N == 3;
   assume !isSorted(a, 0, N);
   call QuickSort(0, N);
 }
