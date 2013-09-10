@@ -569,15 +569,13 @@ evalMapSelection m args pos = do
           if isNewPoint
             then do -- New point: save it in the cache, add it to the queue and constrain not to be one of the cached points
               let pointNew = enot $ disjunction (map (\points -> conjunction (zipWith (|=|) args' points)) (M.keys inst))
-              c <- eval pointNew
-              extendLogicalConstraints c
+              force True pointNew
               setMapValue r args' chosenValue
               hasConstraints <- gets (not . null . lookupMapConstraints r)
               when hasConstraints $ envConstraints.conPointQueue %= (|> (r, args'))
             else do -- Old point: connect it to the chosen value and constrain to be one of the cached points
               let pointPresent = M.foldlWithKey (\expr point val -> expr ||| (conjunction (zipWith (|=|) args' point) |&| (chosenValue |=| val))) (gen ff) inst
-              c <- eval pointPresent
-              extendLogicalConstraints c
+              force True pointPresent
           return chosenValue
     _ -> return m' -- function without arguments (ToDo: is this how it should be handled?)
             
@@ -713,7 +711,22 @@ evalForall tv vars e pos = do
   checkSat pos
   res <- generate genBool
   forceForall tv vars e pos res
-      
+  return $ Pos pos $ Literal $ BoolValue res
+        
+-- | Force the result of a Boolean expression to a given value
+force :: (Monad m, Functor m) => Bool -> Expression -> Execution m ()
+force val   (Pos pos (UnaryExpression Not e)) = force (not val) e
+force True  (Pos pos (BinaryExpression And e1 e2)) = do force True e1; force True e2;
+force False (Pos pos (BinaryExpression Or e1 e2)) = do force False e1; force False e2;
+force False (Pos pos (BinaryExpression Implies e1 e2)) = do force True e1; force False e2;
+force val   (Pos pos (Quantified Forall tv vars e)) = forceForall tv vars e pos val
+force val   (Pos pos (Quantified Exists tv vars e)) = forceForall tv vars e pos (not val)
+force val   expr = do
+  c <- if val
+        then eval expr
+        else eval $ enot expr
+  extendLogicalConstraints c
+  
 -- | Force the result of a forall expression to a given value      
 forceForall tv vars e pos res = do
   qExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)  
@@ -723,9 +736,7 @@ forceForall tv vars e pos res = do
       mapM_ (\(r, cs) -> mapM_ (extendMapConstraints r) cs) mapConstraints
     else do -- we decided that e does not always hold: find a counterexample  
       let typeBinding = M.fromList $ zip tv (repeat anyType)
-      counterExample <- executeNested typeBinding vars (eval $ enot e')
-      extendLogicalConstraints counterExample    
-  return $ Pos pos $ Literal $ BoolValue res
+      executeNested typeBinding vars (force True $ enot e')    
   
 {- Statements -}
 
@@ -740,23 +751,17 @@ exec stmt = case node stmt of
     CallForall name args -> return ()
     Pick -> concretize (position stmt)
   
-execPredicate (SpecClause source True expr) pos = do  
-  c <- eval expr
-  extendLogicalConstraints c  
+execPredicate (SpecClause source True expr) pos = force True expr
 
 execPredicate clause@(SpecClause source False expr) pos = do
-  c <- eval expr  
-  if node c == tt
-    then return ()
-    else do
-      checkSat pos
-      res <- generate genBool
-      if res
-        then extendLogicalConstraints c
-        else do          
-          extendLogicalConstraints (enot c)
-          concretize pos
-          throwRuntimeFailure (Error clause) pos          
+  checkSat pos
+  res <- generate genBool
+  if res
+    then force True expr
+    else do          
+      force False expr
+      concretize pos
+      throwRuntimeFailure (Error clause) pos
     
 execHavoc names pos = do
   mapM_ forgetAnyVar names
@@ -936,11 +941,7 @@ evalQuantified expr = evalQuantified' [] expr
 -- | 'checkNameConstraints' @name pos@ : execute where clause of variable @name@ at position @pos@
 checkNameConstraints name pos = do
   cs <- gets $ lookupNameConstraints name
-  mapM checkConstraint cs
-  where 
-    checkConstraint c = do
-      c' <- eval c
-      extendLogicalConstraints c'
+  mapM (force True) cs
       
 -- | 'checkUniqueConstraints' @name t@: if @name@ is a unique constant of type @t@ add constraints
 -- that it os different from all other unique constants of this type.
@@ -1002,9 +1003,7 @@ enforceMapConstraint c actuals pos =
     then return ()
     else case node body of
       Quantified Forall tv' vars e -> locally (enforceOnCache tv' vars e) -- parametrized forall constraint: check it on cached values
-      _ -> do 
-        c' <- locally . eval $ body
-        extendLogicalConstraints c'
+      _ -> locally . force True $ body
   where      
     enforceOnCache tv vars e = do  
       qExpr@(Pos _ (Quantified Forall _ _ e')) <- evalQuantified (attachPos pos $ Quantified Forall tv vars e)  
