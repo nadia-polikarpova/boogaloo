@@ -563,8 +563,9 @@ evalMapSelection m args pos = do
           let rangeType = thunkType (gen $ MapSelection m' args')                    
           chosenValue <- generateValue rangeType pos          
           -- Decide if the point is new or already cached
-          isNewPoint <- if M.null inst || (all isLiteral (args' ++ concat (M.keys inst)))
-                          then return True      -- No choice if the arguments are literal or the map is empty
+          let isNewLiteralArg new olds = all isLiteral (new : olds) && not (new `elem` olds)          
+          isNewPoint <- if M.null inst || (or $ zipWith isNewLiteralArg args' (transpose $ M.keys inst))
+                          then return True      -- No choice if the map is empty or at least in one dimension the new point is provable different
                           else generate genBool -- Otherwise choose non-deterministically
           if isNewPoint
             then do -- New point: save it in the cache, add it to the queue and constrain not to be one of the cached points
