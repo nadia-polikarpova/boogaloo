@@ -871,7 +871,7 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
 extendNameConstraints :: (MonadState (Environment m) s, Finalizer s) => SimpleLens ConstraintMemory NameConstraints -> Expression -> s ()
 extendNameConstraints lens c = mapM_ (\name -> modify $ addNameConstraint name (envConstraints.lens) c) (freeVars c)
 
--- | 'extendMapConstraints' @r c@ : add @c@ to the constraints of the map @r@  
+-- | 'extendMapConstraints' @r c@ : add @c@ to the constraints of the map @r@
 extendMapConstraints r c = do
   n <- gets (length . lookupMapConstraints r)
   modify $ addMapConstraint r c
@@ -880,7 +880,7 @@ extendMapConstraints r c = do
     queue <- use $ envConstraints.conPointQueue
     keys <- M.keys <$> getMapInstance r
     let points = filter (\p -> isNothing $ Seq.elemIndexL p queue) (zip (repeat r) keys) -- All points of r that are not in the queue
-    envConstraints.conPointQueue .= queue >< (Seq.fromList points) -- A new constraint has been added for r, so put all good points back into the bad queue
+    envConstraints.conPointQueue .= queue >< (Seq.fromList points) -- A new constraint has been added for r, so put all good points back into the bad queue    
     )
 
 -- | 'extendLogicalConstraints' @c@ : add @c@ to the logical constraints
@@ -945,50 +945,50 @@ checkNameConstraints name pos = do
   mapM (force True) cs
       
 -- | 'checkUniqueConstraints' @name t@: if @name@ is a unique constant of type @t@ add constraints
--- that it os different from all other unique constants of this type.
+-- that it is different from all other unique constants of this type.
 checkUniqueConstraints name t = do
   names <- gets $ lookupUnique t
   let other = filter (/= name) names
   when (length other < length names) $ mapM_ (\n -> extendNameConstraints conGlobals (axiom n)) other  
   where
-    axiom n = (gen . Var) (min n name) |!=| (gen . Var) (max n name)        
-
+    axiom n = (gen . Var) (min n name) |!=| (gen . Var) (max n name)
+        
 -- | 'checkMapConstraints' @r actuals pos@ : assume all unguarded and some of the guarded constraints for the value at index @actuals@ 
 -- in the map referenced by @r@ mentioned at @pos@
 checkMapConstraints r actuals pos = do
   cs <- gets $ lookupMapConstraints r
   let (guardedCs, unguardedCs) = partition isGuarded cs
   mapM_ (\c -> enforceMapConstraint c actuals pos) unguardedCs
-  checkSat pos
+  -- checkSatStep pos
   
   let csIdxs = [0 .. length guardedCs - 1]
   counts <- mapM (getMapCaseCount r) csIdxs
   let orderedCs = sortBy (flip compare `on` snd) (zip csIdxs counts)
-  enabled <- replicateM (length guardedCs) (generate genBool)
-  -- traceShow (text "for" <+> refDoc r <> brackets (commaSep (map pretty actuals)) <+> text "chose" <+> pretty enabled) $ return ()
-  mapM_ (processMapConstraint guardedCs) (zip enabled orderedCs)  
+  mapM_ (processMapConstraint guardedCs) orderedCs
   where
     isGuarded (Pos _ (Quantified Lambda _ _ body)) = case node body of
       BinaryExpression Implies guard _ -> True
-      _ -> False
-    -- | Disable constraint
-    processMapConstraint guardedCs (False, (idx, count)) = enableMapConstraint (guardedCs !! idx) False      
-    -- | Enable constraint
-    processMapConstraint guardedCs (True, (idx, count)) = do
+      _ -> False      
+    processMapConstraint guardedCs (idx, count) = do
       let c = guardedCs !! idx
-      max <- use envUnrollMax
-      if isNothing max || count < fromJust max
+      enabled <- generate genBool
+      if enabled
         then do
-          envMapCaseCount %= M.insert (r, idx) (succ count)
-          enableMapConstraint c True
-          enforceMapConstraint c actuals pos
-        else
-          throwRuntimeFailure (Nonexecutable $ text "Maximum unroll depth exceeded for map constraint" <+> pretty c) pos
+          max <- use envUnrollMax
+          if isNothing max || count < fromJust max
+            then do
+              envMapCaseCount %= M.insert (r, idx) (succ count)
+              enableMapConstraint c True
+              enforceMapConstraint c actuals pos
+            else
+              throwRuntimeFailure (Nonexecutable $ text "Maximum unroll depth exceeded for map constraint" <+> pretty c) pos
+        else enableMapConstraint (guardedCs !! idx) False
     enableMapConstraint c val = case c of
       (Pos p (Quantified Lambda tv formals body)) -> case node body of
         BinaryExpression Implies guard _ -> do
           let cond = if val then guard else enot guard
           enforceMapConstraint (Pos p (Quantified Lambda tv formals cond)) actuals pos
+          checkSatStep pos
 
 -- | 'enforceMapConstraint' @c actuals pos@ : 
 -- enforce constraint @c@ for point @actuals@
@@ -1031,10 +1031,10 @@ instanceConstraints = (concatMap constraintsFromMap . M.toList) <$> use (envMemo
         mapExpr = gen $ Literal $ Reference mapType r
       in gen (MapSelection mapExpr args) |=| val
       
--- | Check if the current logical variable constraints are satisfiable,
--- otherwise throw an assumption violation  
-checkSat :: (Monad m, Functor m) => SourcePos -> Execution m ()
-checkSat pos = do  
+-- | Check if the current logical variable constraints are satisfiable
+-- otherwise throw an assumption violation        
+checkSatStep :: (Monad m, Functor m) => SourcePos -> Execution m ()
+checkSatStep pos = do  
   constraints <- use $ envConstraints.conLogical
   when (not $ null constraints)
     (do
@@ -1045,7 +1045,13 @@ checkSat pos = do
       envSolverState .= newState
       envConstraints.conLogicalChecked %= (++ constraints)
       envConstraints.conLogical .= []
-    )
+    )      
+      
+-- | Check if the current logical variable constraints and map constraints for initialized points are satisfiable
+-- otherwise throw an assumption violation  
+checkSat :: (Monad m, Functor m) => SourcePos -> Execution m ()
+checkSat pos = do  
+  checkSatStep pos
   queueEmpty <- uses (envConstraints.conPointQueue) Seq.null
   if queueEmpty
     then return ()
