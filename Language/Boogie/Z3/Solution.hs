@@ -121,7 +121,7 @@ solveConstr minWanted solnWanted constrs =
               case modelMb of
                 Just model ->
                   do m <- if minWanted
-                          then minimizeModel model constrs
+                          then minimizeModel model
                           else return model
                      SolnWithModel <$> reconstruct m
                 Nothing -> return NoSoln

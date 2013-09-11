@@ -3,6 +3,7 @@ module Language.Boogie.Z3.Minimize where
 import           Control.Applicative
 import           Control.Lens
 import           Control.Monad.IO.Class
+import           Control.Monad
 
 import           Data.Maybe
 import qualified Data.Map as Map
@@ -13,11 +14,18 @@ import           Language.Boogie.AST
 import           Language.Boogie.Solver
 import           Language.Boogie.Z3.Eval
 import           Language.Boogie.Z3.GenMonad
-
-minimizeModel :: Model -> [Expression] -> Z3Gen Model
-minimizeModel model constrs = 
-    do v <- evalObj model 
-       go model Nothing (v-1) (v+1)
+        
+-- | 'minimizeModel' @model@ : Minimize all objective functions one by one starting from @model@               
+minimizeModel :: Model -> Z3Gen Model
+minimizeModel model = 
+    do objs <- objectives
+       foldM minimizeOne model objs
+       
+-- | 'minimizeOne' @model obj@ : Minimize objective function @obj@ starting from @model@       
+minimizeOne :: Model -> AST -> Z3Gen Model       
+minimizeOne model obj = do       
+      v <- evalObj model 
+      go model Nothing (v-1) (v+1)
     where
       go :: Model -> Maybe Integer -> Integer -> Integer -> Z3Gen Model
       go m loMb pivot hi
@@ -47,34 +55,28 @@ minimizeModel model constrs =
                          debug ("go UNSAT:" ++ show (loMb, pivot, hi))
                          pop 1
                          go m (Just pivot) pivot' hi
-         | otherwise = debug ("go DONE:" ++ show (loMb, pivot,hi)) >> return m
+         | otherwise = do            
+            debug ("go DONE:" ++ show (loMb, pivot,hi))
+            assertPivot pivot
+            return m
                 
 
       assertPivot pivot =
-          do obj <- objective
-             piv <- mkInt pivot
+          do piv <- mkInt pivot
              pivCnstr <- mkLe obj piv
              assertCnstr pivCnstr
 
       evalObj :: Model -> Z3Gen Integer
       evalObj m =
-          do objAst <- objective
-             Just objVal <- eval m objAst
+          do Just objVal <- eval m obj
              v <- getInt objVal
-             str <- astToString objAst
-             debug (unwords ["Objective value:", show v, str])
              return v
-
-
-
--- | Objective function taken from the current ref map.
-objective :: Z3Gen AST
-objective =
+             
+-- | ASTs representing objective functions.
+objectives :: Z3Gen [AST]
+objectives =
     do intMbs <- mapM (uncurry intAst) =<< uses refMap Map.toList
-       let ints = catMaybes intMbs
-       if null ints
-         then mkInt 0
-         else mkAdd ints
+       return $ catMaybes intMbs
     where
       intAst :: TaggedRef -> AST -> Z3Gen (Maybe AST)
       intAst (LogicRef t _ref) ast =
@@ -87,7 +89,6 @@ objective =
             _ -> return Nothing
       intAst _ _ = return Nothing
           
-
       absT :: AST -> Z3Gen AST
       absT ast =
           do zero <- mkInt 0
