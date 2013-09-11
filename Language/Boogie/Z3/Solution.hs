@@ -5,6 +5,7 @@
 module Language.Boogie.Z3.Solution 
     ( solveConstr
     , extract
+    , SolveResult (..)
     ) where
 
 import           Control.Applicative
@@ -86,29 +87,40 @@ customConstrs =
              assertCnstr gt
       goType _ _ = return ()
 
+data SolveResult
+    = NoSoln
+    | Soln
+    | SolnWithModel Solution
+
 -- | Given a set of constraint expressions produce a mapping
 -- of references to their concrete values.
 --
 -- The constraint expressions will have no regular variables,
 -- only logical variables and map variables.
-
-solveConstr :: Bool -> [Expression] -> Z3Gen (Maybe Solution)
-solveConstr minWanted constrs = 
+solveConstr :: Bool -> Bool -> [Expression] -> Z3Gen SolveResult
+solveConstr minWanted solnWanted constrs = 
     do updateRefMap constrs
        debug ("solveConstr: finished map updates")
        mapM_ (evalExpr >=> assertCnstr) constrs
        customConstrs
        dummyPreds
        debug ("solveConstr: asserting constraints")
-       (_result, modelMb) <- getModel
-       debug ("solveConstr: minimizing: " ++ show minWanted)
-       case modelMb of
-         Just model ->
-             do m <- if minWanted
-                     then minimizeModel model constrs
-                     else return model
-                Just <$> reconstruct m
-         Nothing -> return Nothing
+       if solnWanted
+         then
+           do (_result, modelMb) <- getModel
+              debug ("solveConstr: minimizing: " ++ show minWanted)
+              case modelMb of
+                Just model ->
+                  do m <- if minWanted
+                          then minimizeModel model constrs
+                          else return model
+                     SolnWithModel <$> reconstruct m
+                Nothing -> return NoSoln
+         else
+           do result <- check
+              case result of
+                Unsat -> return NoSoln
+                _ -> return Soln
 
 
 -- | Generate dummy predicates to force values for everything
