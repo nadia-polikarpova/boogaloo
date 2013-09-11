@@ -41,24 +41,25 @@ mkSolver :: (MonadPlus m, Foldable m)
       -> Maybe Int     -- ^ Bound on number of solutions
       -> IO (Solver m)
 mkSolver minWanted mBound = do
-    (slv, ctx) <- solverContext
+    (slvNoModel, ctxNoModel) <- solverContext False
+    (slvModel, ctxModel) <- solverContext True
     return Solver {
           solPick = \cs nAssert -> do 
-            (mSolution, newNAssert) <- solve minWanted True mBound cs nAssert slv ctx
+            (mSolution, _) <- solve minWanted True mBound cs 0 slvModel ctxModel
             case mSolution of
               NoSoln -> mzero
               Soln -> error "solution found, but no model requested"
-              SolnWithModel solution -> return (solution, newNAssert),
+              SolnWithModel solution -> return (solution, nAssert),
           solCheck = \cs nAssert ->
-                      let (mSolution, newNAssert) = head $ solve False False (Just 1) cs nAssert slv ctx 
+                      let (mSolution, newNAssert) = head $ solve False False (Just 1) cs nAssert slvNoModel ctxNoModel 
                           foundSoln = case mSolution of
                                         NoSoln -> False
                                         _ -> True
                       in (foundSoln, newNAssert)
         }
 
-solverContext :: IO (Z3.Solver, Z3.Context)
-solverContext =
+solverContext :: Bool -> IO (Z3.Solver, Z3.Context)
+solverContext modelWanted =
   do cfg <- Z3.mkConfig
      setOpts cfg opts
      ctx <- Z3.mkContext cfg
@@ -66,7 +67,7 @@ solverContext =
      return (slv, ctx)
     where
       opts = stdOpts +? (opt "AUTO_CONFIG" False)
-                     +? (opt "MODEL" True)
+                     +? (opt "MODEL" modelWanted)
                      +? (opt "MBQI" False)
                      -- +? (opt "SOFT_TIMEOUT" (100::Int))
                      -- +? (opt "MODEL_ON_TIMEOUT" True)
