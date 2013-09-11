@@ -44,13 +44,17 @@ mkSolver minWanted mBound = do
     (slv, ctx) <- solverContext
     return Solver {
           solPick = \cs nAssert -> do 
-            (mSolution, newNAssert) <- solve minWanted mBound cs nAssert slv ctx
+            (mSolution, newNAssert) <- solve minWanted True mBound cs nAssert slv ctx
             case mSolution of
-              Nothing -> mzero
-              Just solution -> return (solution, newNAssert),
+              NoSoln -> mzero
+              Soln -> error "solution found, but no model requested"
+              SolnWithModel solution -> return (solution, newNAssert),
           solCheck = \cs nAssert ->
-                      let (mSolution, newNAssert) = head $ solve False (Just 1) cs nAssert slv ctx in
-                     (isJust mSolution, newNAssert)
+                      let (mSolution, newNAssert) = head $ solve False False (Just 1) cs nAssert slv ctx 
+                          foundSoln = case mSolution of
+                                        NoSoln -> False
+                                        _ -> True
+                      in (foundSoln, newNAssert)
         }
 
 solverContext :: IO (Z3.Solver, Z3.Context)
@@ -69,28 +73,45 @@ solverContext =
 
 solve :: (MonadPlus m, Foldable m)
       => Bool          -- ^ Is a minimal solution desired?
+      -> Bool          -- ^ Is a solution wanted?
       -> Maybe Int     -- ^ Bound on number of solutions
       -> ConstraintSet -- ^ Set of constraints
       -> Int           -- ^ Desired number of backtracking points in the solver
       -> Z3.Solver     -- ^ Z3 solver to use
       -> Z3.Context    -- ^ Z3 context to use
-      -> m (Maybe Solution, Int)
-solve minWanted mBound constrs nAssert slv ctx = 
-    case stepConstrs minWanted constrs nAssert slv ctx of
-      (Just (soln, neq), newNAssert) -> return (Just soln, newNAssert) `mplus` go
+      -> m (SolveResult, Int)
+solve minWanted solnWanted mBound constrs nAssert slv ctx = 
+    case solRes of
+      SolnWithModel soln -> return (solRes, newNAssert) `mplus` go
           where
+            neq = newConstraint soln
             go = if mBound == Nothing || (fromJust mBound > 1)
-                    then solve minWanted (fmap pred mBound) (neq : constrs) nAssert slv ctx
+                    then solve
+                           minWanted
+                           solnWanted
+                           (fmap pred mBound)
+                           (neq : constrs)
+                           nAssert
+                           slv
+                           ctx
                     else mzero
-      (Nothing, newNAssert) -> return (Nothing, newNAssert)
+      _ -> return x
+  where
+    x@(solRes, newNAssert) =
+      stepConstrs minWanted solnWanted constrs nAssert slv ctx
+data StepResult
+    = StepNoSoln
+    | StepSoln
+    | StepSolnWithModel Solution Expression
 
 stepConstrs :: Bool
+            -> Bool
             -> [Expression]
             -> Int
             -> Z3.Solver
             -> Z3.Context
-            -> (Maybe (Solution, Expression), Int)
-stepConstrs minWanted constrs nAssert slv ctx = unsafePerformIO act
+            -> (SolveResult, Int)
+stepConstrs minWanted solnWanted constrs nAssert slv ctx = unsafePerformIO act
     where
       act = 
        do evalZ3GenWith slv ctx $ 
@@ -101,13 +122,11 @@ stepConstrs minWanted constrs nAssert slv ctx = unsafePerformIO act
               popStack
               push
               debug1 ("constraints " ++ show (length constrs) ++ "\n" ++ (intercalate "\n" $ map show constrs))              
-              solnMb <- solveConstr minWanted constrs
+              solnRes <- solveConstr minWanted solnWanted constrs
               newNAssert <- getNumScopes
               debug ("new " ++ show newNAssert) 
-              debug ("stepConstrs: done")                            
-              case solnMb of
-                Just !soln -> return $ (Just (soln, newConstraint soln), newNAssert)
-                Nothing -> return (Nothing, newNAssert)
+              debug ("stepConstrs: done")
+              return (solnRes, newNAssert)
       popStack = do
         nAssertSolver <- getNumScopes
         debug1 ("solver thinks " ++ show nAssertSolver)
