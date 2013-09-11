@@ -721,7 +721,7 @@ force True  (Pos pos (BinaryExpression And e1 e2)) = do force True e1; force Tru
 force False (Pos pos (BinaryExpression Or e1 e2)) = do force False e1; force False e2;
 force False (Pos pos (BinaryExpression Implies e1 e2)) = do force True e1; force False e2;
 force val   (Pos pos (Quantified Forall tv vars e)) = forceForall tv vars e pos val
-force val   (Pos pos (Quantified Exists tv vars e)) = forceForall tv vars e pos (not val)
+force val   (Pos pos (Quantified Exists tv vars e)) = forceForall tv vars (enot e) pos (not val)
 force val   expr = do
   c <- if val
         then eval expr
