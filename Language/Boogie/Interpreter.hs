@@ -1014,13 +1014,7 @@ enforceMapConstraint c actuals pos =
     forceConstraint r c = do       
       inst <- getMapInstance r
       mapM_ (\actuals -> enforceMapConstraint c actuals pos) (M.keys inst)          
-          
--- | 'callSolver' @f cs@ : apply solver's function @f@ to constraints @cs@
-callSolver :: (Monad m, Functor m) => (Solver m -> ConstraintSet -> Int -> m a) -> ConstraintSet -> Int -> Execution m a
-callSolver f cs n = do    
-  s <- uses envSolver f
-  lift $ lift $ s cs n
-  
+            
 -- | Extract constraints form map cache
 instanceConstraints :: (Monad m, Functor m) => Execution m ConstraintSet 
 instanceConstraints = (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)
@@ -1031,6 +1025,15 @@ instanceConstraints = (concatMap constraintsFromMap . M.toList) <$> use (envMemo
         mapExpr = gen $ Literal $ Reference mapType r
       in gen (MapSelection mapExpr args) |=| val
       
+-- | 'callSolver' @f cs@ : apply solver's function @f@ to constraints @cs@
+callSolver :: (Monad m, Functor m) => (Solver m -> ConstraintSet -> SolverState -> m (a, SolverState)) -> ConstraintSet -> Execution m a
+callSolver f cs = do 
+  solState <- use envSolverState
+  s <- uses envSolver f  
+  (res, newState) <- lift $ lift $ s cs solState
+  envSolverState .= newState
+  return res
+      
 -- | Check if the current logical variable constraints are satisfiable
 -- otherwise throw an assumption violation        
 checkSatStep :: (Monad m, Functor m) => SourcePos -> Execution m ()
@@ -1038,11 +1041,8 @@ checkSatStep pos = do
   constraints <- use $ envConstraints.conLogical
   when (not $ null constraints)
     (do
-      s <- use envSolver
-      solState <- use envSolverState
-      let (sat, newState) = solCheck s constraints solState
+      sat <- callSolver (\s cs n -> return $ solCheck s cs n) constraints
       when (not sat) $ throwRuntimeFailure Unreachable pos
-      envSolverState .= newState
       envConstraints.conLogicalChecked %= (++ constraints)
       envConstraints.conLogical .= []
     )      
@@ -1068,25 +1068,15 @@ checkSat pos = do
 concretize :: (Monad m, Functor m) => SourcePos -> Execution m ()
 concretize pos = do
   checkSat pos
-  c1 <- use $ envConstraints.conLogical
-  c2 <- use $ envConstraints.conLogicalChecked
-  let constraints = c1 ++ c2
-  envConstraints.conLogical .= []
+  constraints <- use $ envConstraints.conLogicalChecked
   envConstraints.conLogicalChecked .= []
-  if null constraints
-    then do
-      eliminateLogicals                 -- We are done: instantiate the memory with the solution and restore map instance constraints
-      ic <- instanceConstraints
-      envConstraints.conLogical .= ic
-    else solveAndCheck constraints -- Something to solve
+  solution <- (callSolver solPick) constraints     
+  envMemory.memLogical %= M.union solution          
+  updateMapCache
+  eliminateLogicals
+  ic <- instanceConstraints
+  envConstraints.conLogical .= ic  
   where
-    solveAndCheck constraints = do
-      solState <- use envSolverState
-      (solution, newState) <- (callSolver solPick) constraints solState     
-      envSolverState .= newState
-      envMemory.memLogical %= M.union solution          
-      updateMapCache
-      concretize pos -- the previous two lines might have generated more constraints, so we should solve again    
     -- | Instantiate all logical variables inside map cache
     updateMapCache = do
       maps <- use $ envMemory.memMaps

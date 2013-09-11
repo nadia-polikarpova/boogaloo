@@ -1,3 +1,5 @@
+- Try replacing checkSat with checkSatStep or inserting checkSatStep after you make a choice
+
 - Overall
   - Unsupported syntax    
     - bit vectors    

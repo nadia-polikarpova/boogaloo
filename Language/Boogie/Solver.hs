@@ -21,9 +21,12 @@ type Solution = Map Ref Thunk
 
 instance Pretty Solution where
   pretty = vMapDoc logDoc pretty
+  
+-- | Solver state for incremental solving  
+type SolverState = Int
 
 -- | Solver: produces solutions of constraint sets
 data Solver m = Solver {
-  solCheck :: ConstraintSet -> Int -> (Bool, Int),      -- | Given a constraint set and a current solver state id, return whether the constraint set is satisfiable and the new state id
-  solPick :: ConstraintSet -> Int -> m (Solution, Int)  -- | Given a constraint set and a current solver state id, return solution(s) and the new state id
+  solCheck :: ConstraintSet -> SolverState -> (Bool, SolverState),      -- | Given a constraint set and a current solver state id, return whether the constraint set is satisfiable and the new state id
+  solPick :: ConstraintSet -> SolverState -> m (Solution, SolverState)  -- | Given a constraint set and a current solver state id, return solution(s) and the new state id
 }
