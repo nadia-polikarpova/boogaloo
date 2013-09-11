@@ -20,7 +20,7 @@ minimizeModel :: Model -> Z3Gen Model
 minimizeModel model = 
     do objs <- objectives
        foldM minimizeOne model objs
-       
+
 -- | 'minimizeOne' @model obj@ : Minimize objective function @obj@ starting from @model@       
 minimizeOne :: Model -> AST -> Z3Gen Model       
 minimizeOne model obj = do       
@@ -32,7 +32,6 @@ minimizeOne model obj = do
          | isNothing loMb || hi - fromJust loMb > 2 =
              do push
                 assertPivot pivot
-                check
                 (_, modelMb) <- getModel
                 case modelMb of
                   Just m' ->
@@ -42,13 +41,11 @@ minimizeOne model obj = do
                                             then (-1)
                                             else pivot * 2
                                debug ("go SAT Nothing:" ++ show (loMb, pivot, hi))
-                               pop 1
                                go m' loMb pivot' (pivot + 1)
                         Just lo ->
                             do lv <- evalObj m'
                                let pivot' = lo + (lv + 1 - lo) `div` 2
                                debug ("go SAT Just:" ++ show (loMb, pivot, hi))
-                               pop 1
                                go m' loMb pivot' (pivot + 1)
                   Nothing ->
                       do let pivot' = pivot + ((hi - pivot) `div` 2)
@@ -59,7 +56,6 @@ minimizeOne model obj = do
             debug ("go DONE:" ++ show (loMb, pivot,hi))
             assertPivot pivot
             return m
-                
 
       assertPivot pivot =
           do piv <- mkInt pivot
@@ -71,7 +67,7 @@ minimizeOne model obj = do
           do Just objVal <- eval m obj
              v <- getInt objVal
              return v
-             
+
 -- | ASTs representing objective functions.
 objectives :: Z3Gen [AST]
 objectives =
