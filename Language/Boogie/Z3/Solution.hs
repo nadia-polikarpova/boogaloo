@@ -44,13 +44,22 @@ updateRefMap = mapM_ addRefs
 
       -- | Get the values from a single expression.
       refs :: Expression -> Set TaggedRef
-      refs expr = valueT expr `Set.union` exprT expr
+      refs expr = refE expr -- valueT expr `Set.union` exprT expr
           where
-            valueT = everything Set.union (mkQ Set.empty valueRef)
-            exprT = everything Set.union (mkQ Set.empty go)
-
-            go (Logical t ref) = Set.singleton (LogicRef t ref)
-            go e               = Set.unions (gmapQ (mkQ Set.empty go) e)
+            refE e =
+                case node e of
+                  Literal v -> valueRef v
+                  Var _ -> Set.empty
+                  Logical t ref -> Set.singleton (LogicRef t ref)
+                  Application _ es -> Set.unions (map refE es)
+                  MapSelection e es -> Set.unions (map refE (e:es))
+                  MapUpdate e es e' -> Set.unions (map refE (e:e':es))
+                  Old e -> refE e
+                  IfExpr e1 e2 e3 -> Set.unions (map refE [e1, e2, e3])
+                  Coercion e _ -> refE e
+                  UnaryExpression _ e -> refE e
+                  BinaryExpression _ e1 e2 -> Set.unions (map refE [e1, e2])
+                  Quantified _ _ _ e -> refE e
 
             valueRef (Reference t r) = Set.singleton (MapRef t r)
             valueRef _ = Set.empty
