@@ -21,7 +21,11 @@ minimizeModel model =
     do objs <- objectives
        foldM minimizeOne model objs
 
--- | 'minimizeOne' @model obj@ : Minimize objective function @obj@ starting from @model@       
+-- | 'minimizeOne' @model obj@ : Minimize objective function @obj@ starting from @model@
+-- The algorithm basically does the following: 
+-- 1. Check if the current objective value v can be lowered at all; if not, then stop
+-- 2. If yes, check if it can be zero; if yes, then stop.
+-- 3. otherwise do a binary search in [1, v - 1]  
 minimizeOne :: Model -> AST -> Z3Gen Model       
 minimizeOne model obj = do       
       v <- evalObj model 
@@ -37,22 +41,20 @@ minimizeOne model obj = do
                   Just m' ->
                       case loMb of
                         Nothing ->
-                            do let pivot' = if pivot >= 0
-                                            then (-1)
-                                            else pivot * 2
+                            do 
                                debug ("go SAT Nothing:" ++ show (loMb, pivot, hi))
-                               go m' loMb pivot' (pivot + 1)
+                               go m' (Just (-1)) 0 (pivot + 1)
                         Just lo ->
                             do lv <- evalObj m'
                                let pivot' = lo + (lv + 1 - lo) `div` 2
                                debug ("go SAT Just:" ++ show (loMb, pivot, hi))
-                               go m' loMb pivot' (pivot + 1)
+                               go m' loMb pivot' (lv + 1)
                   Nothing ->
                       do let pivot' = pivot + ((hi - pivot) `div` 2)
                          debug ("go UNSAT:" ++ show (loMb, pivot, hi))
                          pop 1
                          go m (Just pivot) pivot' hi
-         | otherwise = do            
+         | otherwise = do
             debug ("go DONE:" ++ show (loMb, pivot,hi))
             assertPivot pivot
             return m
