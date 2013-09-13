@@ -19,6 +19,7 @@ module Language.Boogie.Util (
   mapRefs,
   refSelections,
   applications,
+  removeBoundClashes,
   -- * Specs
   preconditions,
   postconditions,
@@ -50,6 +51,7 @@ module Language.Boogie.Util (
   functionConst,
   functionExpr,
   functionFromConst,
+  removeClashesWith,
   -- * Misc
   fromRight,
   maybe2,
@@ -147,18 +149,6 @@ unifier fv ((MapType bv1 domains1 range1):xs) ((MapType bv2 domains2 range2):ys)
   where
     update u = map (typeSubst u)
 unifier _ _ _ = Nothing
-
--- | 'removeClashesWith' @tvs tvs'@ :
--- New names for type variables @tvs@ that are disjoint from @tvs'@
--- (if @tvs@ does not have duplicates, then result also does not have duplicates)
-removeClashesWith :: [Id] -> [Id] -> [Id]
-removeClashesWith tvs tvs' = map changeName tvs
-  where
-    -- new name for tv that does not coincide with any tvs'
-    changeName tv = if tv `elem` tvs' then tv ++ replicate (level + 1) nonIdChar else tv
-    -- maximum number of nonIdChar characters at the end of any tvs or tvs'; 
-    -- by appending (level + 1) nonIdChar charactes to tv we make is different from all tvs' and unchanged tvs
-    level = maximum [fromJust (findIndex (\c -> c /= nonIdChar) (reverse id)) | id <- tvs ++ tvs']
     
 -- | 'forallUnifier' @fv bv1 xs bv2 ys@ :   
 -- Most general unifier of @xs@ and @ys@,
@@ -293,8 +283,30 @@ applications expr = case node expr of
   Coercion e _-> applications e
   UnaryExpression _ e-> applications e
   BinaryExpression _ e1 e2-> nub . concat $ [applications e1, applications e2]
-  Quantified _ _ _ e-> applications e    
+  Quantified _ _ _ e-> applications e
 
+-- | 'removeBoundClashes' @names expr@: replace any bound variables in @expr@ that clash with @names@
+removeBoundClashes :: [Id] -> Expression -> Expression
+removeBoundClashes names (Pos p expr) = attachPos p $ case expr of
+  Literal _ -> expr
+  Var x -> expr
+  Application name args -> Application name (map go args)
+  MapSelection m args -> MapSelection (go m) (map go args)
+  MapUpdate m args val ->  MapUpdate (go m) (map go args) (go val)
+  Old e -> Old (go e)
+  IfExpr cond e1 e2 -> IfExpr (go cond) (go e1) (go e2)
+  Coercion e t -> Coercion (go e) t
+  UnaryExpression op e -> UnaryExpression op (go e)
+  BinaryExpression op e1 e2 -> BinaryExpression op (go e1) (go e2)
+  Quantified op tv bv e -> let
+      vars = map fst bv
+      types = map snd bv
+      vars' = removeClashesWith vars names
+      e' = exprSubst (M.fromList $ zip vars (map (gen . Var) vars')) e
+    in Quantified op tv (zip vars' types) (removeBoundClashes (names ++ vars') e')
+  where
+    go = removeBoundClashes names
+  
 {- Specs -}
 
 -- | 'preconditions' @specs@ : all precondition clauses in @specs@  
@@ -434,6 +446,18 @@ functionFromConst name = let (prefix, suffix) = splitAt (length functionFrefix) 
   in if prefix == functionFrefix
       then Just suffix
       else Nothing
+      
+-- | 'removeClashesWith' @names names'@ :
+-- A version of @names@ that is disjoint from @names'@
+-- (if @names@ does not have duplicates, then result also does not have duplicates)
+removeClashesWith :: [Id] -> [Id] -> [Id]
+removeClashesWith names names' = map changeName names
+  where
+    -- new name for tv that does not coincide with any names'
+    changeName tv = if tv `elem` names' then tv ++ replicate (level + 1) nonIdChar else tv
+    -- maximum number of nonIdChar characters at the end of any names or names'; 
+    -- by appending (level + 1) nonIdChar charactes to tv we make is different from all names' and unchanged names
+    level = maximum [fromJust (findIndex (\c -> c /= nonIdChar) (reverse id)) | id <- names ++ names']      
   
 {- Misc -}
 

@@ -168,6 +168,13 @@ executeLocally localTC formals actuals localWhere computation = do
       envLabelCount .= oldEnv^.envLabelCount
       eliminateLogicals -- instantiate the caller's locals
       
+-- | 'lambdaLocally' @expr actuals computation@: execute @computation@ in a local context of a lambda expression @expr@ applied to @actuals@
+lambdaLocally expr actuals = let
+    Quantified Lambda tv formals body = node expr
+    formalNames = map fst formals
+    actualTypes = map thunkType actuals
+  in executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []                  
+      
 -- | Exucute computation in a nested context      
 executeNested :: (MonadState (Environment m) s, Finalizer s) => TypeBinding -> [IdType] -> s a -> s a
 executeNested inst locals computation = do
@@ -538,18 +545,13 @@ evalVar name pos = do
           return chosenValue
               
 evalApplication name args pos = do
-  mBody <- expandMacro name args
-  case mBody of
-    Nothing -> evalMapSelection (functionExpr name pos) args pos
-    Just expr -> eval expr
-    
--- | 'expandMacro' @name args@: if @name@ is a non-recursive function with a body, return its body applied to @args@,
--- otherwise return 'Nothing'
-expandMacro name args = do
   fs <- use envFunctions
   case M.lookup name fs of
-    Nothing -> return Nothing
-    Just (Pos _ (Quantified Lambda tv vars body)) -> return . Just $ exprSubst (M.fromList $ zip (map fst vars) args) body
+    Nothing -> evalMapSelection (functionExpr name pos) args pos
+    Just expr -> do -- non-recursive function with a body: eval the body
+      args' <- mapM eval args
+      let Quantified Lambda _ _ body = node expr
+      lambdaLocally expr args' . eval $ body
 
 evalMapSelection m args pos = do  
   m' <- eval m
@@ -889,7 +891,7 @@ extendLogicalConstraints c = if node c == tt
   else if node c == ff 
     then throwRuntimeFailure Unreachable (position c)
     else modify $ addLogicalConstraint c
-
+    
 -- | 'evalQuantified' @expr@ : evaluate @expr@ modulo quantification
 evalQuantified expr = evalQuantified' [] expr
   where
@@ -899,11 +901,13 @@ evalQuantified expr = evalQuantified' [] expr
       var@(Var name) -> if name `elem` vars
         then return var
         else node <$> evalVar name p
-      Application name args -> do 
-        mBody <- expandMacro name args
-        case mBody of
+      Application name args -> do
+        fs <- use envFunctions
+        case M.lookup name fs of
           Nothing -> node <$> evalQuantified' vars (attachPos p $ MapSelection (functionExpr name p) args)
-          Just expr -> node <$> evalQuantified' vars expr
+          Just expr -> do -- non-recursive function with a body: eval the body
+            let Quantified Lambda tv bv body = node expr
+            node <$> evalQuantified' vars (exprSubst (M.fromList $ zip (map fst bv) args) (removeBoundClashes vars body))
       MapSelection m args -> do
         m' <- evalQuantified' vars m
         args' <- mapM (evalQuantified' vars) args
@@ -989,17 +993,16 @@ checkMapConstraints r actuals pos = do
           let cond = if val then guard else enot guard
           enforceMapConstraint (Pos p (Quantified Lambda tv formals cond)) actuals pos
           checkSatStep pos
-
+          
 -- | 'enforceMapConstraint' @c actuals pos@ : 
 -- enforce constraint @c@ for point @actuals@
 enforceMapConstraint :: (Monad m, Functor m) => Thunk -> [Thunk] -> SourcePos -> Execution m ()
 enforceMapConstraint c actuals pos = 
   let
     Quantified Lambda tv formals body = node c
-    formalNames = map fst formals
     formalTypes = map snd formals
     actualTypes = map thunkType actuals
-    locally = executeLocally (\ctx -> ctx { ctxLocals = M.fromList (zip formalNames actualTypes) }) formalNames actuals []
+    locally = lambdaLocally c actuals
   in if isNothing $ unifier tv formalTypes actualTypes -- Is the constraint applicable to these types?
     then return ()
     else case node body of

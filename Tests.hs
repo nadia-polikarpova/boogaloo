@@ -52,7 +52,9 @@ interpreterTests = TestLabel "Interpreter" $ TestList [
   testCase interpreterSuccess "MapEquality",
   testCase interpreterSuccess "LambdaExec",
   testCase interpreterSuccess "ConstraintContext",
-  testCase interpreterSuccess "Constraints"
+  testCase interpreterSuccess "Constraints",
+  testCase interpreterSuccess "Macros1",
+  testCase interpreterSuccess "Macros2"
   ]
   
 -- | Directory with test programs  
