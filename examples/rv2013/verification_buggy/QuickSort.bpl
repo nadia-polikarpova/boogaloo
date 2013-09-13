@@ -2,7 +2,8 @@
   Quick Sort with partial specification (does not say the output is a permutation of the input, loop invariants are missing).
   
   Errors:
-  - Off-by-one error in the arguments of a recursive call.
+  - Wrong implementation and postcondition of Partition: it does not guarantee that the pivot found its final position 
+  and does not do any progress on two unsorted elements 
 */
 
 // Array length
@@ -40,15 +41,15 @@ procedure Swap(i: int, j: int) returns ()
 
 // Partition the array a[lower, upper) such that all elements of a[lower, index) are <= pivot
 // and all elements of a[index, upper) are >= pivot
-procedure Partition(lower, upper, pivot: int) returns (index: int)
+procedure Partition(lower, upper, pivotIndex: int) returns (index: int)
   modifies a;
-  requires lower < upper;
-	ensures lower <= index && index <= upper;
-	ensures leqPivot (pivot, a, lower, index);
-	ensures geqPivot (pivot, a, index, upper);
+  requires lower < upper - 1;
+	ensures lower <= index && index < upper;
+	ensures leqPivot (old(a[pivotIndex]), a, lower, index);
+	ensures geqPivot (old(a[pivotIndex]), a, index, upper);
 {
-  var left, right: int;
-  left, right := lower, upper - 1;
+  var left, right, pivot: int;
+  left, right, pivot := lower, upper - 1, a[pivotIndex];
 	while (left != right) {
 		while (left != right && a[left] <= pivot) {
 			left := left + 1;
@@ -78,6 +79,6 @@ procedure QuickSort(lower, upper: int)
     
     call pivotIndex := Partition(lower, upper, a[pivotIndex]);
     call QuickSort(lower, pivotIndex);
-    call QuickSort(pivotIndex + 1, upper); // error here, should be pivotIndex
+    call QuickSort(pivotIndex + 1, upper);
   }
 }

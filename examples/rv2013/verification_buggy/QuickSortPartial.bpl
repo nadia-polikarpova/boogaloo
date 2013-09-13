@@ -3,7 +3,7 @@
   implementation of Partition is missing; in return its specification is complete.
   
   Errors:
-  - Off-by-one error in the arguments of a recursive call.  
+  - Postcondition too weak in Partition: it does not guarantee that the pivot found its final position 
 */
 
 // Array length
@@ -55,6 +55,6 @@ procedure QuickSort(lower, upper: int)
     pivotIndex := (lower + upper) div 2;
     call pivotIndex, _ := Partition(lower, upper, a[pivotIndex]);
     call QuickSort(lower, pivotIndex);
-    call QuickSort(pivotIndex + 1, upper); // error here, should be pivotIndex
+    call QuickSort(pivotIndex + 1, upper);
   }
 }
