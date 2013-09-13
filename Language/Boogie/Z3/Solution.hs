@@ -100,6 +100,7 @@ data SolveResult
     = NoSoln
     | Soln
     | SolnWithModel Solution
+  deriving Show
 
 -- | Given a set of constraint expressions produce a mapping
 -- of references to their concrete values.

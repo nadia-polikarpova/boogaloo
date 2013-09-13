@@ -1076,9 +1076,8 @@ concretize pos = do
   solution <- (callSolver solPick) constraints     
   envMemory.memLogical %= M.union solution          
   updateMapCache
+  mapM_ checkConstraint constraints
   eliminateLogicals
-  ic <- instanceConstraints
-  envConstraints.conLogical .= ic  
   where
     -- | Instantiate all logical variables inside map cache
     updateMapCache = do
@@ -1088,6 +1087,14 @@ concretize pos = do
     evalPoint (args, val) = do
       val' : args' <- mapM eval (val : args)
       return (args', val')
+    -- | Check validity of a constraint with the current assignment to logicals;
+    -- (to filter out invalid models when solver returns "unknown")
+    checkConstraint c = do
+      res <- eval c
+      case node res of
+        Literal (BoolValue True) -> return ()
+        Literal (BoolValue False) -> throwRuntimeFailure Unreachable (position res)
+        _ -> error $ "After concretizing constraint evaluates to " ++ show res
   
 -- | Assuming that all logical variables have been assigned values,
 -- re-evaluate the store and the map constraints, and wipe out logical store.

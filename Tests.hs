@@ -43,7 +43,7 @@ typeCheckerTests = TestLabel "TypeChecker" $ TestList [
 
 interpreterTests = TestLabel "Interpreter" $ TestList [
   testCase interpreterSuccess "DivZero",
-  -- testCase interpreterSuccess "NoGuards",
+  testCase interpreterSuccess "NoGuards",
   testCase interpreterSuccess "EmptyDomains",
   testCase interpreterSuccess "MapInit",
   testCase interpreterSuccess "MapLocals",

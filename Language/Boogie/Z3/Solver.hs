@@ -124,6 +124,7 @@ stepConstrs minWanted solnWanted constrs nAssert slv ctx = unsafePerformIO act
               push
               debug1 ("constraints " ++ show (length constrs) ++ "\n" ++ (intercalate "\n" $ map show constrs))              
               solnRes <- solveConstr minWanted solnWanted constrs
+              debug1 (show solnRes)
               newNAssert <- getNumScopes
               debug ("new " ++ show newNAssert) 
               debug ("stepConstrs: done")
