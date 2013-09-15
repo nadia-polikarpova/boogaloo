@@ -1017,17 +1017,7 @@ enforceMapConstraint c actuals pos =
     forceConstraint r c = do       
       inst <- getMapInstance r
       mapM_ (\actuals -> enforceMapConstraint c actuals pos) (M.keys inst)          
-            
--- | Extract constraints form map cache
-instanceConstraints :: (Monad m, Functor m) => Execution m ConstraintSet 
-instanceConstraints = (concatMap constraintsFromMap . M.toList) <$> use (envMemory.memMaps)
-  where
-    constraintsFromMap (r, inst) = map (pointConstraint r) (M.toList inst)
-    pointConstraint r (args, val) = let
-        mapType = MapType [] (map thunkType args) (thunkType val)
-        mapExpr = gen $ Literal $ Reference mapType r
-      in gen (MapSelection mapExpr args) |=| val
-      
+                  
 -- | 'callSolver' @f cs@ : apply solver's function @f@ to constraints @cs@
 callSolver :: (Monad m, Functor m) => (Solver m -> ConstraintSet -> SolverState -> m (a, SolverState)) -> ConstraintSet -> Execution m a
 callSolver f cs = do 
