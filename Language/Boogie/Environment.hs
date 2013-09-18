@@ -7,6 +7,9 @@ module Language.Boogie.Environment (
   userStore,
   MapInstance,
   MapCache,
+  MapPointKind (..),
+  MapAux,
+  MapAuxCache,  
   Memory,
   StoreLens,
   memLocals,
@@ -15,6 +18,7 @@ module Language.Boogie.Environment (
   memModified,
   memConstants,
   memMaps,
+  memMapsAux,
   memLogical,
   emptyMemory,
   visibleVariables,
@@ -109,16 +113,37 @@ emptyCache = M.empty
   
 instance Pretty MapCache where
   pretty = vMapDoc refDoc pretty
+  
+-- | Uniqueness of a point stored in map cache  
+data MapPointKind = 
+  UniquePoint |     -- ^ Unique map point (used to instantiate map constraints)
+  DuplicatePoint |  -- ^ Map point that is equal to some unique map point
+  UnknownPoint      -- ^ Yet to be decided if this point is unique or duplicate
+    deriving (Eq, Show)
+
+-- | For each map point, stores the order of its insertion into the instance and its uniqueness
+type MapAux = Map [Thunk] (Int, MapPointKind)
+
+instance Pretty MapAux where
+  pretty = let keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
+    in hMapDoc keysDoc (\(idx, kind) -> commaSep [int idx, text (show kind)])
+
+-- | Stores auxiliary information about map instances useful when instantiating map constraints
+type MapAuxCache = Map Ref MapAux  
+
+instance Pretty MapAuxCache where
+  pretty = vMapDoc refDoc pretty
 
 -- | Memory: stores thunks associated with names, map references and logical variables
 data Memory = Memory {
-  _memLocals :: Store,      -- ^ Local variable store
-  _memGlobals :: Store,     -- ^ Global variable store
-  _memOld :: Store,         -- ^ Old global variable store (in two-state contexts)
-  _memModified :: Set Id,   -- ^ Set of global variables, which have been modified since the beginning of the current procedure  
-  _memConstants :: Store,   -- ^ Constant store  
-  _memMaps :: MapCache,     -- ^ Partial instances of maps
-  _memLogical :: Solution   -- ^ Logical variable store
+  _memLocals :: Store,        -- ^ Local variable store
+  _memGlobals :: Store,       -- ^ Global variable store
+  _memOld :: Store,           -- ^ Old global variable store (in two-state contexts)
+  _memModified :: Set Id,     -- ^ Set of global variables, which have been modified since the beginning of the current procedure  
+  _memConstants :: Store,     -- ^ Constant store  
+  _memMaps :: MapCache,       -- ^ Partial instances of maps
+  _memMapsAux :: MapAuxCache, -- ^ Auxiliary information about map points
+  _memLogical :: Solution     -- ^ Logical variable store
 } deriving Eq
 
 makeLenses ''Memory
@@ -134,6 +159,7 @@ emptyMemory = Memory {
   _memModified = S.empty,
   _memConstants = emptyStore,
   _memMaps = emptyCache,
+  _memMapsAux = M.empty,
   _memLogical = M.empty
 }
 
@@ -149,6 +175,7 @@ userMemory conMem mem = let maps = mem^.memMaps in
   over memOld (userStore maps) $
   over memModified (const S.empty) $
   over memConstants (userStore maps) $
+  over memMapsAux (const M.empty) $
   over memLogical (const M.empty)
   mem
 
@@ -164,6 +191,7 @@ memoryDoc inNames outNames mem = vsep $
   docNonEmpty (mem^.memOld) (labeledDoc "Old globals") ++
   docWhen (not (S.null $ mem^.memModified)) (text "Modified:" <+> commaSep (map text (S.toList $ mem^.memModified))) ++
   docNonEmpty (mem^.memMaps) (labeledDoc "Maps") ++
+  docNonEmpty (mem^.memMapsAux) (labeledDoc "MapAux") ++
   docNonEmpty (mem^.memLogical) (labeledDoc "Logical")
   where
     allLocals = mem^.memLocals

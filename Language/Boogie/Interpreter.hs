@@ -412,12 +412,13 @@ freshLogical = do
   envLogicalCount %= (+ 1)
   return l
     
--- | 'freshMapRef' @inst@: store @inst@ at a fresh map reference and return it
-freshMapRef :: (Monad m, Functor m) => MapInstance -> Execution m Ref
-freshMapRef inst = do
+-- | 'freshMapRef': create a new empty map reference
+freshMapRef :: (Monad m, Functor m) => Execution m Ref
+freshMapRef = do
   r <- use envMapCount
   envMapCount %= (+ 1)
-  envMemory.memMaps %= M.insert r inst
+  envMemory.memMaps %= M.insert r M.empty
+  envMemory.memMapsAux %= M.insert r M.empty
   return r
       
 -- | 'generateValue' @t pos@ : choose a value of type @t@ at source position @pos@;
@@ -425,7 +426,7 @@ freshMapRef inst = do
 generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Thunk
 generateValue t pos = case t of
   IdType x [] | isTypeVar [] x -> throwRuntimeFailure (Nonexecutable (text "choice of a value from unknown type" <+> pretty t)) pos
-  t@(MapType _ _ _) -> (attachPos pos . Literal . Reference t) <$> freshMapRef emptyMap
+  t@(MapType _ _ _) -> (attachPos pos . Literal . Reference t) <$> freshMapRef
   t -> (attachPos pos . Logical t) <$> freshLogical
               
 -- | 'setVar' @setter name val@ : set value of variable @name@ to @val@ using @setter@
@@ -458,17 +459,29 @@ forgetAnyVar name = do
       
 -- | 'getMapInstance' @r@: current instance of map @r@
 getMapInstance r = (! r) <$> use (envMemory.memMaps)
+
+-- | 'getMapAux' @r@: current auxiliary information about map @r@
+getMapAux r = (! r) <$> use (envMemory.memMapsAux)
       
 -- | 'setMapValue' @r index val@ : map @index@ to @val@ in the map referenced by @r@
 setMapValue r index val = do
+  -- Update instance
   inst <- getMapInstance r
   envMemory.memMaps %= M.insert r (M.insert index val inst)
+  -- Update auxiliary information
+  aux <- getMapAux r
+  envMemory.memMapsAux %= M.insert r (M.insert index (M.size inst, pointKind inst) aux)
   extendLogicalConstraints pointConstraint
   where
     pointConstraint = let
         mapType = MapType [] (map thunkType index) (thunkType val)
         mapExpr = gen $ Literal $ Reference mapType r
-      in gen (MapSelection mapExpr index) |=| val  
+      in gen (MapSelection mapExpr index) |=| val
+    isNewLiteralArg new olds = all isLiteral (new : olds) && not (new `elem` olds)          
+    pointKind inst = if M.null inst || (or $ zipWith isNewLiteralArg index (transpose $ M.keys inst))
+      then UniquePoint  -- No choice if the map is empty or at least in one dimension the new point is provable different
+      else UnknownPoint -- Otherwise still unknown
+      
     
 -- | 'getLabelCount' @proc_ lb@: current jump count of label @lb@ in procedure @proc_@
 getLabelCount proc_ lb = do
@@ -564,21 +577,9 @@ evalMapSelection m args pos = do
         Nothing -> do 
           let rangeType = thunkType (gen $ MapSelection m' args')                    
           chosenValue <- generateValue rangeType pos          
-          -- Decide if the point is new or already cached
-          let isNewLiteralArg new olds = all isLiteral (new : olds) && not (new `elem` olds)          
-          isNewPoint <- if M.null inst || (or $ zipWith isNewLiteralArg args' (transpose $ M.keys inst))
-                          then return True      -- No choice if the map is empty or at least in one dimension the new point is provable different
-                          else generate genBool -- Otherwise choose non-deterministically
-          if isNewPoint
-            then do -- New point: save it in the cache, add it to the queue and constrain not to be one of the cached points
-              let pointNew = enot $ disjunction (map (\points -> conjunction (zipWith (|=|) args' points)) (M.keys inst))
-              force True pointNew
-              setMapValue r args' chosenValue
-              hasConstraints <- gets (not . null . lookupMapConstraints r)
-              when hasConstraints $ envConstraints.conPointQueue %= (|> (r, args'))
-            else do -- Old point: connect it to the chosen value and constrain to be one of the cached points
-              let pointPresent = M.foldlWithKey (\expr point val -> expr ||| (conjunction (zipWith (|=|) args' point) |&| (chosenValue |=| val))) (gen ff) inst
-              force True pointPresent
+          setMapValue r args' chosenValue
+          hasConstraints <- gets (not . null . lookupMapConstraints r)
+          when hasConstraints $ envConstraints.conPointQueue %= (|> (r, args'))
           return chosenValue
     _ -> return m' -- function without arguments (ToDo: is this how it should be handled?)
             
@@ -881,7 +882,8 @@ extendMapConstraints r c = do
   when (n' > n) (do
     queue <- use $ envConstraints.conPointQueue
     keys <- M.keys <$> getMapInstance r
-    let points = filter (\p -> isNothing $ Seq.elemIndexL p queue) (zip (repeat r) keys) -- All points of r that are not in the queue
+    aux <- getMapAux r
+    let points = filter (\(r, args) -> (isNothing $ Seq.elemIndexL (r, args) queue) && snd (aux ! args) == UniquePoint) (zip (repeat r) keys) -- All unique points of r that are not in the queue
     envConstraints.conPointQueue .= queue >< (Seq.fromList points) -- A new constraint has been added for r, so put all good points back into the bad queue    
     )
 
@@ -1058,7 +1060,30 @@ checkSat pos = do
     dequeueMapPoint pos = do
       ((r, args) :< points) <- uses (envConstraints.conPointQueue) viewl
       envConstraints.conPointQueue .= points
-      checkMapConstraints r args pos
+      inst <- getMapInstance r
+      aux <- getMapAux r
+      let (idx, kind) = aux ! args      
+      case kind of
+        UniquePoint -> checkMapConstraints r args pos
+        UnknownPoint -> do
+          -- Decide if the point is unique
+          let isOlderUniquePoint (i, k) = i < idx && k == UniquePoint
+          let inst' = M.filterWithKey (\k _ -> isOlderUniquePoint (aux ! k)) inst -- All unique map points added before @args@
+          isUniquePoint <- generate genBool          
+          if isUniquePoint
+            then do -- mark unique, enforce the constraint that it's unique and check map constraints on it
+              envMemory.memMapsAux %= M.insert r (M.insert args (idx, UniquePoint) aux)
+              let pointUnique = enot $ disjunction (map (\points -> conjunction (zipWith (|=|) args points)) (M.keys inst'))
+              force True pointUnique
+              checkMapConstraints r args pos
+            else do -- mark duplicate and enforce the constraint that it already occurs
+              envMemory.memMapsAux %= M.insert r (M.insert args (idx, DuplicatePoint) aux)
+              let value = inst ! args
+              -- ToDo: try without value
+              let pointPresent = M.foldlWithKey (\expr point val -> expr ||| (conjunction (zipWith (|=|) args point) |&| (value |=| val))) (gen ff) inst'
+              -- let pointPresent = M.foldlWithKey (\expr point val -> expr ||| (conjunction (zipWith (|=|) args point))) (gen ff) inst'
+              force True pointPresent
+      
     
 -- | Fix values of logical variables
 concretize :: (Monad m, Functor m) => SourcePos -> Execution m ()
@@ -1076,7 +1101,10 @@ concretize pos = do
     updateMapCache = do
       maps <- use $ envMemory.memMaps
       newMapCache <- T.mapM (\inst -> M.fromList <$> mapM evalPoint (M.toList inst)) maps
-      envMemory.memMaps .= newMapCache    
+      envMemory.memMaps .= newMapCache
+      mapsAux <- use $ envMemory.memMapsAux
+      newMapsAux <- T.mapM (\aux -> M.fromList <$> mapM (\(args, v) -> (flip (,) v) <$> mapM eval args) (M.toList (M.filter (\(_, kind) -> kind == UniquePoint) aux))) mapsAux
+      envMemory.memMapsAux .= newMapsAux          
     evalPoint (args, val) = do
       val' : args' <- mapM eval (val : args)
       return (args', val')
