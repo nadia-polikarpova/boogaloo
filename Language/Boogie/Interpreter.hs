@@ -963,16 +963,19 @@ checkMapConstraints r actuals pos = do
   cs <- gets $ lookupMapConstraints r
   let (guardedCs, unguardedCs) = partition isGuarded cs
   mapM_ (\c -> enforceMapConstraint c actuals pos) unguardedCs
-  -- checkSatStep pos
+  checkSatStep pos
   
   let csIdxs = [0 .. length guardedCs - 1]
   counts <- mapM (getMapCaseCount r) csIdxs
   let orderedCs = sortBy (flip compare `on` snd) (zip csIdxs counts)
   mapM_ (processMapConstraint guardedCs) orderedCs
   where
-    isGuarded (Pos _ (Quantified Lambda _ _ body)) = case node body of
-      BinaryExpression Implies guard _ -> True
-      _ -> False      
+    isGuarded (Pos _ (Quantified Lambda _ vars expr)) = case node expr of
+      BinaryExpression Implies guard body -> any (\args -> any (isNonSimpleArg (map fst vars)) args) (map snd $ refSelections body)
+      _ -> False
+    -- | Is @arg@ a non-trivial expression involving any of @vars@?
+    isNonSimpleArg vars (Pos _ (Var _)) = False
+    isNonSimpleArg vars e = not . null . intersect vars . freeVars $ e
     processMapConstraint guardedCs (idx, count) = do
       let c = guardedCs !! idx
       enabled <- generate genBool
