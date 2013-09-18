@@ -1079,9 +1079,9 @@ checkSat pos = do
             else do -- mark duplicate and enforce the constraint that it already occurs
               envMemory.memMapsAux %= M.insert r (M.insert args (idx, DuplicatePoint) aux)
               let value = inst ! args
-              -- ToDo: try without value
-              let pointPresent = M.foldlWithKey (\expr point val -> expr ||| (conjunction (zipWith (|=|) args point) |&| (value |=| val))) (gen ff) inst'
-              -- let pointPresent = M.foldlWithKey (\expr point val -> expr ||| (conjunction (zipWith (|=|) args point))) (gen ff) inst'
+              let pointPresent = case thunkType value of
+                                  MapType _ _ _ -> M.foldlWithKey (\expr point val -> expr ||| (conjunction (zipWith (|=|) args point) |&| (value |=| val))) (gen ff) inst' -- For map-ranged maps also add equality of values
+                                  _ -> M.foldlWithKey (\expr point val -> expr ||| (conjunction (zipWith (|=|) args point))) (gen ff) inst'
               force True pointPresent
       
     
