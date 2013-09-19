@@ -1090,12 +1090,15 @@ concretize :: (Monad m, Functor m) => SourcePos -> Execution m ()
 concretize pos = do
   checkSat pos
   constraints <- use $ envConstraints.conLogicalChecked
-  envConstraints.conLogicalChecked .= []
-  solution <- (callSolver solPick) constraints     
-  envMemory.memLogical %= M.union solution          
-  updateMapCache
-  mapM_ checkConstraint constraints
-  eliminateLogicals
+  when (not $ null constraints)
+    (do
+      envConstraints.conLogicalChecked .= []
+      solution <- (callSolver solPick) constraints     
+      envMemory.memLogical %= M.union solution          
+      updateMapCache
+      mapM_ checkConstraint constraints
+      eliminateLogicals
+    )
   where
     -- | Instantiate all logical variables inside map cache
     updateMapCache = do

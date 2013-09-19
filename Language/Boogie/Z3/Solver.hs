@@ -44,18 +44,18 @@ mkSolver minWanted mBound = do
     (slvNoModel, ctxNoModel) <- solverContext False
     (slvModel, ctxModel) <- solverContext True
     return Solver {
-          solPick = \cs nAssert -> do 
-            (mSolution, _) <- solve minWanted True mBound cs 0 slvModel ctxModel
+          solPick = \cs state -> do 
+            (mSolution, newNAssert) <- solve minWanted True mBound cs (pickState state) slvModel ctxModel
             case mSolution of
               NoSoln -> mzero
               Soln -> error "solution found, but no model requested"
-              SolnWithModel solution -> return (solution, nAssert),
-          solCheck = \cs nAssert ->
-                      let (mSolution, newNAssert) = head $ solve False False (Just 1) cs nAssert slvNoModel ctxNoModel 
+              SolnWithModel solution -> return (solution, state { pickState = newNAssert }),
+          solCheck = \cs state ->
+                      let (mSolution, newNAssert) = head $ solve False False (Just 1) cs (checkState state) slvNoModel ctxNoModel 
                           foundSoln = case mSolution of
                                         NoSoln -> False
                                         _ -> True
-                      in (foundSoln, newNAssert)
+                      in (foundSoln, state { checkState = newNAssert })
         }
 
 solverContext :: Bool -> IO (Z3.Solver, Z3.Context)

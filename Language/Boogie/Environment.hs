@@ -260,7 +260,7 @@ constraintMemoryDoc mem = vsep $
   docNonEmpty (mem^.conLocals) (labeledDoc "CLocal") ++
   docNonEmpty (mem^.conGlobals) (labeledDoc "CGlobal") ++
   docNonEmpty (mem^.conMaps) (labeledDoc "CMap") ++
-  docWhen (not$ Seq.null (mem^.conPointQueue)) ((text "CPoints" <> text ":") <+> align (pretty (mem^.conPointQueue))) ++ 
+  docWhen (not $ Seq.null (mem^.conPointQueue)) ((text "CPoints" <> text ":") <+> align (pretty (mem^.conPointQueue))) ++ 
   docWhen (not $ null (mem^.conLogical)) ((text "CLogical" <> text ":") <+> align (constraintSetDoc (mem^.conLogical))) ++
   docWhen (not $ null (mem^.conLogicalChecked)) ((text "CChecked" <> text ":") <+> align (constraintSetDoc (mem^.conLogicalChecked)))
   where
@@ -282,7 +282,7 @@ data Environment m = Environment
     _envFunctions :: Map Id Expression,         -- ^ Functions with definitions
     _envTypeContext :: Context,                 -- ^ Type context
     _envSolver :: Solver m,                     -- ^ Constraint solver
-    _envSolverState :: Int,                     -- ^ An identifier of solver state
+    _envSolverState :: SolverState,             -- ^ An identifier of solver state
     _envGenerator :: Generator m,               -- ^ Value generator
     _envMapCount :: Int,                        -- ^ Number of map references currently in use
     _envLogicalCount :: Int,                    -- ^ Number of logical variables currently in use
@@ -304,7 +304,7 @@ initEnv tc s g depth concr = Environment
     _envFunctions = M.empty,
     _envTypeContext = tc,
     _envSolver = s,
-    _envSolverState = 0,
+    _envSolverState = initSolverState,
     _envGenerator = g,
     _envMapCount = 0,
     _envLogicalCount = 0,
