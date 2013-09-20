@@ -25,7 +25,12 @@ evalExpr' :: Map String AST -- ^ Map of bound variables.
           -> Z3Gen AST
 evalExpr' boundMap typeCtx expr = debug ("evalExpr': " ++ show expr) >>
     case node expr of
-      Var ident -> return (boundMap Map.! ident)
+      Var ident ->
+          case Map.lookup ident boundMap of
+            Just ast -> return ast
+            Nothing -> error $ concat $
+                       ["evalExpr': didin't find ", ident,
+                        " in ", show boundMap]
       Literal v -> evalValue v
       Logical t ref -> uses refMap (lookup' "evalExpr'" (LogicRef t ref))
       MapSelection m args ->
