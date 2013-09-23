@@ -480,8 +480,7 @@ setMapValue r index val = do
     isNewLiteralArg new olds = all isLiteral (new : olds) && not (new `elem` olds)          
     pointKind inst = if M.null inst || (or $ zipWith isNewLiteralArg index (transpose $ M.keys inst))
       then UniquePoint  -- No choice if the map is empty or at least in one dimension the new point is provable different
-      else UnknownPoint -- Otherwise still unknown
-      
+      else UnknownPoint -- Otherwise still unknown      
     
 -- | 'getLabelCount' @proc_ lb@: current jump count of label @lb@ in procedure @proc_@
 getLabelCount proc_ lb = do
@@ -883,7 +882,7 @@ extendMapConstraints r c = do
     queue <- use $ envConstraints.conPointQueue
     keys <- M.keys <$> getMapInstance r
     aux <- getMapAux r
-    let points = filter (\(r, args) -> (isNothing $ Seq.elemIndexL (r, args) queue) && snd (aux ! args) == UniquePoint) (zip (repeat r) keys) -- All unique points of r that are not in the queue
+    let points = filter (\(r, args) -> (isNothing $ Seq.elemIndexL (r, args) queue) && snd (aux ! args) /= DuplicatePoint) (zip (repeat r) keys) -- All non-duplicate points of r that are not in the queue
     envConstraints.conPointQueue .= queue >< (Seq.fromList points) -- A new constraint has been added for r, so put all good points back into the bad queue    
     )
 
@@ -1069,7 +1068,7 @@ checkSat pos = do
           -- Decide if the point is unique
           let isOlderUniquePoint (i, k) = i < idx && k == UniquePoint
           let inst' = M.filterWithKey (\k _ -> isOlderUniquePoint (aux ! k)) inst -- All unique map points added before @args@
-          isUniquePoint <- generate genBool          
+          isUniquePoint <- generate genBool
           if isUniquePoint
             then do -- mark unique, enforce the constraint that it's unique and check map constraints on it
               envMemory.memMapsAux %= M.insert r (M.insert args (idx, UniquePoint) aux)
@@ -1103,14 +1102,23 @@ concretize pos = do
     -- | Instantiate all logical variables inside map cache
     updateMapCache = do
       maps <- use $ envMemory.memMaps
-      newMapCache <- T.mapM (\inst -> M.fromList <$> mapM evalPoint (M.toList inst)) maps
-      envMemory.memMaps .= newMapCache
       mapsAux <- use $ envMemory.memMapsAux
-      newMapsAux <- T.mapM (\aux -> M.fromList <$> mapM (\(args, v) -> (flip (,) v) <$> mapM eval args) (M.toList (M.filter (\(_, kind) -> kind == UniquePoint) aux))) mapsAux
-      envMemory.memMapsAux .= newMapsAux          
+      let keys = M.keys maps
+      (newElems, newElemsAux) <- unzip <$> zipWithM go (M.elems maps) (M.elems mapsAux)
+      envMemory.memMaps .= M.fromAscList (zip keys newElems)
+      envMemory.memMapsAux .= M.fromAscList (zip keys newElemsAux)
+    go inst aux = do
+      points' <- mapM evalPoint $ M.toAscList inst
+      let auxPoints' = zip (map fst points') (M.elems aux)
+      return (M.fromList points', M.fromListWith merge auxPoints')
     evalPoint (args, val) = do
       val' : args' <- mapM eval (val : args)
       return (args', val')
+    -- | Merge auxiliary information when two logical map points evaluate to one concrete point
+    merge (i, UniquePoint)     (_, _)               = (i, UniquePoint)        -- Unique beats anything  
+    merge (_, _)               (i, UniquePoint)     = (i, UniquePoint)
+    merge (i, DuplicatePoint)  (_, DuplicatePoint)  = (i, DuplicatePoint)     -- Does not matter, will be beaten by unique at some point
+    merge (i, UnknownPoint)    (j, UnknownPoint)    = (min i j, UnknownPoint) -- Take the earlier one (unknown cannot collide with unique/duplicate since unknown means the map does not have constraints)
     -- | Check validity of a constraint with the current assignment to logicals;
     -- (to filter out invalid models when solver returns "unknown")
     checkConstraint c = do
