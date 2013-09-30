@@ -77,7 +77,7 @@ procedure QuickSort(lower, upper: int)
   if (lower < upper - 1) {
     pivotIndex := (lower + upper) div 2;
     
-    call pivotIndex := Partition(lower, upper, a[pivotIndex]);
+    call pivotIndex := Partition(lower, upper, pivotIndex);
     call QuickSort(lower, pivotIndex);
     call QuickSort(pivotIndex + 1, upper);
   }

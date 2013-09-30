@@ -19,11 +19,14 @@
       - Use lenses for Context?      
   
 - Boogaloo
-  - Print/trace instructions
+  - Collect unused maps
+  - Make fair strategy work again
+  - Alternative way of fixing Bubble bug: concretize all map indices?
+  - Print/trace instructions, turn pick into procedure
   - Extract map constraints from nonsimple arguments
   - Take into account extends ordering
   
   - User interface
-    - Removed unused maps from non-debug output
+    - Remove unused maps from non-debug output
     - When violated spec has logical vars, output their values  
     - Turn source positions into spans; use the end of the span to report postcondition violations  
