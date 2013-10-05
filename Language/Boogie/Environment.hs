@@ -73,6 +73,7 @@ import Language.Boogie.Generator
 import Language.Boogie.TypeChecker (Context, ctxGlobals)
 import Language.Boogie.Pretty
 import Language.Boogie.PrettyAST
+import Data.Maybe
 import Data.Foldable (toList)
 import Data.List
 import Data.Map (Map, (!))
@@ -167,12 +168,21 @@ emptyMemory = Memory {
 visibleVariables :: Memory -> Store
 visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (mem^.memConstants)
 
+-- | Map references directly reachable from the store
+storedRefs :: Memory -> Set Ref
+storedRefs mem = S.fromList $ storedIn (mem^.memLocals) ++ storedIn (mem^.memGlobals) ++ storedIn (mem^.memConstants) ++ storedIn (mem^.memOld)
+  where
+    storedIn store = catMaybes . map (toMapRef . node) . M.elems $ store
+    toMapRef (Literal (Reference _ r)) = Just r
+    toMapRef _ = Nothing
+
 -- -- | 'userStore' @conMem mem@ : @mem@ with all reference values completely dereferenced and cache of defined maps removed 
 userMemory :: ConstraintMemory -> Memory -> Memory
 userMemory conMem mem = let maps = mem^.memMaps in
   over memLocals (userStore maps) $
   over memGlobals (userStore maps) $
   over memOld (userStore maps) $
+  over memMaps (restrictDomain (storedRefs mem)) $
   over memModified (const S.empty) $
   over memConstants (userStore maps) $
   over memMapsAux (const M.empty) $

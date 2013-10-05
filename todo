@@ -27,6 +27,5 @@
   - Take into account extends ordering
   
   - User interface
-    - Remove unused maps from non-debug output
     - When violated spec has logical vars, output their values  
     - Turn source positions into spans; use the end of the span to report postcondition violations  

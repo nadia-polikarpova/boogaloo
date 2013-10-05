@@ -25,23 +25,23 @@ import Text.ParserCombinators.Parsec (parse, parseFromFile)
 import HtmlOutput
 
 programName = "boogaloo"
-versionName = "0.4.1"
-releaseDate = fromGregorian 2013 9 18
+versionName = "0.4.2"
+releaseDate = fromGregorian 2013 10 4
 
 -- | Execute or test a Boogie program, according to command-line arguments
 main = do
   res <- cmdArgsRun $ mode
   case res of
-    Exec file proc_ backtrack solver minimize concretize per_path unroll exec invalid nexec pass fail out sum debug format -> 
+    Exec file proc_ minimize concretize per_path unroll exec invalid nexec pass fail out sum debug format -> 
       executeFromFile file proc_ 
-                      solver minimize concretize (natToMaybe unroll) 
-                      backtrack (natToMaybe per_path) (natToMaybe exec) 
+                      Z3 minimize concretize (natToMaybe unroll) 
+                      DF (natToMaybe per_path) (natToMaybe exec) 
                       invalid nexec pass fail (natToMaybe out)
                       sum debug format
-    Test file proc_ backtrack solver minimize concretize unroll exec out debug format ->
+    Test file proc_ minimize concretize unroll exec out debug format ->
       executeFromFile file proc_ 
-                      solver minimize concretize (natToMaybe unroll) 
-                      backtrack (Just $ if concretize then defaultPerPath else 1) (natToMaybe exec) 
+                      Z3 minimize concretize (natToMaybe unroll) 
+                      DF (Just $ if concretize then defaultPerPath else 1) (natToMaybe exec) 
                       False False False True (natToMaybe out) 
                       False debug format
   where
@@ -55,8 +55,8 @@ data CommandLineArgs
     = Exec { 
         file :: String, 
         proc_ :: Maybe String,
-        backtrack :: BacktrackStrategy,
-        solver :: ConstraintSolver,
+        -- backtrack :: BacktrackStrategy,
+        -- solver :: ConstraintSolver,
         minimize :: Bool,
         concretize :: Bool,
         per_path :: Int,
@@ -74,8 +74,8 @@ data CommandLineArgs
     | Test { 
         file :: String, 
         proc_ :: Maybe String,
-        backtrack :: BacktrackStrategy,
-        solver :: ConstraintSolver,
+        -- backtrack :: BacktrackStrategy,
+        -- solver :: ConstraintSolver,
         minimize :: Bool,
         concretize :: Bool,
         unroll :: Int,
@@ -113,8 +113,8 @@ defaultTCCount = 2048
 execute = Exec {
   proc_       = Nothing         &= help "Program entry point (default: Main or the only procedure in a file)" &= typ "PROCEDURE" &= name "p",
   file        = ""              &= typFile &= argPos 0,
-  backtrack   = defaultBT       &= help ("Backtracking strategy: DF (depth-first) or Fair (default: " ++ show defaultBT ++ ")"),
-  solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
+  -- backtrack   = defaultBT       &= help ("Backtracking strategy: DF (depth-first) or Fair (default: " ++ show defaultBT ++ ")"),
+  -- solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
   minimize    = True            &= help ("Should solutions be minimized? (default: True)"),
   concretize  = True            &= help ("Concretize in the middle of an execution? (default: True)"),
   per_path    = defaultPerPath  &= help ("Maximum number of solutions to try per path; " ++
@@ -134,8 +134,8 @@ execute = Exec {
 test = Test {
   proc_       = Nothing         &= help "Program entry point (default: Main or the only procedure in a file)" &= typ "PROCEDURE" &= name "p",
   file        = ""              &= typFile &= argPos 0,
-  backtrack   = defaultBT       &= help ("Backtracking strategy: DF (depth-first) or Fair (default: " ++ show defaultBT ++ ")"),
-  solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
+  -- backtrack   = defaultBT       &= help ("Backtracking strategy: DF (depth-first) or Fair (default: " ++ show defaultBT ++ ")"),
+  -- solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
   minimize    = True            &= help ("Should solutions be minimized? (default: True)"),
   concretize  = True            &= help ("Concretize in the middle of an execution? (default: True)"),
   unroll      = -1              &= help ("Maximum number of unrolls for a loop or a recursive definition; unbounded if negative (default: -1)"),  
