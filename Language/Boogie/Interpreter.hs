@@ -284,10 +284,10 @@ instance Eq RuntimeFailure where
     
 -- | Description of an execution
 data TestCase = TestCase {
-  tcProcedure :: PSig,                -- ^ Root procedure (entry point) of the execution
-  tcMemory :: Memory,                 -- ^ Final memory state (at the exit from the root procedure) 
+  tcProcedure :: PSig,                  -- ^ Root procedure (entry point) of the execution
+  tcMemory :: Memory,                   -- ^ Final memory state (at the exit from the root procedure) 
   tcSymbolicMemory :: ConstraintMemory, -- ^ Final symbolic memory state (at the exit from the root procedure) 
-  tcFailure :: Maybe RuntimeFailure   -- ^ Failure the execution eded with, or Nothing if the execution ended in a valid state
+  tcFailure :: Maybe RuntimeFailure     -- ^ Failure the execution ended with, or Nothing if the execution ended in a valid state
 }
 
 -- | 'isPass' @tc@: Does @tc@ end in a valid state?
@@ -323,10 +323,13 @@ testCaseDoc :: Bool -> String -> Integer -> TestCase -> Doc
 testCaseDoc debug header n tc = 
   auxDoc (text header <+> integer n <> text ":") <+> 
   testCaseSummary debug tc $+$
+  programOutput $+$
   case tcFailure tc of
     Just err -> errorDoc (runtimeFailureDoc debug err) $+$
       option debug (linebreak <> finalStateDoc True tc)
-    Nothing -> finalStateDoc debug tc  
+    Nothing -> finalStateDoc debug tc
+  where
+    programOutput = vsep $ map (\line -> hsep $ map printFormat line) $ tcMemory tc ^.memOutput
 
 -- | 'testCaseSummary' @debug tc@ : Summary of @tc@'s inputs and outcome
 testCaseSummary debug tc@(TestCase sig mem conMem mErr) = (text (psigName sig) <> 
@@ -433,7 +436,7 @@ generateValue t pos = case t of
 setVar setter name val = do
   envMemory.setter %= M.insert name val
   
--- | 'resetAnyVar' @name val@ : set value of a constant, global or local variable @name@ to @val@
+-- | 'setAnyVar' @name val@ : set value of a constant, global or local variable @name@ to @val@
 setAnyVar name val = do
   tc <- use envTypeContext
   if M.member name (localScope tc)
@@ -746,13 +749,14 @@ forceForall tv vars e pos res = do
 -- | Execute a basic statement
 -- (no jump, if or while statements allowed)
 exec :: (Monad m, Functor m) => Statement -> Execution m ()
-exec stmt = case node stmt of
-    Predicate specClause -> execPredicate specClause (position stmt)
-    Havoc ids -> execHavoc ids (position stmt)
+exec stmt@(Pos pos s) = case s of
+    Predicate attrs specClause -> do
+      mapM_ (flip execAttribute pos) attrs
+      execPredicate specClause pos
+    Havoc ids -> execHavoc ids pos
     Assign lhss rhss -> execAssign lhss rhss
-    Call lhss name args -> execCall name lhss args (position stmt)
+    Call lhss name args -> execCall name lhss args pos
     CallForall name args -> return ()
-    Pick -> concretize (position stmt)
   
 execPredicate (SpecClause source True expr) pos = force True expr
 
@@ -858,12 +862,12 @@ execProcedure sig def args lhss callPos = let
 {- Specs -}
 
 -- | Assert preconditions of definition def of procedure sig
-checkPreconditions sig def callPos = mapM_ (exec . attachPos callPos . Predicate . subst sig) (psigRequires sig)
+checkPreconditions sig def callPos = mapM_ (exec . attachPos callPos . Predicate [] . subst sig) (psigRequires sig)
   where 
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
 
 -- | Assert postconditions of definition def of procedure sig at exitPoint    
-checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predicate . subst sig) (psigEnsures sig)
+checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predicate [] . subst sig) (psigEnsures sig)
   where 
     subst sig (SpecClause t f e) = SpecClause t f (paramSubst sig def e)
 
@@ -1141,6 +1145,7 @@ eliminateLogicals = do
       evalStore memLocals
       evalStore memConstants
       evalMapConstraints    
+      evalOutput
     evalStore :: (Monad m, Functor m) => StoreLens -> Execution m ()
     evalStore lens = do
       store <- use $ envMemory.lens
@@ -1151,6 +1156,11 @@ eliminateLogicals = do
       mc <- use $ envConstraints.conMaps
       newMC <- T.mapM (mapM evalQuantified) mc
       envConstraints.conMaps .= newMC
+    evalOutput :: (Monad m, Functor m) => Execution m ()
+    evalOutput = do
+      o <- use $ envMemory.memOutput
+      newO <- mapM (\line -> mapM evalAttrValue line) o
+      envMemory.memOutput .= newO
   
 -- | 'generate' @f@ : computation that extracts @f@ from the generator
 generate :: (Monad m, Functor m) => (Generator m -> m a) -> Execution m a
@@ -1275,6 +1285,34 @@ extractArgs vars args = foldl extractArg [] (zip args [0..])
     freshArgName i = nonIdChar : show i
     varArgs = [v | (Pos p (Var v)) <- args]
     nonfixedBV = vars \\ varArgs
+    
+{- Attributes -}
+
+-- | Evaluate attribute value if it is an expression; otherwise return it as is
+evalAttrValue :: (Monad m, Functor m) => AttrValue -> Execution m AttrValue
+evalAttrValue (SAttr str) = return $ SAttr str
+evalAttrValue (EAttr e)   = EAttr <$> eval e
+
+-- | Attribute value as it appears in the program output
+printFormat :: AttrValue -> Doc
+printFormat (SAttr str) = text str
+printFormat (EAttr e) = pretty e
+
+-- | 'execAttribute' @attr@: if @attr@ is a special Boogaloo attribute execute it; otherwise do nothing.
+-- Special attributes include:
+-- pick             : concretize logical variables
+-- print x, y, ...  : save the current values of expressions x, y, ... and print them at the end of the execution
+-- trace x, y, ...  : print the symbolic values of expressions x, y, ... to the debug output immediately
+execAttribute :: (Monad m, Functor m) => Attribute -> SourcePos -> Execution m ()
+execAttribute (Attribute tag vals) pos = case tag of
+  "pick" -> concretize pos
+  "print" -> do
+    vals' <- mapM evalAttrValue vals
+    (envMemory.memOutput) %= (++ [vals'])
+  "trace" -> do
+    txt <- hsep . (map printFormat) <$> mapM evalAttrValue vals 
+    traceShow txt $ return ()
+  _ -> return ()
 
 {- Debugging -}
 

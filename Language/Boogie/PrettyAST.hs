@@ -85,7 +85,7 @@ instance Pretty BareExpression where pretty e = exprDoc (gen e)
 -- | Pretty-printed statement
 statementDoc :: Statement -> Doc
 statementDoc (Pos _ s) = case s of
-  Predicate (SpecClause _ isAssume e) -> (if isAssume then text "assume" else text "assert") <+> pretty e <> semi
+  Predicate attrs (SpecClause _ isAssume e) -> (if isAssume then text "assume" else text "assert") <+> hsep (map pretty attrs) <+> pretty e <> semi
   Havoc vars -> text "havoc" <+> commaSep (map text vars) <> semi
   Assign lhss rhss -> commaSep (map lhsDoc lhss) <+> 
     text ":=" <+> commaSep (map pretty rhss) <> semi
@@ -247,6 +247,15 @@ instance Pretty Value where
   pretty (BoolValue True) = text "true"
   pretty (CustomValue t n) = pretty t <+> int n
   pretty (Reference _ r) = refDoc r  
+  
+{- Attributes and triggers -}
+
+instance Pretty AttrValue where
+  pretty (EAttr expr) = pretty expr
+  pretty (SAttr str) = dquotes $ text str
+  
+instance Pretty Attribute where
+  pretty attr = braces $ text ":" <> text (aTag attr) <+> commaSep (map pretty $ aValues attr)
   
 {- Misc -}
 

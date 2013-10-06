@@ -282,8 +282,8 @@ whileStatement = do
 -- | Statement parser      
 statement :: Parser Statement
 statement = attachPosBefore (choice [
-  do { reserved "assert"; many attribute; e <- expression; semi; return $ Predicate (SpecClause Inline False e) },
-  do { reserved "assume"; many attribute; e <- expression; semi; return $ Predicate (SpecClause Inline True e) },
+  do { reserved "assert"; attrs <- many attribute; e <- expression; semi; return $ Predicate attrs (SpecClause Inline False e) },
+  do { reserved "assume"; attrs <- many attribute; e <- expression; semi; return $ Predicate attrs (SpecClause Inline True e) },
   do { reserved "havoc"; ids <- commaSep1 identifier; semi; return $ Havoc ids },
   assign,
   try call,
@@ -292,8 +292,7 @@ statement = attachPosBefore (choice [
   whileStatement,
   do { reserved "break"; id <- optionMaybe identifier; semi; return $ Break id },
   do { reserved "return"; semi; return Return },
-  do { reserved "goto"; ids <- commaSep1 identifier; semi; return $ Goto ids },
-  do { reserved "pick"; semi; return $ Pick }
+  do { reserved "goto"; ids <- commaSep1 identifier; semi; return $ Goto ids }
   ] <?> "statement")
   
 label :: Parser Id
@@ -334,7 +333,7 @@ newType = do
 typeDecl :: Parser BareDecl
 typeDecl = do
   reserved "type"
-  many attribute
+  void (many attribute)
   ts <- commaSep newType
   semi
   return $ TypeDecl ts
@@ -348,7 +347,7 @@ parentEdge = do
 constantDecl :: Parser BareDecl
 constantDecl = do 
   reserved "const"
-  many attribute
+  void (many attribute)
   unique <- hasKeyword "unique"
   ids <- idsType
   orderSpec <- optionMaybe (reserved "extends" >> commaSep parentEdge)
@@ -359,7 +358,7 @@ constantDecl = do
 functionDecl :: Parser BareDecl
 functionDecl = do
   reserved "function"
-  many attribute
+  void (many attribute)
   name <- identifier
   tArgs <- typeArgs
   args <- parens (option [] (try namedArgs <|> unnamedArgs))  
@@ -384,7 +383,7 @@ functionDecl = do
 axiomDecl :: Parser BareDecl
 axiomDecl = do
   reserved "axiom"
-  many attribute
+  void (many attribute)
   e <- expression
   semi
   return $ AxiomDecl e
@@ -392,7 +391,7 @@ axiomDecl = do
 varList :: Parser [IdTypeWhere]
 varList = do
   reserved "var"
-  many attribute
+  void (many attribute)
   vars <- commaSep1 idsTypeWhere
   semi
   return $ ungroupWhere vars
@@ -409,7 +408,7 @@ body = braces (do
 procDecl :: Parser BareDecl
 procDecl = do
   reserved "procedure"
-  many attribute
+  void (many attribute)
   name <- identifier
   tArgs <- typeArgs
   args <- parens (commaSep idsTypeWhere)
@@ -428,7 +427,7 @@ procDecl = do
 implDecl :: Parser BareDecl
 implDecl = do
   reserved "implementation"
-  many attribute
+  void (many attribute)
   name <- identifier
   tArgs <- typeArgs
   args <- parens (commaSep idsType)
@@ -497,15 +496,15 @@ ungroupWhere = concatMap ungroupWhereOne
   where ungroupWhereOne (ids, t, e) = zipWith3 IdTypeWhere ids (repeat t) (repeat e)
 
 trigAttr :: Parser ()
-trigAttr = (try trigger) <|> attribute <?> "attribute or trigger"
+trigAttr = (try trigger) <|> void attribute <?> "attribute or trigger"
 
 trigger :: Parser ()
 trigger = void (braces (commaSep1 expression)) <?> "trigger"
 
-attribute :: Parser ()
-attribute = void (braces (do
+attribute :: Parser Attribute
+attribute = (braces (do
   reservedOp ":"
-  identifier
-  commaSep1 (void expression <|> void stringLiteral)
-  )) <?> "attribute"
-  
+  tag <- identifier
+  vals <- commaSep ((EAttr <$> expression) <|> (SAttr <$> stringLiteral))
+  return $ Attribute tag vals
+  )) <?> "attribute"  

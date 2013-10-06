@@ -459,7 +459,7 @@ checkStatement :: Statement -> Typing ()
 checkStatement (Pos pos s) = do
   modify $ setPos pos
   case s of
-    Predicate (SpecClause _ _ e) -> checkMatch (text "predicate") BoolType e
+    Predicate _ (SpecClause _ _ e) -> checkMatch (text "predicate") BoolType e
     Havoc vars -> checkLefts (nub vars) (length (nub vars))
     Assign lhss rhss -> checkAssign lhss rhss
     Call lhss name args -> checkCall lhss name args

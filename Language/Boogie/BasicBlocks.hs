@@ -116,4 +116,4 @@ transform m ([], Pos p stmt) = case stmt of
   _ -> return [justStatement p stmt]  
   where
     transBlock m b = concat <$> mapM (transform m) (map node b)
-    checkInvariant inv = justStatement (position (specExpr inv)) (Predicate inv)
+    checkInvariant inv = justStatement (position (specExpr inv)) (Predicate [] inv)

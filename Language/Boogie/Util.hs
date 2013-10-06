@@ -413,7 +413,7 @@ e1 |=>|   e2 = if node e1 == tt
                   then e2
                   else inheritPos2 (BinaryExpression Implies) e1 e2
 e1 |<=>|  e2 = inheritPos2 (BinaryExpression Equiv) e1 e2
-assume e = attachPos (position e) (Predicate (SpecClause Inline True e))
+assume e = attachPos (position e) (Predicate [] (SpecClause Inline True e))
 
 conjunction es = foldl (|&|) (gen tt) es
 disjunction es = foldl (|||) (gen ff) es

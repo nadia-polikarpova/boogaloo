@@ -22,7 +22,6 @@
   - Collect unused maps
   - Make fair strategy work again
   - Alternative way of fixing Bubble bug: concretize all map indices?
-  - Print/trace instructions, turn pick into procedure
   - Extract map constraints from nonsimple arguments
   - Take into account extends ordering
   

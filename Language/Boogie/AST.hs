@@ -111,18 +111,17 @@ type Thunk = Expression
 type Statement = Pos BareStatement
 
 -- | Statement
-data BareStatement = Predicate SpecClause |      -- ^ Predicate statement (assume or assert)
-  Havoc [Id] |                                   -- ^ 'Havoc' @var_names@
-  Assign [(Id , [[Expression]])] [Expression] |  -- ^ 'Assign' @var_map_selects rhss@
-  Call [Id] Id [Expression] |                    -- ^ 'Call' @lhss proc_name args@
-  CallForall Id [WildcardExpression] |           -- ^ 'CallForall' @proc_name args@
-  If WildcardExpression Block (Maybe Block) |    -- ^ 'If' @wild_or_expr then_block else_block@
-  While WildcardExpression [SpecClause] Block |  -- ^ 'While' @wild_or_expr free_loop_inv loop_body@
-  Break (Maybe Id) |                             -- ^ 'Break' @label@
+data BareStatement = Predicate [Attribute] SpecClause |   -- ^ Predicate statement (assume or assert)
+  Havoc [Id] |                                            -- ^ 'Havoc' @var_names@
+  Assign [(Id , [[Expression]])] [Expression] |           -- ^ 'Assign' @var_map_selects rhss@
+  Call [Id] Id [Expression] |                             -- ^ 'Call' @lhss proc_name args@
+  CallForall Id [WildcardExpression] |                    -- ^ 'CallForall' @proc_name args@
+  If WildcardExpression Block (Maybe Block) |             -- ^ 'If' @wild_or_expr then_block else_block@
+  While WildcardExpression [SpecClause] Block |           -- ^ 'While' @wild_or_expr free_loop_inv loop_body@
+  Break (Maybe Id) |                                      -- ^ 'Break' @label@
   Return |
-  Goto [Id] |                                    -- ^ 'Goto' @labels@
-  Skip |                                         -- ^ only used at the end of a block
-  Pick                                           -- ^ concretization directive
+  Goto [Id] |                                             -- ^ 'Goto' @labels@
+  Skip                                                    -- ^ only used at the end of a block
   deriving Eq -- syntactic equality
 
 -- | Statement labeled by multiple labels with a source position attached  
@@ -218,6 +217,18 @@ valueFromInteger _ _              = error "cannot create a boolean or map value 
   
 unValueInt (IntValue n) = n  
 unValueBool (BoolValue b) = b
+
+{- Attributes and triggers -}
+
+-- | Attribute value
+data AttrValue = EAttr Expression | SAttr String
+  deriving Eq
+
+-- | Attribute
+data Attribute = Attribute {
+  aTag :: Id,
+  aValues :: [AttrValue]
+  } deriving Eq
     
 {- Misc -}
 

@@ -20,6 +20,7 @@ module Language.Boogie.Environment (
   memMaps,
   memMapsAux,
   memLogical,
+  memOutput,
   emptyMemory,
   visibleVariables,
   userMemory,
@@ -144,7 +145,8 @@ data Memory = Memory {
   _memConstants :: Store,     -- ^ Constant store  
   _memMaps :: MapCache,       -- ^ Partial instances of maps
   _memMapsAux :: MapAuxCache, -- ^ Auxiliary information about map points
-  _memLogical :: Solution     -- ^ Logical variable store
+  _memLogical :: Solution,    -- ^ Logical variable store
+  _memOutput :: [[AttrValue]] -- ^ List of lines of output performed by the program
 } deriving Eq
 
 makeLenses ''Memory
@@ -161,7 +163,8 @@ emptyMemory = Memory {
   _memConstants = emptyStore,
   _memMaps = emptyCache,
   _memMapsAux = M.empty,
-  _memLogical = M.empty
+  _memLogical = M.empty,
+  _memOutput = []
 }
 
 -- | Visible values of all identifiers in a memory (locals shadow globals) 
@@ -170,11 +173,18 @@ visibleVariables mem = (mem^.memLocals) `M.union` (mem^.memGlobals) `M.union` (m
 
 -- | Map references directly reachable from the store
 storedRefs :: Memory -> Set Ref
-storedRefs mem = S.fromList $ storedIn (mem^.memLocals) ++ storedIn (mem^.memGlobals) ++ storedIn (mem^.memConstants) ++ storedIn (mem^.memOld)
+storedRefs mem = S.fromList $ storedIn (mem^.memLocals) ++ 
+                              storedIn (mem^.memGlobals) ++ 
+                              storedIn (mem^.memConstants) ++ 
+                              storedIn (mem^.memOld) ++
+                              storedInOutput
   where
-    storedIn store = catMaybes . map (toMapRef . node) . M.elems $ store
+    storedIn store = catMaybes . map (toMapRef . node) . M.elems $ store    
     toMapRef (Literal (Reference _ r)) = Just r
     toMapRef _ = Nothing
+    storedInOutput = catMaybes . map attrToMapRef . concat $ (mem^.memOutput)
+    attrToMapRef (EAttr (Pos _ ((Literal (Reference _ r))))) = Just r
+    attrToMapRef _ = Nothing
 
 -- -- | 'userStore' @conMem mem@ : @mem@ with all reference values completely dereferenced and cache of defined maps removed 
 userMemory :: ConstraintMemory -> Memory -> Memory
