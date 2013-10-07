@@ -10,7 +10,6 @@ import Language.Boogie.TypeChecker
 import Language.Boogie.Pretty
 import Language.Boogie.Interpreter
 import Language.Boogie.Solver
-import qualified Language.Boogie.TrivialSolver as Trivial
 import qualified Language.Boogie.Z3.Solver as Z3
 import Language.Boogie.Generator
 import System.Environment
@@ -199,14 +198,14 @@ interpreter DF solverId minimize concretize solvePassing branch_max unroll_max p
   where
     solver :: Solver Logic
     solver = case solverId of
-      Exhaustive -> Trivial.solver branch_max
+      -- Exhaustive -> Trivial.solver branch_max
       Z3 -> Z3.solver minimize branch_max
     generator = exhaustiveGenerator Nothing
 interpreter Fair solverId minimize concretize solvePassing branch_max unroll_max p context proc_ = toList $ executeProgram p context solver unroll_max concretize solvePassing generator proc_
   where
     solver :: Solver Stream
     solver = case solverId of
-      Exhaustive -> Trivial.solver branch_max
+      -- Exhaustive -> Trivial.solver branch_max
       Z3 -> Z3.solver minimize branch_max
     generator = exhaustiveGenerator Nothing
 
