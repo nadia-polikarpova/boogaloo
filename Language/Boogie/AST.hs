@@ -1,10 +1,11 @@
 {-# LANGUAGE StandaloneDeriving, FlexibleInstances, TypeSynonymInstances #-}
-
+{-# LANGUAGE DeriveDataTypeable #-}
 -- | Abstract syntax tree for Boogie 2
 module Language.Boogie.AST where
 
 import Language.Boogie.Position
-import Language.Boogie.Heap
+
+import Data.Data
 import Data.Map (Map)
 import qualified Data.Map as M
 import Data.List
@@ -23,6 +24,7 @@ data GenType fv =
   IntType |                                 -- ^ int
   MapType [fv] [GenType fv] (GenType fv) |  -- 'MapType' @type_vars domains range@ : arrow type (used for maps, function and procedure signatures)
   IdType Id [GenType fv]                    -- 'IdType' @name args@: type denoted by an identifier (either type constructor, possibly with arguments, or a type variable)
+  deriving (Data, Typeable)
   
 -- | Regular types with free variables represented as identifiers 
 type Type = GenType Id
@@ -56,15 +58,15 @@ instance Ord Type where
 
 -- | Unary operators
 data UnOp = Neg | Not
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Data, Typeable)
 
 -- | Binary operators  
 data BinOp = Plus | Minus | Times | Div | Mod | And | Or | Implies | Explies | Equiv | Eq | Neq | Lc | Ls | Leq | Gt | Geq
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Data, Typeable)
 
 -- | Quantifiers
 data QOp = Forall | Exists | Lambda
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Data, Typeable)
   
 -- | Expression with a source position attached  
 type Expression = Pos BareExpression
@@ -73,6 +75,7 @@ type Expression = Pos BareExpression
 data BareExpression = 
   Literal Value |
   Var Id |                                        -- ^ 'Var' @name@
+  Logical Type Ref |                              -- ^ Logical variable
   Application Id [Expression] |                   -- ^ 'Application' @f args@
   MapSelection Expression [Expression] |          -- ^ 'MapSelection' @map indexes@
   MapUpdate Expression [Expression] Expression |  -- ^ 'MapUpdate' @map indexes rhs@
@@ -82,7 +85,7 @@ data BareExpression =
   UnaryExpression UnOp Expression |
   BinaryExpression BinOp Expression Expression |
   Quantified QOp [Id] [IdType] Expression         -- ^ 'Quantified' @qop type_vars bound_vars expr@
-  deriving Eq -- syntactic equality
+  deriving (Eq, Ord, Data, Typeable)  -- syntactic equality
   
 -- | 'mapSelectExpr' @m args@ : map selection expression with position of @m@ attached
 mapSelectExpr m args = attachPos (position m) (MapSelection m args)  
@@ -93,10 +96,14 @@ numeral n = Literal (IntValue n)
 
 isLiteral (Pos _ (Literal _)) = True
 isLiteral _ = False
+fromLiteral (Pos _ (Literal v)) = v
   
 -- | Wildcard or expression  
 data WildcardExpression = Wildcard | Expr Expression
   deriving Eq
+  
+-- | Expressions without free variables  
+type Thunk = Expression  
   
 {- Statements -}
 
@@ -104,17 +111,17 @@ data WildcardExpression = Wildcard | Expr Expression
 type Statement = Pos BareStatement
 
 -- | Statement
-data BareStatement = Predicate SpecClause |      -- ^ Predicate statement (assume or assert)
-  Havoc [Id] |                                   -- ^ 'Havoc' @var_names@
-  Assign [(Id , [[Expression]])] [Expression] |  -- ^ 'Assign' @var_map_selects rhss@
-  Call [Id] Id [Expression] |                    -- ^ 'Call' @lhss proc_name args@
-  CallForall Id [WildcardExpression] |           -- ^ 'CallForall' @proc_name args@
-  If WildcardExpression Block (Maybe Block) |    -- ^ 'If' @wild_or_expr then_block else_block@
-  While WildcardExpression [SpecClause] Block |  -- ^ 'While' @wild_or_expr free_loop_inv loop_body@
-  Break (Maybe Id) |                             -- ^ 'Break' @label@
+data BareStatement = Predicate [Attribute] SpecClause |   -- ^ Predicate statement (assume or assert)
+  Havoc [Id] |                                            -- ^ 'Havoc' @var_names@
+  Assign [(Id , [[Expression]])] [Expression] |           -- ^ 'Assign' @var_map_selects rhss@
+  Call [Id] Id [Expression] |                             -- ^ 'Call' @lhss proc_name args@
+  CallForall Id [WildcardExpression] |                    -- ^ 'CallForall' @proc_name args@
+  If WildcardExpression Block (Maybe Block) |             -- ^ 'If' @wild_or_expr then_block else_block@
+  While WildcardExpression [SpecClause] Block |           -- ^ 'While' @wild_or_expr free_loop_inv loop_body@
+  Break (Maybe Id) |                                      -- ^ 'Break' @label@
   Return |
-  Goto [Id] |                                    -- ^ 'Goto' @labels@
-  Skip                                           -- ^ only used at the end of a block
+  Goto [Id] |                                             -- ^ 'Goto' @labels@
+  Skip                                                    -- ^ only used at the end of a block
   deriving Eq -- syntactic equality
 
 -- | Statement labeled by multiple labels with a source position attached  
@@ -179,6 +186,9 @@ data BareDecl =
   
 {- Values -}
 
+-- | Reference (gives identity to things)
+type Ref = Int
+
 -- | Representation of a map value
 type MapRepr = Map [Value] Value
   
@@ -188,17 +198,15 @@ emptyMap = M.empty
 -- | Run-time value
 data Value = IntValue Integer |  -- ^ Integer value
   BoolValue Bool |               -- ^ Boolean value
-  CustomValue Type Int |         -- ^ Value of a user-defined type
-  MapValue Type MapRepr |        -- ^ Partial instance of a map
+  CustomValue Type Ref |         -- ^ Value of a user-defined type
   Reference Type Ref             -- ^ Map reference
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Data, Typeable)
   
 -- | Type of a value
 valueType :: Value -> Type
 valueType (IntValue _) = IntType
 valueType (BoolValue _) = BoolType
 valueType (CustomValue t _) = t
-valueType (MapValue t _) = t
 valueType (Reference t _) = t
   
 -- | 'valueFromInteger' @t n@: value of type @t@ with an integer code @n@
@@ -207,10 +215,20 @@ valueFromInteger IntType n        = IntValue n
 valueFromInteger t@(IdType _ _) n = CustomValue t (fromInteger n)
 valueFromInteger _ _              = error "cannot create a boolean or map value from integer" 
   
+unValueInt (IntValue n) = n  
 unValueBool (BoolValue b) = b
-vnot (BoolValue b) = BoolValue (not b)
-isEmptyMap (MapValue _ repr) = repr == emptyMap
-isEmptyMap _ = False  
+
+{- Attributes and triggers -}
+
+-- | Attribute value
+data AttrValue = EAttr Expression | SAttr String
+  deriving Eq
+
+-- | Attribute
+data Attribute = Attribute {
+  aTag :: Id,
+  aValues :: [AttrValue]
+  } deriving Eq
     
 {- Misc -}
 
@@ -235,7 +253,9 @@ data IdTypeWhere = IdTypeWhere {
   } deriving Eq
   
 -- | Strip the where clause  
-noWhere itw = (itwId itw, itwType itw)  
+noWhere itw = (itwId itw, itwType itw)
+-- | Strip the type
+noType itw = (itwId itw, itwWhere itw)  
   
 -- | Formal argument of a function  
 type FArg = (Maybe Id, Type)
@@ -250,3 +270,4 @@ type ParentEdge = (Bool, Id)
 -- | Parent information in a constant declaration
 -- (Nothing means no information, while empty list means no parents)
 type ParentInfo = Maybe [ParentEdge]
+

@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances, UndecidableInstances #-}
+
 -- | Wrapper around the pretty-printing libarary
 module Language.Boogie.Pretty (
   -- * Interface
@@ -40,11 +42,16 @@ module Language.Boogie.Pretty (
   errorDoc,
   auxDoc,
   internalError,
-  plain
+  plain,
+  -- * Structures
+  hMapDoc,
+  vMapDoc
 ) where
 
 import Text.PrettyPrint.ANSI.Leijen hiding ((<+>), (<$>), hsep, vsep)
 import qualified Text.PrettyPrint.ANSI.Leijen as L
+import Data.Map (Map, (!))
+import qualified Data.Map as M
 
 infixr 5 $+$
 infixr 6 <+>
@@ -99,4 +106,10 @@ internalError doc = error . show $ text "Internal interpreter error (consider su
 instance Eq Doc where
   d1 == d2 = show d1 == show d2
   
+entryDoc keyDoc valDoc (k, v) = nest 2 $ (keyDoc k  <+> text "->") <+> valDoc v 
   
+hMapDoc :: (k -> Doc) -> (v -> Doc) -> Map k v -> Doc    
+hMapDoc keyDoc valDoc m = brackets (commaSep (map (entryDoc keyDoc valDoc) (M.toList m)))  
+  
+vMapDoc :: (k -> Doc) -> (v -> Doc) -> Map k v -> Doc  
+vMapDoc keyDoc valDoc m = vsep $ map (entryDoc keyDoc valDoc) (M.toList m)  

@@ -1,46 +1,32 @@
 - Overall
-  - Unsupported syntax    
-    - bit vectors    
-    - reals, /, **, int(), real(), decimal/float litearls
-    - call * := Q(x, y), call forall to a procedure with out-parameters
-    - empty map domains x: []int    
-    - code expression
-  - Optimization: e.g. better data structures instead of lists  
-  - Do not throw away attributes and triggers
-  - Dynamic assertion (loop invariant) inference (testing + statistical test)?
+  - Separate Language.Boogie library from Boogaloo
+  
+- Library  
+  - AST and parser
+    - Unsupported syntax
+      - bit vectors    
+      - reals, /, **, int(), real(), decimal/float litearls
+      - call * := Q(x, y), call forall to a procedure with out-parameters
+      - empty map domains x: []int    
+      - code expression
+    - Optimization: e.g. better data structures instead of lists and strings  
+    - Do not throw away attributes and triggers
 
-- Type checker
-  - Use semantic representation of types not just for comparison?
-  - Data type for type errors (will be easier to evaluate test results)
-  - Use lenses for Context?
-  - Annotate AST with expr types
+    - Type checker
+      - Annotate AST with expr types
+      - Use semantic representation of types not just for comparison?
+      - Data type for type errors (will be easier to evaluate test results)
+      - Use lenses for Context?      
   
-- Interpreter
-  - Constraint extraction:    
-    - Do not ignore forall constraints with non-simple arguments
-    - Skolemize existentials
-    - Infer constraints from axioms that mention a map update (using not-equals guard?)
-    - Do not ignore forall constraints for constants
-    - Check if we need to normalize expressions before extracting constraints    
-    - Move definitions/constraints without guards to the front      
-  - Indexing maps by maps
-  - Execution
-    - Introduce logical variables
-    - Get rid of FDef 
-    - assert p -> assume (not p); fail
-    - Integrate SMT constraint solving
-  - Quantification over types: if a map has specialization axioms, treat those types specially?
-  - Mark executions in which a definitional axiom is violated as suspicious? (It is usually a sign of ill-defined recursive definition)?
+- Boogaloo
+  - Collect unused maps
+  - Make fair strategy work again
+  - Alternative way of fixing Bubble bug: concretize all map indices?
+  - Extract map constraints from nonsimple arguments
+  - Take into account extends ordering
+  - Fix loop_max parameter (currently jumps are summed up from all recursive calls, needed to make recursion work with DFS)
+  - Fix rec_max parameter (currently does not check unguarded constraints)
   
-  - Error reporting: when violated spec has logical vars, output their values  
-  - Refactor executeLocally, execCall and execProcedure (and saveOld/restoreOld?)
-  - Refactor evalVar, setAnyVar and so on, so that there is a unified meachism to lookup a name in the type context
-  - Lazy initialization of arguments (in execLocally only copy those args that are already initialized, at the end propage the initizlization back with assume)
-  - Extends ordering
-  - Turn source positions into spans; use the end of the span to report postcondition violations  
-    
-- User interface
-  - pass more information with failures other than spec violations, so that relevant variables can be determined
-  - settings for disabling checking of different specs
-  - interactive sessions
-  - debugger: generated logs and traverse them?
+  - User interface
+    - When violated spec has logical vars, output their values  
+    - Turn source positions into spans; use the end of the span to report postcondition violations  

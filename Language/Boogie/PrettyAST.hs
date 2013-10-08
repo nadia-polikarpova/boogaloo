@@ -2,12 +2,13 @@
 
 -- | Pretty printing of AST nodes
 module Language.Boogie.PrettyAST (
-  idpretty
+  idpretty,
+  refDoc,
+  logDoc
 ) where
 
 import Language.Boogie.Pretty
 import Language.Boogie.AST
-import Language.Boogie.Heap
 import Language.Boogie.Position
 import Language.Boogie.Tokens
 import Data.Maybe
@@ -35,6 +36,7 @@ instance Pretty Type where
 -- | Binding power of an expression
 power :: BareExpression -> Int
 power (Literal _) = 10
+power (Logical _ _) = 10
 power (Var _) = 10
 power (Application _ _) = 10
 power (Old _) = 10
@@ -61,6 +63,7 @@ exprDocAt :: Int -> Expression -> Doc
 exprDocAt n (Pos _ e) = condParens (n' <= n) (
   case e of
     Literal v -> pretty v
+    Logical t r -> logDoc r
     Var id -> text id
     Application id args -> text id <> parens (commaSep (map exprDoc args))
     MapSelection m args -> exprDocAt n' m <> brackets (commaSep (map exprDoc args))
@@ -82,7 +85,7 @@ instance Pretty BareExpression where pretty e = exprDoc (gen e)
 -- | Pretty-printed statement
 statementDoc :: Statement -> Doc
 statementDoc (Pos _ s) = case s of
-  Predicate (SpecClause _ isAssume e) -> (if isAssume then text "assume" else text "assert") <+> pretty e <> semi
+  Predicate attrs (SpecClause _ isAssume e) -> (if isAssume then text "assume" else text "assert") <+> hsep (map pretty attrs) <+> pretty e <> semi
   Havoc vars -> text "havoc" <+> commaSep (map text vars) <> semi
   Assign lhss rhss -> commaSep (map lhsDoc lhss) <+> 
     text ":=" <+> commaSep (map pretty rhss) <> semi
@@ -229,21 +232,30 @@ implementationDoc name fv args rets bodies =
   
 {- Values -}
 
--- | Pretty-printed map representation  
-instance Pretty MapRepr where
-  pretty repr = let
-      keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map pretty) keys
-      itemDoc (keys, v) = keysDoc keys  <+> text "->" <+> pretty v
-    in brackets (commaSep (map itemDoc (M.toList repr)))
+-- | Pretty-printed map reference
+refDoc :: Ref -> Doc
+refDoc r = text "m'" <> int r
+
+-- | Pretty-printed logical variable
+logDoc :: Ref -> Doc
+logDoc r = text "l'" <> int r
     
 -- | Pretty-printed value
 instance Pretty Value where
   pretty (IntValue n) = integer n
   pretty (BoolValue False) = text "false"
   pretty (BoolValue True) = text "true"
-  pretty (MapValue _ repr) = pretty repr
   pretty (CustomValue t n) = pretty t <+> int n
   pretty (Reference _ r) = refDoc r  
+  
+{- Attributes and triggers -}
+
+instance Pretty AttrValue where
+  pretty (EAttr expr) = pretty expr
+  pretty (SAttr str) = dquotes $ text str
+  
+instance Pretty Attribute where
+  pretty attr = braces $ text ":" <> text (aTag attr) <+> commaSep (map pretty $ aValues attr)
   
 {- Misc -}
 
@@ -264,5 +276,12 @@ idTypeWhereDoc (IdTypeWhere id t w) = idpretty (id, t) <+> case w of
 
 instance Pretty a => Pretty (Pos a) where
   pretty (Pos _ x) = pretty x
-  
-  
+
+instance Show BareExpression where
+    show = show . pretty
+
+instance Show Type where
+    show = show . pretty
+
+instance Show Value where
+    show = show . pretty

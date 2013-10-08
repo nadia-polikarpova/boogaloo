@@ -16,29 +16,16 @@ module Language.Boogie.Util (
   VarBinding,
   exprSubst,
   paramSubst,
-  freeSelections,
-  applications,
   mapRefs,
   refSelections,
+  applications,
+  removeBoundClashes,
   -- * Specs
   preconditions,
   postconditions,
   modifies,
   assumePreconditions,
   assumePostconditions,
-  -- * Constraints
-  Def (..),
-  defBodyLambda,
-  defGuardLambda,
-  ConstraintSet,
-  isParametrized,
-  isParametrizedDef,
-  constraintSetDoc,
-  NameConstraints,
-  constraintUnion,
-  nameConstraintsDoc,
-  MapConstraints,
-  mapConstraintsDoc,
   -- * Functions and procedures
   PSig (..),
   psigParams,
@@ -49,7 +36,6 @@ module Language.Boogie.Util (
   psigEnsures,
   psigType,
   PDef (..),
-  pdefLocals,
   -- * Code generation
   num, eneg, enot,
   (|+|), (|-|), (|*|), (|/|), (|%|), (|=|), (|!=|), (|<|), (|<=|), (|>|), (|>=|), (|&|), (|||), (|=>|), (|<=>|),
@@ -59,12 +45,13 @@ module Language.Boogie.Util (
   assume,
   -- * Special names
   nullaryType,
-  noType,
+  noneType,
   anyType,
   tupleType,
-  ucType,  
   functionConst,
+  functionExpr,
   functionFromConst,
+  removeClashesWith,
   -- * Misc
   fromRight,
   maybe2,
@@ -81,7 +68,6 @@ module Language.Boogie.Util (
 ) where
 
 import Language.Boogie.AST
-import Language.Boogie.Heap (Ref, refDoc)
 import Language.Boogie.Position
 import Language.Boogie.Tokens
 import Language.Boogie.Pretty
@@ -163,18 +149,6 @@ unifier fv ((MapType bv1 domains1 range1):xs) ((MapType bv2 domains2 range2):ys)
   where
     update u = map (typeSubst u)
 unifier _ _ _ = Nothing
-
--- | 'removeClashesWith' @tvs tvs'@ :
--- New names for type variables @tvs@ that are disjoint from @tvs'@
--- (if @tvs@ does not have duplicates, then result also does not have duplicates)
-removeClashesWith :: [Id] -> [Id] -> [Id]
-removeClashesWith tvs tvs' = map changeName tvs
-  where
-    -- new name for tv that does not coincide with any tvs'
-    changeName tv = if tv `elem` tvs' then tv ++ replicate (level + 1) nonIdChar else tv
-    -- maximum number of nonIdChar characters at the end of any tvs or tvs'; 
-    -- by appending (level + 1) nonIdChar charactes to tv we make is different from all tvs' and unchanged tvs
-    level = maximum [fromJust (findIndex (\c -> c /= nonIdChar) (reverse id)) | id <- tvs ++ tvs']
     
 -- | 'forallUnifier' @fv bv1 xs bv2 ys@ :   
 -- Most general unifier of @xs@ and @ys@,
@@ -202,19 +176,19 @@ forallUnifier fv bv1 xs bv2 ys = if length bv1 /= length bv2 || length xs /= len
 
 -- | Free variables in an expression, referred to in current state and old state
 freeVarsTwoState :: Expression -> ([Id], [Id])
-freeVarsTwoState e = freeVarsTwoState' (node e)
-
-freeVarsTwoState' (Literal _) = ([], [])
-freeVarsTwoState' (Var x) = ([x], [])
-freeVarsTwoState' (Application name args) = over both (nub . concat) (unzip (map freeVarsTwoState args))
-freeVarsTwoState' (MapSelection m args) =  over both (nub . concat) (unzip (map freeVarsTwoState (m : args)))
-freeVarsTwoState' (MapUpdate m args val) =  over both (nub . concat) (unzip (map freeVarsTwoState (val : m : args)))
-freeVarsTwoState' (Old e) = let (state, old) = freeVarsTwoState e in ([], state ++ old)
-freeVarsTwoState' (IfExpr cond e1 e2) = over both (nub . concat) (unzip [freeVarsTwoState cond, freeVarsTwoState e1, freeVarsTwoState e2])
-freeVarsTwoState' (Coercion e _) = freeVarsTwoState e
-freeVarsTwoState' (UnaryExpression _ e) = freeVarsTwoState e
-freeVarsTwoState' (BinaryExpression _ e1 e2) = over both (nub . concat) (unzip [freeVarsTwoState e1, freeVarsTwoState e2])
-freeVarsTwoState' (Quantified _ _ boundVars e) = let (state, old) = freeVarsTwoState e in (state \\ map fst boundVars, old)
+freeVarsTwoState e = case node e of
+  Literal _ -> ([], [])
+  Logical _ _ -> ([], [])
+  Var x -> ([x], [])
+  Application name args -> freeVarsTwoState $ attachPos (position e) $ MapSelection (functionExpr name (position e)) args
+  MapSelection m args ->  over both (nub . concat) (unzip (map freeVarsTwoState (m : args)))
+  MapUpdate m args val ->  over both (nub . concat) (unzip (map freeVarsTwoState (val : m : args)))
+  Old e -> let (state, old) = freeVarsTwoState e in ([], state ++ old)
+  IfExpr cond e1 e2 -> over both (nub . concat) (unzip [freeVarsTwoState cond, freeVarsTwoState e1, freeVarsTwoState e2])
+  Coercion e _ -> freeVarsTwoState e
+  UnaryExpression _ e -> freeVarsTwoState e
+  BinaryExpression _ e1 e2 -> over both (nub . concat) (unzip [freeVarsTwoState e1, freeVarsTwoState e2])
+  Quantified _ _ boundVars e -> let (state, old) = freeVarsTwoState e in (state \\ map fst boundVars, old)
 
 -- | Free variables in an expression, in current state
 freeVars = fst . freeVarsTwoState
@@ -222,7 +196,7 @@ freeVars = fst . freeVarsTwoState
 freeOldVars = snd . freeVarsTwoState
 
 -- | Mapping from variables to expressions
-type VarBinding = Map Id BareExpression
+type VarBinding = Map Id Expression
 
 -- | 'exprSubst' @binding e@ : substitute all free variables in @e@ according to @binding@;
 -- all variables in the domain of @bindings@ are considered free if not explicitly bound
@@ -231,7 +205,7 @@ exprSubst binding (Pos pos e) = attachPos pos $ exprSubst' binding e
 
 exprSubst' binding (Var id) = case M.lookup id binding of
   Nothing -> Var id
-  Just e -> e
+  Just e -> (node e)
 exprSubst' binding (Application id args) = Application id (map (exprSubst binding) args)
 exprSubst' binding (MapSelection m args) = MapSelection (exprSubst binding m) (map (exprSubst binding) args)
 exprSubst' binding (MapUpdate m args val) = MapUpdate (exprSubst binding m) (map (exprSubst binding) args) (exprSubst binding val)
@@ -251,8 +225,8 @@ paramBinding sig def = M.fromList $ zip (sigIns ++ sigOuts) (defIns ++ defOuts)
   where
     sigIns = map itwId $ psigArgs sig
     sigOuts = map itwId $ psigRets sig
-    defIns = map Var $ pdefIns def
-    defOuts = map Var $ pdefOuts def
+    defIns = map (gen . Var) $ pdefIns def
+    defOuts = map (gen . Var) $ pdefOuts def
   
 -- | 'paramSubst' @sig def@ :
 -- Substitute parameter names from @sig@ in an expression with their equivalents from @def@
@@ -260,46 +234,13 @@ paramSubst :: PSig -> PDef -> Expression -> Expression
 paramSubst sig def = if not (pdefParamsRenamed def) 
   then id 
   else exprSubst (paramBinding sig def)
-  
--- | 'freeSelections' @expr@ : all named map selections that occur in @expr@, where the map is a free variable
-freeSelections :: Expression -> [(Id, [Expression])]
-freeSelections expr = case node expr of
-  Literal _ -> []
-  Var x -> []
-  Application name args -> nub . concat $ map freeSelections args
-  MapSelection m args -> case node m of 
-   Var name -> (name, args) : (nub . concat $ map freeSelections args)
-   MapUpdate m' args' val -> freeSelections (gen $ MapSelection m' args) ++ concatMap freeSelections (val : args')
-   _ -> nub . concat $ map freeSelections (m : args)
-  MapUpdate m args val ->  nub . concat $ map freeSelections (val : m : args)
-  Old e -> internalError $ text "freeSelections should only be applied in single-state context"
-  IfExpr cond e1 e2 -> nub . concat $ [freeSelections cond, freeSelections e1, freeSelections e2]
-  Coercion e _ -> freeSelections e
-  UnaryExpression _ e -> freeSelections e
-  BinaryExpression _ e1 e2 -> nub . concat $ [freeSelections e1, freeSelections e2]
-  Quantified _ _ boundVars e -> let boundVarNames = map fst boundVars 
-    in [(m, args) | (m, args) <- freeSelections e, m `notElem` boundVarNames]
-  
--- | 'applications' @expr@ : all function applications that occur in @expr@
-applications :: Expression -> [(Id, [Expression])]
-applications expr = case node expr of
-  Literal _ -> []
-  Var x -> []
-  Application name args -> (name, args) : (nub . concat $ map applications args)
-  MapSelection m args -> nub . concat $ map applications (m : args)
-  MapUpdate m args val ->  nub . concat $ map applications (val : m : args)
-  Old e -> internalError $ text "applications should only be applied in single-state context"
-  IfExpr cond e1 e2 -> nub . concat $ [applications cond, applications e1, applications e2]
-  Coercion e _ -> applications e
-  UnaryExpression _ e -> applications e
-  BinaryExpression _ e1 e2 -> nub . concat $ [applications e1, applications e2]
-  Quantified _ _ _ e -> applications e  
 
 -- | 'mapRefs' @expr@ : all map references that occur in @expr@
 mapRefs :: Expression -> [Ref]
 mapRefs expr = case node expr of
   Literal (Reference _ r) -> [r]
   Literal _ -> []
+  Logical _ _ -> []
   Var x -> []
   Application name args -> nub . concat $ map mapRefs args
   MapSelection m args -> nub . concat $ map mapRefs (m : args)
@@ -315,6 +256,7 @@ mapRefs expr = case node expr of
 refSelections :: Expression -> [(Ref, [Expression])]
 refSelections expr = case node expr of
   Literal _ -> []
+  Logical _ _ -> []
   Var x -> []
   Application name args -> nub . concat $ map refSelections args
   MapSelection m args -> case node m of 
@@ -327,7 +269,44 @@ refSelections expr = case node expr of
   UnaryExpression _ e -> refSelections e
   BinaryExpression _ e1 e2 -> nub . concat $ [refSelections e1, refSelections e2]
   Quantified _ _ boundVars e -> refSelections e
+  
+-- | 'applications' @expr@ : all function applications that occur in @expr@
+applications :: Expression -> [(Id, [Expression])]
+applications expr = case node expr of
+  Literal _-> []
+  Var x-> []
+  Application name args-> (name, args) : (nub . concat $ map applications args)
+  MapSelection m args-> nub . concat $ map applications (m : args)
+  MapUpdate m args val->  nub . concat $ map applications (val : m : args)
+  Old e-> internalError $ text "applications should only be applied in single-state context"
+  IfExpr cond e1 e2-> nub . concat $ [applications cond, applications e1, applications e2]
+  Coercion e _-> applications e
+  UnaryExpression _ e-> applications e
+  BinaryExpression _ e1 e2-> nub . concat $ [applications e1, applications e2]
+  Quantified _ _ _ e-> applications e
 
+-- | 'removeBoundClashes' @names expr@: replace any bound variables in @expr@ that clash with @names@
+removeBoundClashes :: [Id] -> Expression -> Expression
+removeBoundClashes names (Pos p expr) = attachPos p $ case expr of
+  Literal _ -> expr
+  Var x -> expr
+  Application name args -> Application name (map go args)
+  MapSelection m args -> MapSelection (go m) (map go args)
+  MapUpdate m args val ->  MapUpdate (go m) (map go args) (go val)
+  Old e -> Old (go e)
+  IfExpr cond e1 e2 -> IfExpr (go cond) (go e1) (go e2)
+  Coercion e t -> Coercion (go e) t
+  UnaryExpression op e -> UnaryExpression op (go e)
+  BinaryExpression op e1 e2 -> BinaryExpression op (go e1) (go e2)
+  Quantified op tv bv e -> let
+      vars = map fst bv
+      types = map snd bv
+      vars' = removeClashesWith vars names
+      e' = exprSubst (M.fromList $ zip vars (map (gen . Var) vars')) e
+    in Quantified op tv (zip vars' types) (removeBoundClashes (names ++ vars') e')
+  where
+    go = removeBoundClashes names
+  
 {- Specs -}
 
 -- | 'preconditions' @specs@ : all precondition clauses in @specs@  
@@ -364,61 +343,6 @@ assumePostconditions sig = sig { psigContracts = map assumePostcondition (psigCo
   where
     assumePostcondition (Ensures _ e) = Ensures True e
     assumePostcondition c = c
-    
-{- Constraints -}
-
--- | Definition (lambda expression with a guard)
-data Def = Def {
-    defTV    :: [Id],          -- ^ Type variables
-    defArgs  :: [IdType],      -- ^ Arguments
-    defGuard :: Expression,    -- ^ Condition under which the definition applies
-    defBody  :: Expression     -- ^ Body 
-  } deriving Eq
-
--- | Lambda expression that corresponds to definition guard
-defGuardLambda (Def tv args guard _) = attachPos (position guard) $ Quantified Lambda tv args guard  
--- | Lambda expression that corresponds to definition body  
-defBodyLambda (Def tv args _ body) = attachPos (position body) $ Quantified Lambda tv args body  
-    
-instance Pretty Def where
-  pretty (Def tv formals guard expr) = 
-    text "lambda" <+>
-    option (not (null tv)) (angles (commaSep (map text tv))) <+> 
-    option (not (null formals)) (parens (commaSep (map idpretty formals))) <+> 
-    option (node guard /= tt) (text "|" <+> pretty guard) <+> 
-    text "::" <+> pretty expr
-
--- | Constraint set: contains a list of definitions and a list of constraints
-type ConstraintSet = ([Def], [Expression])
-
--- | 'isParametrized' @expr@: is @expr@ a parametrized constraint?
-isParametrized (Pos _ (Quantified Lambda _ _ _)) = True
-isParametrized (Pos _ _) = False
-
--- | 'isParametrizedDef' @def@: is @def@ a parametrized definition?
-isParametrizedDef (Def[] [] _ _) = False
-isParametrizedDef _ = True
-
--- | Pretty-printed constraint set  
-constraintSetDoc :: ConstraintSet -> Doc   
-constraintSetDoc cs = vsep (map pretty (fst cs)) $+$ vsep (map pretty (snd cs))
-
--- | Mapping from names to their constraints
-type NameConstraints = Map Id ConstraintSet
-
--- | Union of constraints (values at the same key are concatenated)
-constraintUnion s1 s2 = M.unionWith (\(d1, c1) (d2, c2) -> (d1 ++ d2, c1 ++ c2)) s1 s2
-
--- | Pretty-printed abstract store
-nameConstraintsDoc :: NameConstraints -> Doc
-nameConstraintsDoc vars = vsep $ map varDoc (M.toList vars)
-  where varDoc (name, cs) = nest 2 (text name <+> constraintSetDoc cs)
-
--- | Mapping from map references to their parametrized constraints
-type MapConstraints = Map Ref ConstraintSet
-
-mapConstraintsDoc heap = vsep $ map valDoc (M.toList heap)
-  where valDoc (r, cs) = nest 2 (refDoc r <+> constraintSetDoc cs)
 
 {- Procedures -}
      
@@ -456,12 +380,8 @@ data PDef = PDef {
     pdefOuts :: [Id],                 -- ^ Out-parameter names (in the same order as 'psigRets' in the corresponding signature)
     pdefParamsRenamed :: Bool,        -- ^ Are any parameter names in this definition different for the procedure signature? (used for optimizing parameter renaming, True is a safe default)
     pdefBody :: BasicBody,            -- ^ Body
-    pdefConstraints :: NameConstraints, -- ^ Constraints on local names
     pdefPos :: SourcePos              -- ^ Location of the (first line of the) procedure definition in the source
   }
-  
--- | All local names of a procedure definition  
-pdefLocals def = pdefIns def ++ pdefOuts def ++ map itwId (fst (pdefBody def))
 
 {- Code generation -}
 
@@ -493,7 +413,7 @@ e1 |=>|   e2 = if node e1 == tt
                   then e2
                   else inheritPos2 (BinaryExpression Implies) e1 e2
 e1 |<=>|  e2 = inheritPos2 (BinaryExpression Equiv) e1 e2
-assume e = attachPos (position e) (Predicate (SpecClause Inline True e))
+assume e = attachPos (position e) (Predicate [] (SpecClause Inline True e))
 
 conjunction es = foldl (|&|) (gen tt) es
 disjunction es = foldl (|||) (gen ff) es
@@ -505,7 +425,7 @@ guardWith gs e = conjunction gs |=>| e
 nullaryType id = IdType id []
 
 -- | Dummy type used during type checking to denote error
-noType = nullaryType ("NONE" ++ [nonIdChar])
+noneType = nullaryType ("NONE" ++ [nonIdChar])
 
 -- | Dummy type used when the type does not matter
 anyType = nullaryType ("ANY" ++ [nonIdChar])
@@ -513,20 +433,31 @@ anyType = nullaryType ("ANY" ++ [nonIdChar])
 -- | Dummy type used to represent procedure returns as a single type
 tupleType = IdType ("TUPLE" ++ [nonIdChar])
 
--- | Dummy type used to mark entities whose definitions are currently being evaluated
-ucType = nullaryType ("UC" ++ [nonIdChar])
-
 functionFrefix = "function "
 
 -- | 'functionConst' @name@ : name of a map constant that corresponds function @name@
 -- (must be distinct from all global names)
 functionConst name = functionFrefix ++ name
 
+functionExpr name pos = attachPos pos . Var $ functionConst name
+
 -- | 'functionFromConst' @name@ : reverse of 'functionConst', returns Nothing if @name@ does not have the right form
 functionFromConst name = let (prefix, suffix) = splitAt (length functionFrefix) name
   in if prefix == functionFrefix
       then Just suffix
       else Nothing
+      
+-- | 'removeClashesWith' @names names'@ :
+-- A version of @names@ that is disjoint from @names'@
+-- (if @names@ does not have duplicates, then result also does not have duplicates)
+removeClashesWith :: [Id] -> [Id] -> [Id]
+removeClashesWith names names' = map changeName names
+  where
+    -- new name for tv that does not coincide with any names'
+    changeName tv = if tv `elem` names' then tv ++ replicate (level + 1) nonIdChar else tv
+    -- maximum number of nonIdChar characters at the end of any names or names'; 
+    -- by appending (level + 1) nonIdChar charactes to tv we make is different from all names' and unchanged names
+    level = maximum [fromJust (findIndex (\c -> c /= nonIdChar) (reverse id)) | id <- names ++ names']      
   
 {- Misc -}
 

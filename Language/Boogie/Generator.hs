@@ -2,7 +2,6 @@
 module Language.Boogie.Generator where
 
 import Control.Monad.Identity hiding (join)
-import Control.Monad.Stream
 import System.Random
 
 -- | Input generator
@@ -21,7 +20,7 @@ defaultGenerator = Generator {
 }
 
 -- | Generates all possible values once, in a predefined order
-exhaustiveGenerator :: Maybe Integer -> Generator Stream
+exhaustiveGenerator :: (MonadPlus m) => Maybe Integer -> Generator m
 exhaustiveGenerator mBound = Generator {
   genBool = return False `mplus` return True,
   genInteger = case mBound of
@@ -39,7 +38,7 @@ exhaustiveGenerator mBound = Generator {
       | otherwise = fromList [0, -1..a] `mplus` fromList [1..b]
 
 -- | Generated values randomly; the same value can be generated multiple times
-randomGenerator :: StdGen -> Maybe Integer -> Generator Stream
+randomGenerator :: (MonadPlus m) => StdGen -> Maybe Integer -> Generator m
 randomGenerator rGen mBound = Generator {
   genBool = fromList $ randoms rGen,
   genInteger = fromList $ case mBound of
@@ -57,5 +56,5 @@ intInterval n = let n2 = n `div` 2 in (-n2, n - n2 - 1)
 natInterval n = (0, n - 1)
 
 -- | Convert a (possibly infinite) nonempty list into a stream      
-fromList :: [a] -> Stream a
-fromList xs = foldr1 mplus (map return xs)
+fromList :: MonadPlus m => [a] -> m a
+fromList xs = foldr mplus mzero (map return xs)

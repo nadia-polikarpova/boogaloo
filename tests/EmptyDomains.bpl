@@ -1,5 +1,5 @@
 function sorted(a: [int] int, N: int): bool
-{ (forall i: int, j: int :: 0 <= i && i < j && j < N ==> a[i] <= a[j] )}
+{ (forall i: int, j: int :: 0 <= i && i < j && j < N ==> a[i] <= a[j] ) }
 
 procedure Test() returns ()
 {
