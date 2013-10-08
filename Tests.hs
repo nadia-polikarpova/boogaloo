@@ -12,6 +12,7 @@ import Language.Boogie.Generator
 import Data.Map (Map, (!))
 import qualified Data.Map as M
 import Control.Monad.Stream
+import Control.Monad.Logic
 import System.FilePath
 import Text.ParserCombinators.Parsec (parse, parseFromFile)
 import Test.HUnit
@@ -108,10 +109,10 @@ interpreterSuccess file = do
     Right p -> case typeCheckProgram p of
       Left typeErrs -> assertFailure (show (typeErrorsDoc typeErrs))
       Right context -> let 
-          solver :: Solver []
+          solver :: Solver Logic
           solver = Z3.solver True Nothing
           generator = exhaustiveGenerator Nothing
-        in case (head . filter (not . isInvalid) . toList) (executeProgram p context solver Nothing False True generator entryPoint) of
+        in case (head . filter (not . isInvalid) . toList) (executeProgram p context solver Nothing Nothing False True generator entryPoint) of        
           I.TestCase _ _ _ (Just err) -> assertFailure (show $ pretty err)
           otherwise -> return ()
 
