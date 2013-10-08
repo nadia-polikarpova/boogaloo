@@ -82,14 +82,14 @@ transform m ([], Pos p stmt) = case stmt of
     t2 <- transBlock m elseBlock
     case we of
       Wildcard -> return $ 
-        [justBareStatement $ Goto [lThen, lElse]] ++ 
-        attach lThen (t1 ++ [justBareStatement $ Goto [lDone]]) ++
-        attach lElse (t2 ++ [justBareStatement $ Goto [lDone]]) ++
+        [justStatement p $ Goto [lThen, lElse]] ++ 
+        attach lThen (t1 ++ [justStatement (lastPos thenBlock p) $ Goto [lDone]]) ++
+        attach lElse (t2 ++ [justStatement (lastPos elseBlock p) $ Goto [lDone]]) ++
         [justLabel lDone]
       Expr e -> return $
-        [justBareStatement $ Goto [lThen, lElse]] ++
-        [([lThen], assume e)] ++ t1 ++ [justBareStatement $ Goto [lDone]] ++
-        [([lElse], assume (enot e))] ++ t2 ++ [justBareStatement $ Goto [lDone]] ++
+        [justStatement p $ Goto [lThen, lElse]] ++
+        [([lThen], assume e)] ++ t1 ++ [justStatement (lastPos thenBlock (position e)) $ Goto [lDone]] ++
+        [([lElse], assume (enot e))] ++ t2 ++ [justStatement (lastPos elseBlock (position e)) $ Goto [lDone]] ++
         [justLabel lDone]      
   While Wildcard invs body -> do
     lHead <- state $ genFreshLabel "head"
@@ -97,9 +97,9 @@ transform m ([], Pos p stmt) = case stmt of
     lDone <- state $ genFreshLabel "done"
     t <- transBlock (M.insert innermost lDone m) body
     return $
-      [justBareStatement $ Goto [lHead]] ++
-      attach lHead (map checkInvariant invs ++ [justBareStatement $ Goto [lBody, lDone]]) ++ 
-      attach lBody (t ++ [justBareStatement $ Goto [lHead]]) ++
+      [justStatement p $ Goto [lHead]] ++
+      attach lHead (map checkInvariant invs ++ [justStatement p $ Goto [lBody, lDone]]) ++ 
+      attach lBody (t ++ [justStatement (lastPos body p) $ Goto [lHead]]) ++
       [justLabel lDone]
   While (Expr e) invs body -> do
     lHead <- state $ genFreshLabel "head"
@@ -108,12 +108,13 @@ transform m ([], Pos p stmt) = case stmt of
     lDone <- state $ genFreshLabel "done"
     t <- transBlock (M.insert innermost lDone m) body
     return $
-      [justBareStatement $ Goto [lHead]] ++
-      attach lHead (map checkInvariant invs ++ [justBareStatement $ Goto [lGDone, lBody]]) ++
-      [([lBody], assume e)] ++ t ++ [justBareStatement $ Goto [lHead]] ++
-      [([lGDone], assume (enot e))] ++ [justBareStatement $ Goto [lDone]] ++
+      [justStatement p $ Goto [lHead]] ++
+      attach lHead (map checkInvariant invs ++ [justStatement p $ Goto [lGDone, lBody]]) ++
+      [([lBody], assume e)] ++ t ++ [justStatement (lastPos body (position e)) $ Goto [lHead]] ++
+      [([lGDone], assume (enot e))] ++ [justStatement (position e) $ Goto [lDone]] ++
       [justLabel lDone]    
   _ -> return [justStatement p stmt]  
   where
     transBlock m b = concat <$> mapM (transform m) (map node b)
     checkInvariant inv = justStatement (position (specExpr inv)) (Predicate [] inv)
+    lastPos block def = if null block then def else position (last block)

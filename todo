@@ -24,6 +24,8 @@
   - Alternative way of fixing Bubble bug: concretize all map indices?
   - Extract map constraints from nonsimple arguments
   - Take into account extends ordering
+  - Fix loop_max parameter (currently jumps are summed up from all recursive calls, needed to make recursion work with DFS)
+  - Fix rec_max parameter (currently does not check unguarded constraints)
   
   - User interface
     - When violated spec has logical vars, output their values  

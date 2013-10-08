@@ -50,7 +50,8 @@ module Language.Boogie.Environment (
   envInOld,
   envLabelCount,
   envMapCaseCount,
-  envUnrollMax,
+  envRecMax,
+  envLoopMax,
   envConcretize,
   initEnv,
   lookupProcedure,
@@ -309,14 +310,15 @@ data Environment m = Environment
     _envLabelCount :: Map (Id, Id) Int,         -- ^ For each procedure-label pair, number of times a transition with that label was taken
     _envMapCaseCount :: Map (Ref, Int) Int,     -- ^ For each guarded map constraint, number of times it was applied
     _envInOld :: Bool,                          -- ^ Is an old expression currently being evaluated?
-    _envUnrollMax :: Maybe Int,                 -- ^ Limit on the number of transitions for a label or applications for a map constraint
+    _envRecMax :: Maybe Int,                    -- ^ Limit on the number of unfoldings of a recursive constraint
+    _envLoopMax :: Maybe Int,                   -- ^ Limit on the number times a label can be taken
     _envConcretize :: Bool                      -- ^ Concretize in the middle of the execution?
   }
   
 makeLenses ''Environment
    
 -- | 'initEnv' @tc s@: Initial environment in a type context @tc@ with constraint solver @s@  
-initEnv tc s g depth concr = Environment
+initEnv tc s g recMax loopMax concr = Environment
   {
     _envMemory = emptyMemory,
     _envConstraints = emptyConstraintMemory,
@@ -331,7 +333,8 @@ initEnv tc s g depth concr = Environment
     _envLabelCount = M.empty,
     _envMapCaseCount = M.empty,
     _envInOld = False,
-    _envUnrollMax = depth,    
+    _envRecMax = recMax,
+    _envLoopMax = loopMax, 
     _envConcretize = concr
   }
   

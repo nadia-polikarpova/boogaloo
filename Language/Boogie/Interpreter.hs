@@ -60,8 +60,8 @@ import Debug.Trace
 -- Execute program @p@ in type context @tc@ with solver @solver@ and non-deterministic value generator @generator@, starting from procedure @entryPoint@;
 -- concretize passing executions iff @solvePassing@;
 -- return the outcome(s) embedded into the solver's monad.
-executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Maybe Int -> Bool -> Bool -> Generator m -> Id -> m (TestCase)
-executeProgram p tc solver unrollMax concretize_ solvePassing generator entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver generator unrollMax concretize_)
+executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Maybe Int -> Maybe Int -> Bool -> Bool -> Generator m -> Id -> m (TestCase)
+executeProgram p tc solver recMax loopMax concretize_ solvePassing generator entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver generator recMax loopMax concretize_)
   where
     programExecution = do
       execUnsafely $ preprocess p      
@@ -252,7 +252,7 @@ runtimeFailureDoc debug err =
     failureSourceDoc (Error (SpecClause specType False e)) = text (clauseName specType) <+> dquotes (pretty e) <+> defPosition specType e <+>
       text "violated"
     failureSourceDoc Unreachable = text "assumption violated"      
-    failureSourceDoc (Nonexecutable s) = text "Unsupported construct" <+> s
+    failureSourceDoc (Nonexecutable s) = text "Cannot continue execution:" <+> s
     
     clauseName Inline = "Assertion"  
     clauseName Precondition = "Precondition"  
@@ -428,7 +428,7 @@ freshMapRef = do
 -- fail if @t@ is a type variable
 generateValue :: (Monad m, Functor m) => Type -> SourcePos -> Execution m Thunk
 generateValue t pos = case t of
-  IdType x [] | isTypeVar [] x -> throwRuntimeFailure (Nonexecutable (text "choice of a value from unknown type" <+> pretty t)) pos
+  IdType x [] | isTypeVar [] x -> throwRuntimeFailure (Nonexecutable (text "choice of a value from unknown type not supported" <+> pretty t)) pos
   t@(MapType _ _ _) -> (attachPos pos . Literal . Reference t) <$> freshMapRef
   t -> (attachPos pos . Logical t) <$> freshLogical
               
@@ -662,7 +662,7 @@ binOp pos Explies (BoolValue b1) (BoolValue b2) = return $ attachPos pos $ Liter
 binOp pos Equiv   (BoolValue b1) (BoolValue b2) = return $ attachPos pos $ Literal $ BoolValue (b1 == b2)
 binOp pos Eq      v1 v2                         = evalEquality pos v1 v2
 binOp pos Neq     v1 v2                         = evalEquality pos v1 v2 >>= evalUnary Not
-binOp pos Lc      v1 v2                         = throwRuntimeFailure (Nonexecutable $ text "orders") pos
+binOp pos Lc      v1 v2                         = throwRuntimeFailure (Nonexecutable $ text "<: orders not supported") pos
 
 -- | Euclidean division used by Boogie for integer division and modulo
 euclidean :: Integer -> Integer -> (Integer, Integer)
@@ -831,13 +831,15 @@ execBlock proc_ blocks label = let
         let orderedLbs = sortBy (compare `on` snd) (zip lbs counts)
         i <- generate $ flip genIndex (length lbs)
         let (lb, c) = orderedLbs !! i
-        max <- use envUnrollMax
+        max <- use envLoopMax
         if isNothing max || c < fromJust max 
           then do
             envLabelCount %= M.insert (proc_, lb) (succ c)
             execBlock proc_ blocks lb
-          else
-            throwRuntimeFailure (Nonexecutable $ text "Maximum unroll depth exceeded for label" <+> pretty lb) pos 
+          else do
+            throwRuntimeFailure (Nonexecutable $ 
+              text "iteration limit" <+> int (fromJust max) <+> text "exceeded for label" <+> pretty lb <+> text "(check for infinite loops or increase loop_max)"
+              ) pos 
     
 -- | 'execProcedure' @sig def args lhss@ :
 -- Execute definition @def@ of procedure @sig@ with actual arguments @args@ and call left-hand sides @lhss@
@@ -986,14 +988,16 @@ checkMapConstraints r actuals pos = do
       enabled <- generate genBool
       if enabled
         then do
-          max <- use envUnrollMax
+          max <- use envRecMax
           if isNothing max || count < fromJust max
             then do
               envMapCaseCount %= M.insert (r, idx) (succ count)
               enableMapConstraint c True
               enforceMapConstraint c actuals pos
             else
-              throwRuntimeFailure (Nonexecutable $ text "Maximum unroll depth exceeded for map constraint" <+> pretty c) pos
+              throwRuntimeFailure (Nonexecutable $ 
+                text "unfolding depth" <+> int (fromJust max) <+> text "exceeded for map constraint" <+> pretty c <+> text "(check for ill-founded definitions or increase rec_max)"
+                ) pos
         else enableMapConstraint (guardedCs !! idx) False
     enableMapConstraint c val = case c of
       (Pos p (Quantified Lambda tv formals body)) -> case node body of

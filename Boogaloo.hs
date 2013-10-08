@@ -31,16 +31,16 @@ releaseDate = fromGregorian 2013 10 4
 main = do
   res <- cmdArgsRun $ mode
   case res of
-    Exec file proc_ minimize concretize per_path unroll exec invalid nexec pass fail out sum debug format -> 
+    Exec file proc_ per_path exec rec_max loop_max minimize concretize invalid nexec pass fail out sum debug format -> 
       executeFromFile file proc_ 
-                      Z3 minimize concretize (natToMaybe unroll) 
-                      DF (natToMaybe per_path) (natToMaybe exec) 
+                      DF (natToMaybe per_path) (natToMaybe exec) (natToMaybe rec_max) (natToMaybe loop_max)
+                      minimize concretize                       
                       invalid nexec pass fail (natToMaybe out)
                       sum debug format
-    Test file proc_ minimize concretize unroll exec out debug format ->
+    Test file proc_ exec rec_max loop_max minimize concretize out debug format ->
       executeFromFile file proc_ 
-                      Z3 minimize concretize (natToMaybe unroll) 
-                      DF (Just $ if concretize then defaultPerPath else 1) (natToMaybe exec) 
+                      DF (Just $ if concretize then defaultPerPath else 1) (natToMaybe exec) (natToMaybe rec_max) (natToMaybe loop_max) 
+                      minimize concretize                   
                       False False False True (natToMaybe out) 
                       False debug format
   where
@@ -51,55 +51,55 @@ main = do
 {- Command line arguments -}
 
 data CommandLineArgs
-    = Exec { 
+    = Exec {
+        -- | Input
         file :: String, 
         proc_ :: Maybe String,
+        -- | Path enumeration
         -- backtrack :: BacktrackStrategy,
-        -- solver :: ConstraintSolver,
+        per_path :: Int,
+        exec :: Int, 
+        rec_max :: Int,
+        loop_max :: Int,
+        -- | Constraint solving
         minimize :: Bool,
         concretize :: Bool,
-        per_path :: Int,
-        unroll :: Int,
-        exec :: Int, 
+        -- | Execution filtering
         invalid :: Bool, 
         nexec :: Bool,
         pass :: Bool,
         fail_ :: Bool,
+        -- | Output format
         out :: Int, 
         summary_ :: Bool,
         debug :: Bool,
         format :: OutputFormat
       }
-    | Test { 
+    | Test {
+        -- | Input
         file :: String, 
         proc_ :: Maybe String,
+        -- | Path enumeration
         -- backtrack :: BacktrackStrategy,
-        -- solver :: ConstraintSolver,
+        exec :: Int, 
+        rec_max :: Int,
+        loop_max :: Int,
+        -- | Constraint solving
         minimize :: Bool,
         concretize :: Bool,
-        unroll :: Int,
-        exec :: Int, 
+        -- | Output format
         out :: Int, 
         debug :: Bool,
         format :: OutputFormat
       }
       deriving (Data, Typeable, Show, Eq)
       
--- | Available solvers      
-data ConstraintSolver = 
-    Exhaustive  -- ^ Trivial solver that exhaustively enumerates solutions
-  | Z3          -- ^ Solver based on Z3
-  deriving (Typeable, Data, Eq, Show)
-  
 -- | Backtracking strategies
 data BacktrackStrategy = 
     DF    -- ^ Depth-first backtracking (always reconsider the choice made last, until not possible)
   | Fair  -- ^ Fair backtracking (reconsider any choice made before)
   deriving (Typeable, Data, Eq, Show)  
   
--- | Default constraint solver
-defaultSolver = Z3  
-
 -- | Default backtracking strategy
 defaultBT = DF
 
@@ -109,17 +109,20 @@ defaultPerPath = 128
 -- | Default number of test cases for testing
 defaultTCCount = 2048
 
+-- | Default maximum number of loop iterations
+defaultLMax = 1000
+
 execute = Exec {
   proc_       = Nothing         &= help "Program entry point (default: Main or the only procedure in a file)" &= typ "PROCEDURE" &= name "p",
   file        = ""              &= typFile &= argPos 0,
   -- backtrack   = defaultBT       &= help ("Backtracking strategy: DF (depth-first) or Fair (default: " ++ show defaultBT ++ ")"),
-  -- solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
-  minimize    = True            &= help ("Should solutions be minimized? (default: True)"),
-  concretize  = True            &= help ("Concretize in the middle of an execution? (default: True)"),
   per_path    = defaultPerPath  &= help ("Maximum number of solutions to try per path; " ++
                                         "unbounded if negative (default: " ++ show defaultPerPath ++ ")") &= name "n",
-  unroll      = -1              &= help ("Maximum number of unrolls for a loop or a recursive definition; unbounded if negative (default: -1)"),
   exec        = -1              &= help ("Maximum number of executions to try; unbounded if negative (default: -1)"),
+  rec_max     = -1              &= help ("Maximum number of unfolds for a recursive constraint; unbounded if negative (default: -1)"),
+  loop_max    = defaultLMax     &= help ("Maximum number of loop iterations; unbounded if negative (default: " ++ show defaultLMax ++ ")"),
+  minimize    = True            &= help ("Should solutions be minimized? (default: True)"),
+  concretize  = True            &= help ("Concretize in the middle of an execution? (default: True)"),
   invalid     = False           &= help "Display invalid executions (default: false)" &= name "I",
   nexec       = True            &= help "Display executions that cannot be carried out completely (default: true)" &= name "N",
   pass        = True            &= help "Display passing executions (default: true)" &= name "P",
@@ -134,11 +137,11 @@ test = Test {
   proc_       = Nothing         &= help "Program entry point (default: Main or the only procedure in a file)" &= typ "PROCEDURE" &= name "p",
   file        = ""              &= typFile &= argPos 0,
   -- backtrack   = defaultBT       &= help ("Backtracking strategy: DF (depth-first) or Fair (default: " ++ show defaultBT ++ ")"),
-  -- solver      = defaultSolver   &= help ("Constraint solver: Exhaustive or Z3 (default: " ++ show defaultSolver ++ ")"),
+  exec        = defaultTCCount  &= help ("Maximum number of executions to try (default: " ++ show defaultTCCount ++ ")"),
+  rec_max     = -1              &= help ("Maximum number of unfolds for a recursive constraint; unbounded if negative (default: -1)"),
+  loop_max    = defaultLMax     &= help ("Maximum number of loop iterations; unbounded if negative (default: " ++ show defaultLMax ++ ")"),
   minimize    = True            &= help ("Should solutions be minimized? (default: True)"),
   concretize  = True            &= help ("Concretize in the middle of an execution? (default: True)"),
-  unroll      = -1              &= help ("Maximum number of unrolls for a loop or a recursive definition; unbounded if negative (default: -1)"),  
-  exec        = defaultTCCount  &= help ("Maximum number of executions to try (default: " ++ show defaultTCCount ++ ")"),
   out         = 1               &= help "Maximum number of faults to look for; unbounded if negative (default: 1)",
   debug       = False           &= help "Debug output (default: false)",
   format      = defaultFormat   &= help ("Output format: Plain, Ansi or Html (default: " ++ show defaultFormat ++ ")")
@@ -156,22 +159,22 @@ type Interpreter = Program -> Context -> Id -> [TestCase]
 -- | Execute procedure mProc from file
 -- | and output either errors or the final values of global variables
 executeFromFile :: String -> Maybe String ->
-                   ConstraintSolver -> Bool -> Bool -> Maybe Int ->
-                   BacktrackStrategy -> Maybe Int -> Maybe Int ->
+                   BacktrackStrategy -> Maybe Int -> Maybe Int -> Maybe Int -> Maybe Int ->
+                   Bool -> Bool ->                   
                    Bool -> Bool -> Bool -> Bool -> Maybe Int ->
                    Bool -> Bool -> OutputFormat ->
                    IO ()
-executeFromFile file mProc  -- Source options
-                solverId minimize concretize unroll_max -- Constraint solving options
-                backtrack branch_max exec_max -- Backtracking options 
-                invalid nexec pass fail out_max -- Execution filtering
-                summary debug format -- Output format options 
+executeFromFile file mProc                                      -- Source options
+                backtrack branch_max exec_max rec_max loop_max  -- Path enumeration options
+                minimize concretize                             -- Constraint solving options                
+                invalid nexec pass fail out_max                 -- Execution filtering
+                summary debug format                            -- Output format options 
   = runOnFile printFinalState file format
   where
     printFinalState p context = let proc_ = entryPoint context 
       in case M.lookup proc_ (ctxProcedures context) of
         Nothing -> printDoc format $ errorDoc (text "Cannot find procedure" <+> text proc_)
-        Just _ -> let int = interpreter backtrack solverId minimize concretize pass branch_max unroll_max
+        Just _ -> let int = interpreter backtrack branch_max rec_max loop_max minimize concretize pass
                       outs = maybeTake out_max . filter keep . maybeTake exec_max $ int p context proc_   
           in if summary
                 then printDoc format $ sessionSummaryDoc debug outs
@@ -193,20 +196,16 @@ executeFromFile file mProc  -- Source options
       (if fail then True else (not . isFail) tc)
     outcomeDoc n tc = option (n > 0) linebreak <> testCaseDoc debug "Execution" n tc
     
-interpreter :: BacktrackStrategy -> ConstraintSolver -> Bool -> Bool -> Bool -> Maybe Int -> Maybe Int -> Interpreter
-interpreter DF solverId minimize concretize solvePassing branch_max unroll_max p context proc_ = toList $ executeProgram p context solver unroll_max concretize solvePassing generator proc_
+interpreter :: BacktrackStrategy -> Maybe Int -> Maybe Int ->  Maybe Int -> Bool -> Bool -> Bool -> Interpreter
+interpreter DF branch_max rec_max loop_max minimize concretize solvePassing p context proc_ = toList $ executeProgram p context solver rec_max loop_max concretize solvePassing generator proc_
   where
     solver :: Solver Logic
-    solver = case solverId of
-      -- Exhaustive -> Trivial.solver branch_max
-      Z3 -> Z3.solver minimize branch_max
+    solver = Z3.solver minimize branch_max
     generator = exhaustiveGenerator Nothing
-interpreter Fair solverId minimize concretize solvePassing branch_max unroll_max p context proc_ = toList $ executeProgram p context solver unroll_max concretize solvePassing generator proc_
+interpreter Fair branch_max rec_max loop_max minimize concretize solvePassing p context proc_ = toList $ executeProgram p context solver rec_max loop_max concretize solvePassing generator proc_
   where
     solver :: Solver Stream
-    solver = case solverId of
-      -- Exhaustive -> Trivial.solver branch_max
-      Z3 -> Z3.solver minimize branch_max
+    solver = Z3.solver minimize branch_max
     generator = exhaustiveGenerator Nothing
 
 -- | Parse file, type-check the resulting program, then execute command on the resulting program and type context
