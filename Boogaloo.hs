@@ -24,8 +24,8 @@ import Text.ParserCombinators.Parsec (parse, parseFromFile)
 import HtmlOutput
 
 programName = "boogaloo"
-versionName = "0.4.2"
-releaseDate = fromGregorian 2013 10 4
+versionName = "0.4.3"
+releaseDate = fromGregorian 2013 10 8
 
 -- | Execute or test a Boogie program, according to command-line arguments
 main = do
