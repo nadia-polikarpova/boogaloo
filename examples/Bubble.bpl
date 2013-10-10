@@ -2,9 +2,8 @@
 // Bubble Sort, where the specification says the output is a permutation of
 // the input.
 
-// Run "boogaloo -p BubbleSort Bubble.bpl" to observe a possible execution (use axioms and assumptions to constrain possible executions)
-// Run "boogaloo test -p BubbleSort Bubble.bpl" to test BubbleSort exhaustively within the default range of inputs
-// Run "boogaloo rtest -p BubbleSort Bubble.bpl" to test BubbleSort on a default number of random inputs
+// Run "boogaloo Bubble.bpl" to observe a possible execution (use axioms and assumptions to constrain possible executions)
+// Run "boogaloo test Bubble.bpl" to find failing executions
 
 // Introduce a constant 'N'
 const N: int;

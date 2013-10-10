@@ -2,7 +2,8 @@
   Power of a permutation.
   Original example from: Nikolai Kosmatov "All-Paths Test Generation for Programs with Internal Aliases"
   The particularity of this program is that the number of distinct paths is much lower than the number of inputs (which is factorial).
-  Run with "-c=False -n 1 -o -1" to enumerate all paths.
+  
+  Run "boogaloo -c=False -n 1 -o -1 PermPower.bpl" to enumerate all paths.
 */
 
 const N: int;

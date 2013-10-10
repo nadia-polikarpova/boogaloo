@@ -1,4 +1,4 @@
-// Run "boogaloo -o n Pythagorean.bpl" to observe n possible executions
+// Run "boogaloo -o n -m=False Pythagorean.bpl" to observe n possible executions without solution minimization
 
 var x, y, z: int;
 

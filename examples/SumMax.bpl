@@ -1,8 +1,7 @@
 // Example inspired by: 1st Verified Software Competition (https://sites.google.com/a/vscomp.org), problem I
 
 // Run "boogaloo SumMax.bpl" to invoke Main
-// Run "boogaloo test -p SumMax SumMax.bpl" to test SumMax exhaustively within the default range of inputs
-// Run "boogaloo rtest -p SumMax SumMax.bpl" to test SumMax on a default number of random inputs
+// Run "boogaloo test -p SumMax SumMax.bpl" to find failing executions
 
 // Sum of N elements of array a
 function rec_sum(a: [int] int, N: int) returns (int)

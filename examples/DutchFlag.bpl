@@ -10,9 +10,8 @@
 // The specification of the procedure talks about the ordering of the elements, but
 // does not say anything about keeping the multiset of elements the same.
 
-// Run "boogaloo -p Partition DutchFlag.bpl" to observe a possible execution (use axioms and assumptions to constrain possible executions)
-// Run "boogaloo test -p Partition DutchFlag.bpl" to test Partition exhaustively within the default range of inputs
-// Run "boogaloo rtest -p Partition DutchFlag.bpl" to test Partition on a default number of random inputs
+// Run "boogaloo DutchFlag.bpl" to observe a possible execution (use axioms and assumptions to constrain possible executions)
+// Run "boogaloo test DutchFlag.bpl" to find failing executions
 
 var A: [int]int;
 var N: int;

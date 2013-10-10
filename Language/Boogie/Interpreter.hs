@@ -1066,6 +1066,7 @@ checkSat pos = do
   where
     dequeueMapPoint pos = do
       ((r, args) :< points) <- uses (envConstraints.conPointQueue) viewl
+      trace (show r ++ "[" ++ intercalate ", " (map show args) ++ "]") $ return ()
       envConstraints.conPointQueue .= points
       inst <- getMapInstance r
       aux <- getMapAux r
@@ -1098,10 +1099,11 @@ concretize pos = do
   checkSat pos
   constraints <- use $ envConstraints.conLogicalChecked
   when (not $ null constraints)
-    (do
+    (do      
       envConstraints.conLogicalChecked .= []
-      solution <- (callSolver solPick) constraints     
-      envMemory.memLogical %= M.union solution          
+      solution <- (callSolver solPick) constraints
+      _ <- (callSolver solPick) (fixSolution solution)
+      envMemory.memLogical %= M.union solution      
       updateMapCache
       mapM_ checkConstraint constraints
       eliminateLogicals
@@ -1135,6 +1137,7 @@ concretize pos = do
         Literal (BoolValue True) -> return ()
         Literal (BoolValue False) -> throwRuntimeFailure Unreachable (position res)
         _ -> error $ "After concretizing constraint evaluates to " ++ show res
+    fixSolution sln = map (\(ref, val) -> gen (Logical (thunkType val) ref) |=| val) $ M.toList sln
   
 -- | Assuming that all logical variables have been assigned values,
 -- re-evaluate the store and the map constraints, and wipe out logical store.

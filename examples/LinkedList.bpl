@@ -1,3 +1,5 @@
+// This example is currently unsound due to a recursive function taking a map as argument (distance)
+
 // Reference type
 type ref;
 // Null-reference
@@ -46,5 +48,6 @@ procedure Cons() returns ()
   Next[Head'] := Head;
   Head := Head';
   Len := Len + 1;
+  assume {: print length(Head, Next), distance(Head, null, Next), null, distance(Next[Head], null, Next), Next[Head], distance(null, null, Next) } true;
 }  
 

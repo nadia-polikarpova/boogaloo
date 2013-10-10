@@ -1,8 +1,7 @@
 // Example inspired by: 1st Verified Software Competition (https://sites.google.com/a/vscomp.org), problem II
 
 // Run "boogaloo Invert.bpl" to invoke Main
-// Run "boogaloo test -p Invert Invert.bpl" to test Invert exhaustively within the default range of inputs
-// Run "boogaloo rtest -p Invert Invert.bpl" to test Invert on a default number of random inputs
+// Run "boogaloo test -p Invert Invert.bpl" to find failing executions
 
 // Returns the inverse of a permutation a of numbers [0..N).
 // Note that as is the procedure cannot be verified by Boogie.
