@@ -1066,7 +1066,6 @@ checkSat pos = do
   where
     dequeueMapPoint pos = do
       ((r, args) :< points) <- uses (envConstraints.conPointQueue) viewl
-      trace (show r ++ "[" ++ intercalate ", " (map show args) ++ "]") $ return ()
       envConstraints.conPointQueue .= points
       inst <- getMapInstance r
       aux <- getMapAux r
