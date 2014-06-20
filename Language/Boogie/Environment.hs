@@ -4,7 +4,8 @@
 module Language.Boogie.Environment ( 
   Store,
   emptyStore,
-  userStore,
+  prettyFlatThunk,
+  prettyFlatStore,
   MapInstance,
   MapCache,
   MapPointKind (..),
@@ -94,13 +95,13 @@ type Store = Map Id Thunk
 -- | A store with no variables
 emptyStore = M.empty
 
--- | 'userStore' @heap store@ : @store@ with all reference values completely dereferenced given @heap@
-userStore :: MapCache -> Store -> Store
-userStore maps store = store -- M.map (deepDeref maps . fromLiteral) store
-
 -- | Pretty-printed store
 instance Pretty Store where
   pretty = vMapDoc pretty pretty
+  
+-- | Pretty-print a store, inlining all map references  
+prettyFlatStore :: MapCache -> Store -> Doc
+prettyFlatStore maps = vMapDoc pretty (prettyFlatThunk maps)
     
 -- | Partial map instance
 type MapInstance = Map [Thunk] Thunk
@@ -116,6 +117,13 @@ emptyCache = M.empty
   
 instance Pretty MapCache where
   pretty = vMapDoc refDoc pretty
+  
+-- | Pretty-print a thunk, inlining all map references  
+prettyFlatThunk :: MapCache -> Thunk -> Doc
+prettyFlatThunk maps (Pos _ (Literal (Reference t r))) = 
+  let keysDoc keys = ((if length keys > 1 then parens else id) . commaSep . map (prettyFlatThunk maps)) keys
+  in hMapDoc keysDoc (prettyFlatThunk maps) (maps ! r)
+prettyFlatThunk maps thunk = pretty thunk  
   
 -- | Uniqueness of a point stored in map cache  
 data MapPointKind = 
@@ -190,28 +198,23 @@ storedRefs mem = S.fromList $ storedIn (mem^.memLocals) ++
 -- -- | 'userStore' @conMem mem@ : @mem@ with all reference values completely dereferenced and cache of defined maps removed 
 userMemory :: ConstraintMemory -> Memory -> Memory
 userMemory conMem mem = let maps = mem^.memMaps in
-  over memLocals (userStore maps) $
-  over memGlobals (userStore maps) $
-  over memOld (userStore maps) $
-  over memMaps (restrictDomain (storedRefs mem)) $
   over memModified (const S.empty) $
-  over memConstants (userStore maps) $
   over memMapsAux (const M.empty) $
   over memLogical (const M.empty)
   mem
 
--- | 'memoryDoc' @inNames outNames mem@ : pretty-printed @mem@ where
+-- | 'memoryDoc' @inNames outNames flatten mem@ : pretty-printed @mem@ where
 -- locals in @inNames@ will be printed as input variables
 -- and locals in @outNames@ will be printed as output variables
-memoryDoc :: [Id] -> [Id] -> Memory -> Doc
-memoryDoc inNames outNames mem = vsep $ 
-  docNonEmpty ins (labeledDoc "Ins") ++
-  docNonEmpty locals (labeledDoc "Locals") ++
-  docNonEmpty outs (labeledDoc "Outs") ++
-  docNonEmpty allGlobals (labeledDoc "Globals") ++
-  docNonEmpty (mem^.memOld) (labeledDoc "Old globals") ++
+memoryDoc :: [Id] -> [Id] -> Bool -> Memory -> Doc
+memoryDoc inNames outNames flatten mem = vsep $ 
+  docNonEmpty ins (labeledStoreDoc "Ins") ++
+  docNonEmpty locals (labeledStoreDoc "Locals") ++
+  docNonEmpty outs (labeledStoreDoc "Outs") ++
+  docNonEmpty allGlobals (labeledStoreDoc "Globals") ++
+  docNonEmpty (mem^.memOld) (labeledStoreDoc "Old globals") ++
   docWhen (not (S.null $ mem^.memModified)) (text "Modified:" <+> commaSep (map text (S.toList $ mem^.memModified))) ++
-  docNonEmpty (mem^.memMaps) (labeledDoc "Maps") ++
+  docWhen (not flatten && not (M.null (mem^.memMaps))) (labeledDoc "Maps" (mem^.memMaps)) ++
   docNonEmpty (mem^.memMapsAux) (labeledDoc "MapAux") ++
   docNonEmpty (mem^.memLogical) (labeledDoc "Logical")
   where
@@ -221,11 +224,12 @@ memoryDoc inNames outNames mem = vsep $
     locals = removeDomain (S.fromList $ inNames ++ outNames) allLocals
     allGlobals = (mem^.memGlobals) `M.union` (mem^.memConstants)
     labeledDoc label x = (text label <> text ":") <+> align (pretty x)
+    labeledStoreDoc label x = (text label <> text ":") <+> align (if flatten then prettyFlatStore (mem^.memMaps) x else pretty x)
     docWhen flag doc = if flag then [doc] else [] 
     docNonEmpty m mDoc = docWhen (not (M.null m)) (mDoc m)
     
 instance Pretty Memory where
-  pretty mem = memoryDoc [] [] mem
+  pretty mem = memoryDoc [] [] False mem
   
 {- Constraint memory -}
 

@@ -242,9 +242,9 @@ instance Error RuntimeFailure where
   
 -- | Pretty-printed run-time failure
 runtimeFailureDoc debug err = 
-    let store = (if debug then id else userStore ((rtfMemory err)^.memMaps)) (M.filterWithKey (\k _ -> isRelevant k) (visibleVariables (rtfMemory err)))
+    let store = M.filterWithKey (\k _ -> isRelevant k) (visibleVariables (rtfMemory err))
         maps = M.filterWithKey (\r _ -> any (\e -> r `elem` mapRefs e) (M.elems store)) ((rtfMemory err)^.memMaps)
-        sDoc = pretty store $+$ pretty maps
+        sDoc = if debug then pretty store $+$ pretty maps else prettyFlatStore ((rtfMemory err)^.memMaps) store
   in failureSourceDoc (rtfSource err) <+> posDoc (rtfPos err) <+> 
     (nest 2 $ option (not (isEmpty sDoc)) (text "with") $+$ sDoc) $+$
     vsep (map stackFrameDoc (reverse (rtfTrace err)))
@@ -339,8 +339,9 @@ testCaseSummary debug tc@(TestCase sig mem conMem mErr) = (text (psigName sig) <
   where
     mem' = if debug then mem else userMemory conMem mem
     globalInputs = removeEmptyMaps $ (mem'^.memOld) `M.union` (mem'^.memConstants)
-    inDoc name = pretty $ (mem'^.memLocals) ! name
-    globDoc (name, val) = text name <+> text "=" <+> pretty val
+    pretty' = if debug then pretty else prettyFlatThunk (mem^.memMaps)
+    inDoc name = pretty' $ (mem'^.memLocals) ! name
+    globDoc (name, val) = text name <+> text "=" <+> pretty' val
     outcomeDoc tc 
       | isPass tc = text "passed"
       | isInvalid tc = text "invalid"
@@ -350,7 +351,7 @@ testCaseSummary debug tc@(TestCase sig mem conMem mErr) = (text (psigName sig) <
 -- | 'finalStateDoc' @debug tc@ : outputs of @tc@, 
 -- displayed in user or debug format depending on 'debug' 
 finalStateDoc :: Bool -> TestCase -> Doc
-finalStateDoc debug tc@(TestCase sig mem conMem mErr) = memoryDoc [] outNames finalMem $+$
+finalStateDoc debug tc@(TestCase sig mem conMem mErr) = memoryDoc [] outNames (not debug) finalMem $+$
   if debug then pretty conMem else empty
   where
     finalMem =  over memLocals (removeEmptyMaps . restrictDomain (S.fromList outNames)) $ 
