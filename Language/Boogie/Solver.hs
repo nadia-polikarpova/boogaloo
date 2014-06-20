@@ -17,7 +17,7 @@ constraintSetDoc :: ConstraintSet -> Doc
 constraintSetDoc = vsep . map pretty
 
 -- | Mapping from logical variables to their values
-type Solution = Map Ref Thunk
+type Solution = Map Ref Value
 
 instance Pretty Solution where
   pretty = vMapDoc logDoc pretty

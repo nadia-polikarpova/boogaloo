@@ -530,7 +530,7 @@ evalLogical t r pos = do
   vals <- use $ envMemory.memLogical
   case M.lookup r vals of
     Nothing -> return $ attachPos pos $ Logical t r
-    Just val -> eval val  
+    Just val -> return $ attachPos pos $ Literal val  
   
 evalVar name pos = do
   tc <- use envTypeContext
@@ -1136,7 +1136,7 @@ concretize pos = do
         Literal (BoolValue True) -> return ()
         Literal (BoolValue False) -> throwRuntimeFailure Unreachable (position res)
         _ -> error $ "After concretizing constraint evaluates to " ++ show res
-    fixSolution sln = map (\(ref, val) -> gen (Logical (thunkType val) ref) |=| val) $ M.toList sln
+    fixSolution sln = map (\(ref, val) -> gen (Logical (valueType val) ref) |=| gen (Literal val)) $ M.toList sln
   
 -- | Assuming that all logical variables have been assigned values,
 -- re-evaluate the store and the map constraints, and wipe out logical store.

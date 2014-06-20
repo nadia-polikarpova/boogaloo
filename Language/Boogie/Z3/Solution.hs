@@ -201,7 +201,7 @@ reconstruct model =
     do debug ("reconstruct: start")
        logicMap <- reconMaps
        debug ("reconstruct: end")
-       return (Map.map (gen . Literal) logicMap)
+       return logicMap
     where
       extract' = extract model
 

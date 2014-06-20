@@ -154,9 +154,9 @@ newConstraint soln = enot (conjunction (logicEqs ++ customEqs))
       logicEqs = Map.foldrWithKey go [] soln
           where
             go ref expr es =
-                case thunkType expr of
+                case valueType expr of
                   t@(IdType {..}) -> es
-                  _ -> logicEq ref expr : es
+                  _ -> logicEq ref (gen (Literal expr)) : es
 
       logict t r = gen (Logical t r)
       logic e r = gen (Logical (thunkType e) r)
@@ -193,7 +193,7 @@ newConstraint soln = enot (conjunction (logicEqs ++ customEqs))
       customEqRel = Map.foldWithKey go Map.empty soln
           where
             go ref expr m =
-                case thunkType expr of
+                case valueType expr of
                   t@(IdType {..}) -> 
-                      Map.insertWith Set.union expr (Set.singleton ref) m
+                      Map.insertWith Set.union (gen (Literal expr)) (Set.singleton ref) m
                   _ -> m
