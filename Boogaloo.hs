@@ -12,6 +12,7 @@ import Language.Boogie.Interpreter
 import Language.Boogie.Solver
 import qualified Language.Boogie.Z3.Solver as Z3
 import Language.Boogie.Generator
+import System.Exit
 import System.Environment
 import System.Console.CmdArgs
 import System.Console.ANSI
@@ -173,7 +174,7 @@ executeFromFile file mProc                                      -- Source option
   where
     printFinalState p context = let proc_ = entryPoint context 
       in case M.lookup proc_ (ctxProcedures context) of
-        Nothing -> printDoc format $ errorDoc (text "Cannot find procedure" <+> text proc_)
+        Nothing -> (printDoc format $ errorDoc (text "Cannot find procedure" <+> text proc_)) >> exitFailure
         Just _ -> let int = interpreter backtrack branch_max rec_max loop_max minimize concretize pass
                       outs = maybeTake out_max . filter keep . maybeTake exec_max $ int p context proc_   
           in if summary
@@ -213,9 +214,9 @@ runOnFile :: (Program -> Context -> IO ()) -> String -> OutputFormat -> IO ()
 runOnFile command file format = do 
   parseResult <- parseFromFile Parser.program file
   case parseResult of
-    Left parseErr -> printDoc format $ errorDoc $ text (show parseErr)
+    Left parseErr -> (printDoc format $ errorDoc $ text (show parseErr)) >> exitFailure
     Right p -> case typeCheckProgram p of
-      Left typeErrs -> printDoc format $ errorDoc $ typeErrorsDoc typeErrs
+      Left typeErrs -> (printDoc format $ errorDoc $ typeErrorsDoc typeErrs) >> exitFailure
       Right context -> command p context
       
 {- Output -}
