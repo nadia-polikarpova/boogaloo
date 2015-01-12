@@ -232,6 +232,7 @@ assign = do
 call :: Parser BareStatement  
 call = do
   reserved "call"
+  void (many attribute)
   lefts <- option [] (try lhss)
   id <- identifier
   args <- parens (commaSep expression)
