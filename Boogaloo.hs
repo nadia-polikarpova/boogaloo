@@ -44,6 +44,7 @@ main = do
                       minimize concretize                   
                       False False False True (natToMaybe out) 
                       False debug format
+    Typecheck file format -> runOnFile (\_ _ -> printDoc format $ auxDoc (text "No type errors")) file format
   where
     natToMaybe n
       | n >= 0      = Just n
@@ -92,6 +93,12 @@ data CommandLineArgs
         out :: Int, 
         debug :: Bool,
         format :: OutputFormat
+      }
+    | Typecheck {
+        -- | Input
+        file :: String, 
+        -- | Output format
+        format :: OutputFormat    
       }
       deriving (Data, Typeable, Show, Eq)
       
@@ -147,8 +154,13 @@ test = Test {
   debug       = False           &= help "Debug output (default: false)",
   format      = defaultFormat   &= help ("Output format: Plain, Ansi or Html (default: " ++ show defaultFormat ++ ")")
   } &= help "Test program exhaustively until an error is found"
+  
+typecheck = Typecheck {
+  file        = ""              &= typFile &= argPos 0,
+  format      = defaultFormat   &= help ("Output format: Plain, Ansi or Html (default: " ++ show defaultFormat ++ ")")
+  } &= help "Parse and typecheck, but do not execute"  
       
-mode = cmdArgsMode $ modes [execute, test] &= 
+mode = cmdArgsMode $ modes [execute, test, typecheck] &= 
   help "Boogie interpreter" &= 
   program programName &= 
   summary (programName ++ " v" ++ versionName ++ ", " ++ showGregorian releaseDate)
