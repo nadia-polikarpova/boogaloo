@@ -177,7 +177,7 @@ type Decl = Pos BareDecl
 data BareDecl = 
   TypeDecl [NewType] |
   ConstantDecl Bool [Id] Type ParentInfo Bool |                                -- ^ 'ConstantDecl' @unique names type orderSpec complete@
-  FunctionDecl Id [Id] [FArg] FArg (Maybe Expression) |                        -- ^ 'FunctionDecl' @name type_args formals ret body@
+  FunctionDecl [Attribute] Id [Id] [FArg] FArg (Maybe Expression) |            -- ^ 'FunctionDecl' @name type_args formals ret body@
   AxiomDecl Expression |
   VarDecl [IdTypeWhere] |
   ProcedureDecl Id [Id] [IdTypeWhere] [IdTypeWhere] [Contract] (Maybe Body) |  -- ^ 'ProcedureDecl' @name type_args formals rets contract body@

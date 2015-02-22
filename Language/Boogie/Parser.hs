@@ -359,13 +359,13 @@ constantDecl = do
 functionDecl :: Parser BareDecl
 functionDecl = do
   reserved "function"
-  void (many attribute)
+  attrs <- many attribute
   name <- identifier
   tArgs <- typeArgs
   args <- parens (option [] (try namedArgs <|> unnamedArgs))  
   ret <- returns <|> returnType
   body <- (semi >> return Nothing) <|> (Just <$> braces expression)
-  return $ FunctionDecl name tArgs args ret body
+  return $ FunctionDecl attrs name tArgs args ret body
   where
     unnamedArgs = map (\t -> (Nothing, t))                  <$> commaSep1 type_
     namedArgs =   map (\(id, t) -> (Just id, t)) . ungroup  <$> commaSep1 idsType

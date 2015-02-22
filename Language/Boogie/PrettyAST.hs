@@ -153,7 +153,7 @@ instance Pretty BareDecl where
   pretty d = case d of
     TypeDecl ts -> typeDeclDoc ts
     ConstantDecl unique names t orderSpec complete -> constantDoc unique names t orderSpec complete
-    FunctionDecl name fv args ret mb -> functionDoc name fv args ret mb
+    FunctionDecl attrs name fv args ret mb -> functionDoc attrs name fv args ret mb
     AxiomDecl e -> text "axiom" <+> pretty e <> semi
     VarDecl vars -> varDeclDoc vars
     ProcedureDecl name fv args rets specs mb -> procedureDoc name fv args rets specs mb
@@ -178,8 +178,9 @@ constantDoc unique names t orderSpec complete =
     orderSpecDoc parents = text "extends" <+> commaSep (map parentDoc parents)
     parentDoc (u, id) = option u (text "unique") <+> text id
     
-functionDoc name fv args ret mb =
+functionDoc attrs name fv args ret mb =
   text "function" <+>
+  hsep (map pretty attrs) <+>
   text name <>
   typeArgsDoc fv <>
   parens (commaSep (map fArgDoc args)) <+>

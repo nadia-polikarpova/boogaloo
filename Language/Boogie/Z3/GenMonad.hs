@@ -49,7 +49,7 @@ data Custom = Custom Type Int
             deriving (Eq, Ord, Show)
 
 
-data Z3Env = Z3Env
+data Z3State = Z3State
     { _ctorMap :: 
           Map [Type] 
                  (Sort, FuncDecl, [FuncDecl]) -- ^ Maps a list of types to a
@@ -66,23 +66,23 @@ data Z3Env = Z3Env
 
     }
 
-makeLenses ''Z3Env
+makeLenses ''Z3State
 
 instance MonadZ3 Z3Gen where
     getSolver = lift getSolver
     getContext = lift getContext
 
-type Z3Gen = StateT Z3Env Z3
+type Z3Gen = StateT Z3State Z3
 
-emptyEnv :: Z3Env
-emptyEnv = Z3Env Map.empty Map.empty Map.empty Map.empty
+emptyEnv :: Z3State
+emptyEnv = Z3State Map.empty Map.empty Map.empty Map.empty
 
 evalZ3Gen :: Z3Gen a -> IO a
 evalZ3Gen act = evalZ3 $ evalStateT act emptyEnv
 
-evalZ3GenWith :: Solver -> Context -> Z3Gen a -> IO a
-evalZ3GenWith slv ctx act = 
-    evalZ3WithEnv slv ctx (evalStateT act emptyEnv)
+evalZ3GenWith :: Z3Env -> Z3Gen a -> IO a
+evalZ3GenWith env act =
+    evalZ3WithEnv (evalStateT act emptyEnv) env
 
 
 debug :: MonadIO m => String -> m ()

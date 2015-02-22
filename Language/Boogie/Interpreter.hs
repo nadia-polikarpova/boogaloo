@@ -46,6 +46,7 @@ import Data.Sequence (Seq, (|>), (><), viewl, ViewL(..))
 import qualified Data.Sequence as Seq
 import qualified Data.Traversable as T
 import qualified Data.Foldable as F
+import Control.Monad
 import Control.Monad.Error hiding (join)
 import Control.Applicative hiding (empty)
 import Control.Monad.State hiding (join)
@@ -1185,7 +1186,7 @@ preprocess (Program decls) = do
   mapM_ (detectMacro fs) (M.keys fs)
   where
     processDecl decl = case node decl of
-      FunctionDecl name _ args _ mBody -> processFunction name (map fst args) mBody
+      FunctionDecl attrs name _ args _ mBody -> processFunction name (map fst args) mBody attrs
       ProcedureDecl name _ args rets _ (Just body) -> processProcedureBody name (position decl) (map noWhere args) (map noWhere rets) body
       ImplementationDecl name _ args rets bodies -> mapM_ (processProcedureBody name (position decl) args rets) bodies
       AxiomDecl expr -> extendNameConstraints conGlobals expr
@@ -1203,18 +1204,38 @@ preprocess (Program decls) = do
         envFunctions %= M.delete name
       else return ()  
       
-processFunction name argNames mBody = do
+processFunction name argNames mBody attrs = do
   sig@(MapType tv argTypes retType) <- funSig name <$> use envTypeContext
   let constName = functionConst name  
   envTypeContext %= \tc -> tc { ctxConstants = M.insert constName sig (ctxConstants tc) }    
-  case mBody of
+  let formals = zip (map formalName argNames) argTypes
+  case getBody of
     Nothing -> return ()
-    Just body -> do
-      let formals = zip (map formalName argNames) argTypes
-      envFunctions %= M.insert name (inheritPos (Quantified Lambda tv formals) body)
+    Just body -> envFunctions %= M.insert name (inheritPos (Quantified Lambda tv formals) body)
   where        
     formalName Nothing = dummyFArg 
-    formalName (Just n) = n
+    formalName (Just n) = n    
+    
+    getBody = case mBody of
+      Nothing -> builtInBody
+      Just body -> Just body
+    
+    builtInBody = case find (\a -> aTag a == "builtin") attrs of
+      Nothing -> Nothing
+      Just attr -> case head $ aValues attr of
+        SAttr name -> join $ lookup name builtInMap
+        _ -> Nothing
+    builtInMap = [
+      ("div", if length argNames == 2 then Just $ gen $ BinaryExpression Div (formalE 0) (formalE 1) else Nothing), 
+      ("rem", if length argNames == 2 
+                then let modExpr = gen $ BinaryExpression Mod (formalE 0) (formalE 1) in Just $ 
+                  gen $ IfExpr 
+                    (gen $ BinaryExpression Ls (formalE 1) (gen $ Literal $ IntValue 0))
+                    (gen $ UnaryExpression Neg $ modExpr)
+                    modExpr
+                else Nothing)
+      ]
+    formalE i = gen $ Var $ (map formalName argNames) !! i        
     
 processProcedureBody name pos args rets body = do
   tc <- use envTypeContext

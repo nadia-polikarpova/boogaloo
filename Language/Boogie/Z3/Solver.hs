@@ -1,6 +1,6 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE BangPatterns #-}
-module Language.Boogie.Z3.Solver (solverContext, solve, solver) where
+module Language.Boogie.Z3.Solver (getEnv, solve, solver) where
 
 import           Control.Applicative
 import           Control.Monad
@@ -19,7 +19,7 @@ import           System.IO.Unsafe
 
 import qualified Z3.Base as Z3 (mkConfig, mkContext, mkSolver, mkSimpleSolver)
 import           Z3.Monad hiding (Context, Solver)
-import qualified Z3.Monad as Z3 (Context, Solver)
+import qualified Z3.Monad as Z3 (Z3Env)
 
 import           Language.Boogie.AST
 import           Language.Boogie.Generator
@@ -41,30 +41,25 @@ mkSolver :: (MonadPlus m, Foldable m)
       -> Maybe Int     -- ^ Bound on number of solutions
       -> IO (Solver m)
 mkSolver minWanted mBound = do
-    (slvNoModel, ctxNoModel) <- solverContext False
-    (slvModel, ctxModel) <- solverContext True
+    envNoModel <- getEnv False
+    envModel <- getEnv True
     return Solver {
           solPick = \cs state -> do 
-            (mSolution, newNAssert) <- solve minWanted True mBound cs (pickState state) slvModel ctxModel
+            (mSolution, newNAssert) <- solve minWanted True mBound cs (pickState state) envModel
             case mSolution of
               NoSoln -> mzero
               Soln -> error "solution found, but no model requested"
               SolnWithModel solution -> return (solution, state { pickState = newNAssert }),
           solCheck = \cs state ->
-                      let (mSolution, newNAssert) = head $ solve False False (Just 1) cs (checkState state) slvNoModel ctxNoModel 
+                      let (mSolution, newNAssert) = head $ solve False False (Just 1) cs (checkState state) envNoModel
                           foundSoln = case mSolution of
                                         NoSoln -> False
                                         _ -> True
                       in (foundSoln, state { checkState = newNAssert })
         }
 
-solverContext :: Bool -> IO (Z3.Solver, Z3.Context)
-solverContext modelWanted =
-  do cfg <- Z3.mkConfig
-     setOpts cfg opts
-     ctx <- Z3.mkContext cfg
-     slv <- Z3.mkSolver ctx
-     return (slv, ctx)
+getEnv :: Bool -> IO (Z3.Z3Env)
+getEnv modelWanted = newEnv (Just AUFLIA) opts
     where
       opts = stdOpts +? (opt "AUTO_CONFIG" False)
                      +? (opt "MODEL" modelWanted)
@@ -78,10 +73,9 @@ solve :: (MonadPlus m, Foldable m)
       -> Maybe Int     -- ^ Bound on number of solutions
       -> ConstraintSet -- ^ Set of constraints
       -> Int           -- ^ Desired number of backtracking points in the solver
-      -> Z3.Solver     -- ^ Z3 solver to use
-      -> Z3.Context    -- ^ Z3 context to use
+      -> Z3.Z3Env      -- ^ Z3 solver and context to use
       -> m (SolveResult, Int)
-solve minWanted solnWanted mBound constrs nAssert slv ctx = 
+solve minWanted solnWanted mBound constrs nAssert env = 
     case solRes of
       SolnWithModel soln -> return (solRes, newNAssert) `mplus` go
           where
@@ -93,13 +87,12 @@ solve minWanted solnWanted mBound constrs nAssert slv ctx =
                            (fmap pred mBound)
                            (neq : constrs)
                            nAssert
-                           slv
-                           ctx
+                           env
                     else mzero
       _ -> return x
   where
     x@(solRes, newNAssert) =
-      stepConstrs minWanted solnWanted constrs nAssert slv ctx
+      stepConstrs minWanted solnWanted constrs nAssert env
 data StepResult
     = StepNoSoln
     | StepSoln
@@ -109,13 +102,12 @@ stepConstrs :: Bool
             -> Bool
             -> [Expression]
             -> Int
-            -> Z3.Solver
-            -> Z3.Context
+            -> Z3.Z3Env
             -> (SolveResult, Int)
-stepConstrs minWanted solnWanted constrs nAssert slv ctx = unsafePerformIO act
+stepConstrs minWanted solnWanted constrs nAssert env = unsafePerformIO act
     where
       act = 
-       do evalZ3GenWith slv ctx $ 
+       do evalZ3GenWith env $ 
            do 
               debug ("stepConstrs: start")
               debug ("stepConstrs: " ++ show (minWanted, constrs, nAssert))

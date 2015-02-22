@@ -643,7 +643,7 @@ checkSignatures (Pos pos d) = do
   case d of
     VarDecl vars -> mapAccum_ (checkIdType globalScope ctxGlobals setGlobals) (map noWhere vars)
     ConstantDecl _ ids t _ _ -> mapAccum_ (checkIdType globalScope ctxConstants setConstants) (zip ids (repeat t))
-    FunctionDecl name tv args ret _ -> checkFunctionSignature name tv args ret
+    FunctionDecl _ name tv args ret _ -> checkFunctionSignature name tv args ret
     ProcedureDecl name tv args rets specs _ -> checkProcSignature name tv args rets specs
     otherwise -> return ()
 
@@ -715,7 +715,7 @@ checkBodies (Pos pos d) = do
     VarDecl vars -> mapAccum_ checkWhere vars
     ConstantDecl _ ids t (Just edges) _ -> locally $ checkParentInfo ids t (map snd edges)
     AxiomDecl e -> locally $ checkAxiom e
-    FunctionDecl name tv args _ (Just body) -> locally $ checkFunction name tv args body
+    FunctionDecl _ name tv args _ (Just body) -> locally $ checkFunction name tv args body
     ProcedureDecl name tv args rets specs mb -> locally $ checkProcedure tv args rets specs mb
     ImplementationDecl name tv args rets bodies -> locally $ checkImplementation name tv args rets bodies
     otherwise -> return ()
