@@ -261,8 +261,7 @@ noType itw = (itwId itw, itwWhere itw)
 type FArg = (Maybe Id, Type)
 
 -- | Argument name used for unnamed function arguments
--- (does not matter, because it is never referred to from function's body)  
-dummyFArg = ""
+dummyFArg = "arg"
 
 -- | Parent edge of a constant declaration (uniqueness, parent name)
 type ParentEdge = (Bool, Id)

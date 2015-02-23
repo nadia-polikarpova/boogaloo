@@ -1208,13 +1208,14 @@ processFunction name argNames mBody attrs = do
   sig@(MapType tv argTypes retType) <- funSig name <$> use envTypeContext
   let constName = functionConst name  
   envTypeContext %= \tc -> tc { ctxConstants = M.insert constName sig (ctxConstants tc) }    
-  let formals = zip (map formalName argNames) argTypes
+  let formals = zip formalNames argTypes
   case getBody of
     Nothing -> return ()
     Just body -> envFunctions %= M.insert name (inheritPos (Quantified Lambda tv formals) body)
   where        
-    formalName Nothing = dummyFArg 
-    formalName (Just n) = n    
+    formalName Nothing i = dummyFArg ++ show i
+    formalName (Just n) _ = n
+    formalNames = zipWith formalName argNames [1 .. (length argNames)]
     
     getBody = case mBody of
       Nothing -> builtInBody
@@ -1235,7 +1236,7 @@ processFunction name argNames mBody attrs = do
                     modExpr
                 else Nothing)
       ]
-    formalE i = gen $ Var $ (map formalName argNames) !! i        
+    formalE i = gen $ Var $ formalNames !! i        
     
 processProcedureBody name pos args rets body = do
   tc <- use envTypeContext
