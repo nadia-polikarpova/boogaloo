@@ -11,7 +11,7 @@ procedure p1() returns ()
 }
 
 procedure p2() returns ()
-{
+{  
   var m: [int] int;
   havoc m;
 }

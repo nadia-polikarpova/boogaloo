@@ -60,9 +60,9 @@ minimizeOne model obj = do
             return m
 
       assertPivot pivot =
-          do piv <- mkInt pivot
+          do piv <- mkIntNum pivot
              pivCnstr <- mkLe obj piv
-             assertCnstr pivCnstr
+             assert pivCnstr
 
       evalObj :: Model -> Z3Gen Integer
       evalObj m =
@@ -89,7 +89,7 @@ objectives =
           
       absT :: AST -> Z3Gen AST
       absT ast =
-          do zero <- mkInt 0
+          do zero <- mkIntNum 0
              less <- mkLt ast zero
              negAst <- mkUnaryMinus ast
              mkIte less negAst ast

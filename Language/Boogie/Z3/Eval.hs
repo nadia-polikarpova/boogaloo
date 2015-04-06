@@ -63,13 +63,13 @@ evalExpr' boundMap typeCtx expr = debug ("evalExpr': " ++ show expr) >>
       evalValue :: Value -> Z3Gen AST
       evalValue v =
           case v of
-            IntValue i      -> mkInt i
+            IntValue i      -> mkIntNum i
             BoolValue True  -> mkTrue
             BoolValue False -> mkFalse
             Reference t ref -> uses refMap (lookup' "evalValue" (MapRef t ref))
             CustomValue (IdType ident types) ref ->
                 do ctor <- lookupCustomCtor ident types
-                   refAst <- mkInt ref
+                   refAst <- mkIntNum ref
                    mkApp ctor [refAst]
             _ -> error $ "evalValue: can't handle value: " ++ show v
 

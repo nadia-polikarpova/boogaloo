@@ -91,9 +91,9 @@ customConstrs =
       goType t@(IdType ident types) ast =
           do proj <- lookupCustomProj ident types
              v <- mkApp proj [ast]
-             zero <- mkInt 0
+             zero <- mkIntNum 0
              gt <- mkGe v zero
-             assertCnstr gt
+             assert gt
       goType _ _ = return ()
 
 data SolveResult
@@ -111,7 +111,7 @@ solveConstr :: Bool -> Bool -> [Expression] -> Z3Gen SolveResult
 solveConstr minWanted solnWanted constrs = 
     do updateRefMap constrs
        debug ("solveConstr: finished map updates")
-       mapM_ (evalExpr >=> assertCnstr) constrs
+       mapM_ (evalExpr >=> assert) constrs
        customConstrs
        dummyPreds
        debug ("solveConstr: asserting constraints")
@@ -149,12 +149,12 @@ dummyPreds =
      
      let go (LogicRef t _ref, ast) =
            case t of
-             BoolType -> mkApp pBool [ast] >>= assertCnstr
-             IntType -> mkApp pInt [ast] >>= assertCnstr
+             BoolType -> mkApp pBool [ast] >>= assert
+             IntType -> mkApp pInt [ast] >>= assert
              IdType ident types ->
                  do (_, _, proj) <- lookupCustomType ident types
                     inner <- mkApp proj [ast]
-                    mkApp pInt [inner] >>= assertCnstr
+                    mkApp pInt [inner] >>= assert
          go _ = return ()
      
      mapM_ go assocs
@@ -172,7 +172,7 @@ extract model ref t ast =
        v <- case t of 
          IntType -> IntValue <$> getInt ast'
          BoolType -> 
-             do bMb <- getBool ast'
+             do bMb <- getBoolValue ast'
                 case bMb of
                   Just b -> return $ BoolValue b
                   Nothing -> return $ BoolValue False

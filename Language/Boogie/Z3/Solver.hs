@@ -61,9 +61,9 @@ mkSolver minWanted mBound = do
 getEnv :: Bool -> IO (Z3.Z3Env)
 getEnv modelWanted = newEnv (Just AUFLIA) opts
     where
-      opts = stdOpts +? (opt "AUTO_CONFIG" False)
-                     +? (opt "MODEL" modelWanted)
-                     +? (opt "MBQI" False)
+      opts = stdOpts -- +? (opt "auto_config" False)
+                     -- +? (opt "model" modelWanted)
+                     -- +? (opt "MBQI" False)
                      -- +? (opt "SOFT_TIMEOUT" (100::Int))
                      -- +? (opt "MODEL_ON_TIMEOUT" True)
 
