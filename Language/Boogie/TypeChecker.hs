@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleContexts #-}
+
 -- | Type checker for Boogie 2
 module Language.Boogie.TypeChecker (
   -- * Checking programs

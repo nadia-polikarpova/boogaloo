@@ -52,7 +52,7 @@ import Control.Applicative hiding (empty)
 import Control.Monad.State hiding (join)
 import Control.Monad.Identity hiding (join)
 import Control.Monad.Stream
-import Control.Lens hiding (Context, at)
+import Control.Lens hiding (Context, at, (|>), (:<))
 import Debug.Trace
 
 {- Interface -}
@@ -878,7 +878,7 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
 {- Evaluating constraints -}
 
 -- | 'extendNameConstraints' @lens c@ : add @c@ as a constraint for all free variables in @c@ to @envConstraints.lens@
-extendNameConstraints :: (MonadState (Environment m) s, Finalizer s) => SimpleLens ConstraintMemory NameConstraints -> Expression -> s ()
+extendNameConstraints :: (MonadState (Environment m) s, Finalizer s) => Simple Lens ConstraintMemory NameConstraints -> Expression -> s ()
 extendNameConstraints lens c = mapM_ (\name -> modify $ addNameConstraint name (envConstraints.lens) c) (freeVars c)
 
 -- | 'extendMapConstraints' @r c@ : add @c@ to the constraints of the map @r@

@@ -11,14 +11,24 @@ import Control.Monad.Trans.Error
 -- when errors should be accumulated rather than reported immediately  
 newtype ErrorAccumT e m a = ErrorAccumT { runErrorAccumT :: m ([e], a) }
 
+instance (ErrorList e, Monad m) => Functor (ErrorAccumT e m) where
+    fmap = liftM
+
+instance (ErrorList e, Monad m) => Applicative (ErrorAccumT e m) where
+  -- | Attach an empty list of errors to a succesful computation
+  pure x  = ErrorAccumT $ return ([], x)
+  -- | The bind strategy is to concatenate error lists
+  (<*>) = ap
+
 instance (ErrorList e, Monad m) => Monad (ErrorAccumT e m) where
   -- | Attach an empty list of errors to a succesful computation
-  return x  = ErrorAccumT $ return ([], x)
+  return = pure
   -- | The bind strategy is to concatenate error lists
   m >>= k   = ErrorAccumT $ do
     (errs, res) <- runErrorAccumT m
     (errs', res') <- runErrorAccumT $ k res
     return (errs ++ errs', res')
+
     
 instance ErrorList e => MonadTrans (ErrorAccumT e) where
   lift m = ErrorAccumT $ do

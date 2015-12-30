@@ -88,9 +88,9 @@ splitStyles sgrs currentSpan next = case next of
     sgrColor Dull White     = "Gray"    
 
 -- | Generate HTML for documents that do not contain new ines or formatting.
-simple PP.SEmpty	= noHtml
+simple PP.SEmpty  = noHtml
 simple (PP.SChar c doc) = toHtml c +++ simple doc
-simple (PP.SText _ s doc) = toHtml s +++ simple doc	 
+simple (PP.SText _ s doc) = toHtml s +++ simple doc   
 simple (PP.SLine indent doc) = error "newline in simple"
 simple (PP.SSGR sgrs doc) = error "formatting in simple"    
       

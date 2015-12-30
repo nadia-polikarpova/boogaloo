@@ -161,7 +161,7 @@ data Memory = Memory {
 makeLenses ''Memory
 
 -- | Lens that selects a store from memory
-type StoreLens = SimpleLens Memory Store
+type StoreLens = Simple Lens Memory Store
 
 -- | Empty memory
 emptyMemory = Memory {
@@ -357,7 +357,7 @@ lookupMapConstraints = lookupGetter (envConstraints.conMaps) []
 
 -- Environment modifications
 addProcedureImpl name def env = over envProcedures (M.insert name (lookupProcedure name env ++ [def])) env
-addNameConstraint :: Id -> SimpleLens (Environment m) NameConstraints -> Expression -> Environment m -> Environment m
+addNameConstraint :: Id -> Simple Lens (Environment m) NameConstraints -> Expression -> Environment m -> Environment m
 addNameConstraint name lens c env = over lens (M.insert name (nub $ c : lookupGetter lens [] name env)) env
 addUniqueConst t name env = over (envConstraints.conUnique) (M.insert t (name : lookupUnique t env)) env
 addMapConstraint r c env = over (envConstraints.conMaps) (M.insert r (nub $ c : lookupMapConstraints r env)) env

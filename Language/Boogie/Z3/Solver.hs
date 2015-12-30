@@ -147,7 +147,7 @@ newConstraint soln = enot (conjunction (logicEqs ++ customEqs))
           where
             go ref expr es =
                 case valueType expr of
-                  t@(IdType {..}) -> es
+                  t@(IdType _ _) -> es
                   _ -> logicEq ref (gen (Literal expr)) : es
 
       logict t r = gen (Logical t r)
@@ -186,6 +186,6 @@ newConstraint soln = enot (conjunction (logicEqs ++ customEqs))
           where
             go ref expr m =
                 case valueType expr of
-                  t@(IdType {..}) -> 
+                  t@(IdType _ _) -> 
                       Map.insertWith Set.union (gen (Literal expr)) (Set.singleton ref) m
                   _ -> m
