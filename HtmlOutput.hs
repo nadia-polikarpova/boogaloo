@@ -27,7 +27,7 @@ applyToNonEmpty f content = if isNoHtml content
   else f content  
       
 -- | 'splitLines' @sgrs indent currentLine next@ : 
--- Generate HTML for a document where the current line is indented by @indent@, starts with @currentLine@ and the current formatiing settings are @sgrs@,
+-- Generate HTML for a document where the current line is indented by @indent@, starts with @currentLine@ and the current formating settings are @sgrs@,
 -- while @next@ is the rest of the document.
 -- We maintain that each line starts with a formatting operation.
 splitLines :: [SGR] -> Int -> (PP.SimpleDoc -> PP.SimpleDoc) -> PP.SimpleDoc -> Html 
@@ -87,7 +87,7 @@ splitStyles sgrs currentSpan next = case next of
     sgrColor Dull Cyan      = "DarkCyan"
     sgrColor Dull White     = "Gray"    
 
--- | Generate HTML for documents that do not contain new ines or formatting.
+-- | Generate HTML for documents that do not contain new lines or formatting.
 simple PP.SEmpty  = noHtml
 simple (PP.SChar c doc) = toHtml c +++ simple doc
 simple (PP.SText _ s doc) = toHtml s +++ simple doc   
