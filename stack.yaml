@@ -1,10 +1,10 @@
 
-flags:
-  generic-deriving:
-    base-4-9: false
-  language-boogie:
-    boogaloo: true
-    tests: true
+# flags:
+#   generic-deriving:
+#     base-4-9: false
+#   language-boogie:
+#     boogaloo: true
+#     tests: true
 extra-package-dbs: []
 packages:
 - .
@@ -33,3 +33,7 @@ extra-deps:
 - text-0.11.3.1
 
 resolver: lts-2.0
+
+ghc-options:
+  generic-deriving: -f-base-4-9
+  # language-boogie: -fboogaloo -ftests
