@@ -62,5 +62,5 @@ try it on sample Boogie programs from the <<file examples>> directory.
 
 ## Further Reading ##
 
-* [User Manual](TODO): how to use and build Boogaloo
+* [User Manual](https://github.com/nadia-polikarpova/boogaloo/wiki/User-Manual): how to use and build Boogaloo
 * [To Run What No One Has Run Before](https://cseweb.ucsd.edu/~npolikarpova/publications/rv13.pdf): our paper about Boogaloo at RV'13; read this if you want to learn what's under the hood.
