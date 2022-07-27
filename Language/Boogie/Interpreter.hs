@@ -61,7 +61,7 @@ import Debug.Trace
 -- Execute program @p@ in type context @tc@ with solver @solver@ and non-deterministic value generator @generator@, starting from procedure @entryPoint@;
 -- concretize passing executions iff @solvePassing@;
 -- return the outcome(s) embedded into the solver's monad.
-executeProgram :: (Monad m, Functor m) => Program -> Context -> Solver m -> Maybe Int -> Maybe Int -> Bool -> Bool -> Generator m -> Id -> m (TestCase)
+executeProgram :: (MonadFail m, Functor m) => Program -> Context -> Solver m -> Maybe Int -> Maybe Int -> Bool -> Bool -> Generator m -> Id -> m (TestCase)
 executeProgram p tc solver recMax loopMax concretize_ solvePassing generator entryPoint = result <$> runStateT (runErrorT programExecution) (initEnv tc solver generator recMax loopMax concretize_)
   where
     programExecution = do
@@ -878,7 +878,7 @@ checkPostonditions sig def exitPoint = mapM_ (exec . attachPos exitPoint . Predi
 {- Evaluating constraints -}
 
 -- | 'extendNameConstraints' @lens c@ : add @c@ as a constraint for all free variables in @c@ to @envConstraints.lens@
-extendNameConstraints :: (MonadState (Environment m) s, Finalizer s) => Simple Lens ConstraintMemory NameConstraints -> Expression -> s ()
+extendNameConstraints :: (MonadState (Environment m) s, Finalizer s) => Lens' ConstraintMemory NameConstraints -> Expression -> s ()
 extendNameConstraints lens c = mapM_ (\name -> modify $ addNameConstraint name (envConstraints.lens) c) (freeVars c)
 
 -- | 'extendMapConstraints' @r c@ : add @c@ to the constraints of the map @r@
@@ -1179,7 +1179,7 @@ generate f = do
 {- Preprocessing -}
 
 -- | Collect procedure implementations, and constant/function/global variable constraints
-preprocess :: (Monad m, Functor m) => Program -> SafeExecution m ()
+preprocess :: (MonadFail m, Functor m) => Program -> SafeExecution m ()
 preprocess (Program decls) = do
   mapM_ processDecl decls
   fs <- use envFunctions
