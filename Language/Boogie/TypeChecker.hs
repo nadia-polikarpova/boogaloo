@@ -47,7 +47,7 @@ import qualified Data.Map as M
 import Control.Monad.Trans.Error
 import Control.Applicative hiding (empty)
 import Control.Monad.State
-import Control.Lens hiding (Context)
+import Control.Lens hiding (Context, locally)
 
 {- Interface -}
 

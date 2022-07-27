@@ -182,7 +182,7 @@ newConstraint soln = enot (conjunction (logicEqs ++ customEqs))
             neqFold expr = interPair neqOp expr
 
       -- Equality relation on customs.
-      customEqRel = Map.foldWithKey go Map.empty soln
+      customEqRel = Map.foldrWithKey go Map.empty soln
           where
             go ref expr m =
                 case valueType expr of
